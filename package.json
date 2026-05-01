@@ -15,6 +15,7 @@
   "files": [
     "extensions",
     "docs",
+    "assets",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
