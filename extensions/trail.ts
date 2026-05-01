@@ -35,6 +35,7 @@ import {
 } from "@mariozechner/pi-tui";
 import { createCheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
+import { parseTrailCommand, trailUsage, TRAIL_COMMANDS, type CheckpointCreateOptions } from "./trail-command-grammar.js";
 import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
 
 type TrailConfig = {
@@ -64,17 +65,8 @@ type ToolCallInfo = {
 	timestamp?: number;
 };
 
-type CheckpointCreateOptions = {
-	mode: CheckpointMode;
-	note: string;
-	consumeOnUse: boolean;
-	raw: boolean;
-	model?: string;
-	maxOutputTokens?: number;
-};
-
 type CheckpointLifecycle = {
-	create(args: string): Promise<void>;
+	create(options: CheckpointCreateOptions): Promise<void>;
 };
 
 const CHECKPOINT_CUSTOM_TYPE = "trail:checkpoint";
@@ -365,29 +357,6 @@ function makeCheckpointId(): string {
 	const d = new Date();
 	const stamp = d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 	return stamp.replace("T", "-");
-}
-
-function parseCheckpointArgs(args: string): CheckpointCreateOptions {
-	let mode: CheckpointMode = "handoff";
-	let consumeOnUse = false;
-	let raw = false;
-	let model: string | undefined;
-	let maxOutputTokens: number | undefined;
-	const noteParts: string[] = [];
-	const parts = args.trim().split(/\s+/).filter(Boolean);
-	for (let i = 0; i < parts.length; i++) {
-		const part = parts[i]!;
-		if (part === "--handoff") mode = "handoff";
-		else if (part === "--compact") mode = "compact";
-		else if (part === "--debug") mode = "debug";
-		else if (part === "--review") mode = "review";
-		else if (part === "--once" || part === "--delete-on-use") consumeOnUse = true;
-		else if (part === "--raw" || part === "--no-summary") raw = true;
-		else if (part === "--model" && parts[i + 1]) model = parts[++i];
-		else if (part === "--max-output" && parts[i + 1]) maxOutputTokens = Number(parts[++i]) || undefined;
-		else noteParts.push(part);
-	}
-	return { mode, note: noteParts.join(" "), consumeOnUse, raw, model, maxOutputTokens };
 }
 
 function chooseCheckpointArtifacts(artifacts: Artifact[], mode: CheckpointMode, limit: number): Artifact[] {
@@ -843,8 +812,7 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 	};
 
 	return {
-		async create(args: string): Promise<void> {
-			const options = parseCheckpointArgs(args);
+		async create(options: CheckpointCreateOptions): Promise<void> {
 			const artifacts = selectArtifacts(options);
 			if (artifacts.length === 0) {
 				notifyTrail(pi, ctx, "Trail found no artifacts to checkpoint", "warning");
@@ -903,22 +871,6 @@ async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext
 	emitText(pi, ctx, lines);
 }
 
-function helpText(): string {
-	return [
-		"Trail commands:",
-		"/trail                         browse artifacts",
-		"/trail search <query>          search artifacts with ripgrep, then browse matches",
-		"/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]",
-		"/trail continue <id|last>",
-		"/trail resume [id|last]",
-		"/trail list",
-		"/trail ref <artifact-id>       inject compact artifact reference",
-		"/trail inject <artifact-id>    alias for ref",
-		"/trail inject-full <artifact-id>",
-		"/trail copy <artifact-id>",
-	].join("\n");
-}
-
 function emitText(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: string): void {
 	if (ctx.hasUI) ctx.ui.setEditorText(text);
 	else pi.sendMessage({ customType: "trail", content: text, display: true }, { triggerTurn: false });
@@ -933,32 +885,34 @@ export default function trailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("trail", {
 		description: "Navigate session artifacts and create fresh-session checkpoints",
 		getArgumentCompletions: (prefix: string) => {
-			const commands = ["search", "checkpoint", "continue", "resume", "list", "ref", "inject", "inject-full", "copy", "help"];
-			const items = commands.filter((c) => c.startsWith(prefix)).map((c) => ({ value: c, label: c }));
+			const items = TRAIL_COMMANDS.filter((c) => c.startsWith(prefix)).map((c) => ({ value: c, label: c }));
 			return items.length ? items : null;
 		},
 		handler: async (args, ctx) => {
-			const [subcommandRaw, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-			const subcommand = subcommandRaw ?? "browse";
-			const restText = rest.join(" ");
-
-			if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
-				emitText(pi, ctx, helpText());
+			const parsed = parseTrailCommand(args);
+			if (!parsed.ok) {
+				emitText(pi, ctx, `${parsed.message}\n\n${parsed.usage}`);
 				return;
 			}
 
-			if (subcommand === "checkpoint") {
+			const intent = parsed.intent;
+			if (intent.kind === "help") {
+				emitText(pi, ctx, trailUsage());
+				return;
+			}
+
+			if (intent.kind === "checkpoint") {
 				const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-				await checkpointLifecycle.create(restText);
+				await checkpointLifecycle.create(intent.options);
 				return;
 			}
 
-			if (subcommand === "continue" || subcommand === "resume") {
-				await continueCheckpoint(pi, ctx, restText || "last");
+			if (intent.kind === "continue") {
+				await continueCheckpoint(pi, ctx, intent.idOrLast);
 				return;
 			}
 
-			if (subcommand === "list") {
+			if (intent.kind === "list") {
 				await showCheckpointList(pi, ctx);
 				return;
 			}
@@ -967,14 +921,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const catalog = createArtifactCatalog(ctx, config);
 			let artifacts = catalog.list();
 
-			if (subcommand === "search") {
-				if (!restText) {
-					notifyTrail(pi, ctx, "Usage: /trail search <query>", "warning");
-					return;
-				}
-				artifacts = await catalog.search(restText);
+			if (intent.kind === "search") {
+				artifacts = await catalog.search(intent.query);
 				if (artifacts.length === 0) {
-					notifyTrail(pi, ctx, `Trail search found no artifacts for: ${restText}`, "info");
+					notifyTrail(pi, ctx, `Trail search found no artifacts for: ${intent.query}`, "info");
 					return;
 				}
 				if (!ctx.hasUI) {
@@ -983,16 +933,16 @@ export default function trailExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			if (["ref", "inject", "inject-full", "copy"].includes(subcommand)) {
-				const artifact = catalog.find(restText || subcommandRaw || "");
+			if (intent.kind === "artifact") {
+				const artifact = catalog.find(intent.idOrRef);
 				if (!artifact) {
 					notifyTrail(pi, ctx, "Trail artifact not found", "error");
 					return;
 				}
-				if (subcommand === "ref" || subcommand === "inject") {
+				if (intent.action === "ref" || intent.action === "inject") {
 					injectIntoEditor(ctx, catalog.reference(artifact));
 					notifyTrail(pi, ctx, `Trail referenced ${artifact.id}`, "info");
-				} else if (subcommand === "inject-full") {
+				} else if (intent.action === "inject-full") {
 					injectIntoEditor(ctx, catalog.fullText(artifact));
 					notifyTrail(pi, ctx, `Trail injected full ${artifact.id}`, "info");
 				} else {
@@ -1012,7 +962,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				if (!result) return;
 				if (result.action === "checkpoint") {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-					await checkpointLifecycle.create("--handoff");
+					await checkpointLifecycle.create({ mode: "handoff", note: "", consumeOnUse: false, raw: false });
 					return;
 				}
 				if (!result.artifact) return;
