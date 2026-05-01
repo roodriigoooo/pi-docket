@@ -34,9 +34,9 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
+import { createCheckpointStore } from "./checkpoint-store.js";
+import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
 
-type ArtifactKind = "command" | "error" | "file" | "code" | "prompt" | "response" | "checkpoint";
-type CheckpointMode = "handoff" | "compact" | "debug" | "review";
 
 type TrailConfig = {
 	maxArtifacts: number;
@@ -52,21 +52,6 @@ type TrailConfig = {
 		systemPrompt?: string;
 	};
 };
-
-type Artifact = {
-	id: string; // displayId alias, kept for command compatibility
-	displayId: string;
-	ref: string;
-	kind: ArtifactKind;
-	title: string;
-	subtitle: string;
-	body: string;
-	entryId?: string;
-	timestamp?: number;
-	meta?: Record<string, unknown>;
-};
-
-type ArtifactSummary = Pick<Artifact, "displayId" | "ref" | "kind" | "title" | "subtitle" | "timestamp">;
 
 type ArtifactCatalog = {
 	list(): Artifact[];
@@ -86,17 +71,6 @@ type ToolCallInfo = {
 	args: Record<string, unknown>;
 	entryId: string;
 	timestamp?: number;
-};
-
-type CheckpointIndexEntry = {
-	id: string;
-	mode: CheckpointMode;
-	file: string;
-	createdAt: string;
-	cwd: string;
-	sourceSession?: string;
-	note?: string;
-	consumeOnUse?: boolean;
 };
 
 type CheckpointCreateOptions = {
@@ -313,7 +287,7 @@ function buildArtifacts(ctx: ExtensionCommandContext, config: TrailConfig): Arti
 		}
 
 		if (msg?.role === "toolResult") {
-			const call = calls.get(msg.toolCallId) ?? {
+			const call: ToolCallInfo = calls.get(msg.toolCallId) ?? {
 				id: msg.toolCallId,
 				name: msg.toolName,
 				args: {},
@@ -396,23 +370,6 @@ async function loadConfig(cwd: string): Promise<TrailConfig> {
 	};
 }
 
-function checkpointDir(): string {
-	return path.join(getAgentDir(), "trail", "checkpoints");
-}
-
-function checkpointIndexFile(): string {
-	return path.join(getAgentDir(), "trail", "index.json");
-}
-
-async function loadCheckpointIndex(): Promise<CheckpointIndexEntry[]> {
-	return readJsonFile<CheckpointIndexEntry[]>(checkpointIndexFile(), []);
-}
-
-async function saveCheckpointIndex(entries: CheckpointIndexEntry[]): Promise<void> {
-	await fs.mkdir(path.dirname(checkpointIndexFile()), { recursive: true });
-	await fs.writeFile(checkpointIndexFile(), `${JSON.stringify(entries, null, 2)}\n`, "utf8");
-}
-
 function makeCheckpointId(): string {
 	const d = new Date();
 	const stamp = d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -480,10 +437,6 @@ function buildReferenceList(artifacts: Artifact[], cwd: string): string {
 	return artifacts.map((artifact) => `- ${artifactRefId(artifact)} ${buildArtifactReference(artifact, cwd)}`).join("\n");
 }
 
-function checkpointArtifactsFile(id: string): string {
-	return path.join(checkpointDir(), `${id}.artifacts.json`);
-}
-
 function buildRawCheckpointMarkdown(
 	ctx: ExtensionCommandContext,
 	id: string,
@@ -504,7 +457,7 @@ function buildRawCheckpointMarkdown(
 	lines.push(`cwd: ${ctx.cwd}`);
 	lines.push(`created: ${new Date().toISOString()}`);
 	if (ctx.sessionManager.getSessionFile()) lines.push(`sourceSession: ${ctx.sessionManager.getSessionFile()}`);
-	if (usage) lines.push(`context: ~${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`);
+	if (usage && usage.tokens !== null) lines.push(`context: ~${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`);
 	if (note) lines.push(`note: ${note}`);
 	if (consumeOnUse) lines.push("consumeOnUse: true");
 	lines.push("");
@@ -587,6 +540,7 @@ async function buildSummarizedCheckpointMarkdown(
 	note: string,
 	consumeOnUse: boolean,
 	artifacts: Artifact[],
+	artifactsFile: string,
 	overrides: { model?: string; maxOutputTokens?: number },
 ): Promise<string> {
 	const maxOutputTokens = overrides.maxOutputTokens ?? config.summarizer.maxOutputTokens;
@@ -625,20 +579,13 @@ async function buildSummarizedCheckpointMarkdown(
 	if (ctx.sessionManager.getSessionFile()) lines.push(`sourceSession: ${ctx.sessionManager.getSessionFile()}`);
 	if (note) lines.push(`note: ${note}`);
 	if (consumeOnUse) lines.push("consumeOnUse: true");
-	lines.push(`artifacts: ${checkpointArtifactsFile(id)}`);
+	lines.push(`artifacts: ${artifactsFile}`);
 	lines.push("");
 	lines.push(summary);
 	lines.push("");
 	lines.push("## Trail artifact references");
 	lines.push(buildReferenceList(artifacts, ctx.cwd));
 	return lines.join("\n");
-}
-
-async function findCheckpoint(idOrLast: string): Promise<CheckpointIndexEntry | undefined> {
-	const index = await loadCheckpointIndex();
-	if (index.length === 0) return undefined;
-	if (!idOrLast || idOrLast === "last") return index[index.length - 1];
-	return [...index].reverse().find((entry) => entry.id === idOrLast || entry.id.startsWith(idOrLast));
 }
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -945,6 +892,7 @@ function renderArtifactList(artifacts: Artifact[]): string {
 async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<CheckpointLifecycle> {
 	const config = await loadConfig(ctx.cwd);
 	const catalog = createArtifactCatalog(ctx, config);
+	const store = createCheckpointStore();
 
 	const selectArtifacts = (options: CheckpointCreateOptions): Artifact[] => {
 		return catalog.selectForCheckpoint(options.mode, config.checkpointArtifacts);
@@ -956,7 +904,7 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 		}
 		if (ctx.hasUI) ctx.ui.notify("Trail summarizing checkpoint...", "info");
 		try {
-			return await buildSummarizedCheckpointMarkdown(ctx, config, catalog, id, options.mode, options.note, options.consumeOnUse, artifacts, {
+			return await buildSummarizedCheckpointMarkdown(ctx, config, catalog, id, options.mode, options.note, options.consumeOnUse, artifacts, store.artifactsFile(id), {
 				model: options.model,
 				maxOutputTokens: options.maxOutputTokens,
 			});
@@ -974,26 +922,16 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 	};
 
 	const persistCheckpoint = async (id: string, options: CheckpointCreateOptions, markdown: string, artifacts: Artifact[]): Promise<CheckpointIndexEntry> => {
-		const dir = checkpointDir();
-		await fs.mkdir(dir, { recursive: true });
-		const file = path.join(dir, `${id}.md`);
-		await fs.writeFile(file, `${markdown.trim()}\n`, "utf8");
-		await fs.writeFile(checkpointArtifactsFile(id), `${JSON.stringify(artifacts, null, 2)}\n`, "utf8");
-
-		const entry: CheckpointIndexEntry = {
+		return store.save({
 			id,
 			mode: options.mode,
-			file,
-			createdAt: new Date().toISOString(),
+			markdown,
+			artifacts,
 			cwd: ctx.cwd,
 			sourceSession: ctx.sessionManager.getSessionFile(),
 			note: options.note,
 			consumeOnUse: options.consumeOnUse,
-		};
-		const index = await loadCheckpointIndex();
-		index.push(entry);
-		await saveCheckpointIndex(index);
-		return entry;
+		});
 	};
 
 	const labelSession = (id: string, entry: CheckpointIndexEntry): void => {
@@ -1026,15 +964,9 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 	};
 }
 
-async function consumeCheckpoint(checkpoint: CheckpointIndexEntry): Promise<void> {
-	const index = await loadCheckpointIndex();
-	await saveCheckpointIndex(index.filter((entry) => entry.id !== checkpoint.id));
-	await fs.rm(checkpoint.file, { force: true });
-	await fs.rm(checkpointArtifactsFile(checkpoint.id), { force: true });
-}
-
 async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<void> {
-	const checkpoint = await findCheckpoint(idOrLast || "last");
+	const store = createCheckpointStore();
+	const checkpoint = await store.find(idOrLast || "last");
 	if (!checkpoint) {
 		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 		return;
@@ -1047,7 +979,7 @@ async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext
 			replacementCtx.ui.setEditorText(content);
 			if (checkpoint.consumeOnUse) {
 				try {
-					await consumeCheckpoint(checkpoint);
+					await store.consume(checkpoint);
 					replacementCtx.ui.notify(`Trail loaded and consumed checkpoint ${checkpoint.id}`, "info");
 				} catch (err) {
 					replacementCtx.ui.notify(`Trail loaded checkpoint ${checkpoint.id}, but could not delete it: ${String(err)}`, "warning");
@@ -1061,7 +993,8 @@ async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext
 }
 
 async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
-	const index = await loadCheckpointIndex();
+	const store = createCheckpointStore();
+	const index = await store.list();
 	const lines = index.length
 		? index.map((c) => `${c.id}\t${c.mode}${c.consumeOnUse ? ":once" : ""}\t${c.cwd}\t${c.note ?? ""}`).join("\n")
 		: "No Trail checkpoints";
