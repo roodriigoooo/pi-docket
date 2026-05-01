@@ -1,0 +1,47 @@
+{
+  "name": "@rosastre/trail",
+  "version": "0.1.0",
+  "description": "Trail: session artifacts and fresh-session checkpoints for Pi",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "trail",
+    "checkpoint",
+    "context",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "extensions",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/trail.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "pack:dry": "npm pack --dry-run",
+    "smoke:help": "pi --no-extensions -e ./extensions/trail.ts --mode json --no-session \"/trail help\""
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

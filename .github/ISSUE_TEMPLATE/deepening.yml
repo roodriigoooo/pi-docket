@@ -1,0 +1,32 @@
+name: Deepening opportunity
+description: Propose architecture work to make Trail deeper and more testable
+labels: [architecture]
+body:
+  - type: textarea
+    id: files
+    attributes:
+      label: Files / Modules
+      description: Which modules are involved?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Why is current architecture shallow or causing friction?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Solution
+      description: What module should be deepened? Where is the seam?
+    validations:
+      required: true
+  - type: textarea
+    id: benefits
+    attributes:
+      label: Benefits
+      description: Explain locality, leverage, and testability improvement.
+    validations:
+      required: true
