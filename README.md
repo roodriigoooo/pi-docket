@@ -9,19 +9,19 @@ Trail is not history search. It is a session artifact navigator and context hand
 From GitHub while Trail is moving fast:
 
 ```bash
-pi install git:github.com/rosastre/pi-trail
+pi install git:github.com/roodriigoooo/trail
 ```
 
 Pinned GitHub release:
 
 ```bash
-pi install git:github.com/rosastre/pi-trail@v0.1.0
+pi install git:github.com/roodriigoooo/trail@v0.1.0
 ```
 
 From npm after publish:
 
 ```bash
-pi install npm:@rosastre/trail
+pi install npm:@roodriigoooo/trail
 ```
 
 ## Development
