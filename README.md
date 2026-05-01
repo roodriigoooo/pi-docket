@@ -41,7 +41,7 @@ pi --no-extensions -e ./extensions/trail.ts --mode json --no-session "/trail hel
 Type check:
 
 ```bash
-npm install
+npm ci
 npm run check
 ```
 

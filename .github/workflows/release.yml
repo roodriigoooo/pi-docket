@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without v prefix. Defaults to package.json version."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Resolve release version
+        id: version
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          else
+            INPUT_VERSION="${{ inputs.version }}"
+            VERSION="${INPUT_VERSION:-$PACKAGE_VERSION}"
+            TAG="v$VERSION"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "Release version is empty" >&2
+            exit 1
+          fi
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Release version v$VERSION does not match package.json v$PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Check manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists" >&2
+            exit 1
+          fi
+      - name: Pack npm artifact
+        run: npm pack
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists" >&2
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gh release create "$TAG" ./*.tgz --target "$GITHUB_SHA" --title "$TAG" --notes "Trail $TAG"
+          else
+            gh release create "$TAG" ./*.tgz --title "$TAG" --notes "Trail $TAG"
+          fi
