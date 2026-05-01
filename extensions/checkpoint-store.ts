@@ -14,10 +14,21 @@ type CheckpointSaveInput = {
 	consumeOnUse?: boolean;
 };
 
+export type CheckpointSummary = {
+	entry: CheckpointIndexEntry;
+	artifactCount: number;
+	files: number;
+	errors: number;
+	commands: number;
+	estimatedTokens: number;
+};
+
 export type CheckpointStore = {
 	save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry>;
 	find(idOrLast: string): Promise<CheckpointIndexEntry | undefined>;
 	list(): Promise<CheckpointIndexEntry[]>;
+	listSummaries(): Promise<CheckpointSummary[]>;
+	readMarkdown(checkpoint: CheckpointIndexEntry): Promise<string>;
 	consume(checkpoint: CheckpointIndexEntry): Promise<void>;
 	artifactsFile(id: string): string;
 };
@@ -81,6 +92,26 @@ async function existingMarkdownEntries(entries: CheckpointIndexEntry[]): Promise
 	return entries.filter((_, index) => checks[index]);
 }
 
+async function checkpointArtifacts(id: string): Promise<Artifact[]> {
+	return readJsonFile<Artifact[]>(checkpointArtifactsFile(id), []);
+}
+
+async function checkpointSummary(entry: CheckpointIndexEntry): Promise<CheckpointSummary> {
+	const [markdown, artifacts] = await Promise.all([
+		fs.readFile(entry.file, "utf8").catch(() => ""),
+		checkpointArtifacts(entry.id),
+	]);
+	const fileNames = new Set(artifacts.filter((artifact) => artifact.kind === "file").map((artifact) => artifact.title));
+	return {
+		entry,
+		artifactCount: artifacts.length,
+		files: fileNames.size,
+		errors: artifacts.filter((artifact) => artifact.kind === "error").length,
+		commands: artifacts.filter((artifact) => artifact.kind === "command").length,
+		estimatedTokens: Math.ceil(markdown.length / 4),
+	};
+}
+
 export function createCheckpointStore(): CheckpointStore {
 	return {
 		async save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry> {
@@ -113,6 +144,14 @@ export function createCheckpointStore(): CheckpointStore {
 
 		async list(): Promise<CheckpointIndexEntry[]> {
 			return existingMarkdownEntries(await loadCheckpointIndex());
+		},
+
+		async listSummaries(): Promise<CheckpointSummary[]> {
+			return Promise.all((await this.list()).map((entry) => checkpointSummary(entry)));
+		},
+
+		async readMarkdown(checkpoint: CheckpointIndexEntry): Promise<string> {
+			return fs.readFile(checkpoint.file, "utf8");
 		},
 
 		async consume(checkpoint: CheckpointIndexEntry): Promise<void> {

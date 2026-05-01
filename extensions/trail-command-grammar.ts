@@ -13,7 +13,7 @@ export type TrailIntent =
 	| { kind: "help" }
 	| { kind: "browse" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
-	| { kind: "continue"; idOrLast: string }
+	| { kind: "continue"; idOrLast?: string }
 	| { kind: "list" }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
@@ -40,8 +40,8 @@ export function trailUsage(): string {
 		"/trail                         browse artifacts",
 		"/trail search <query>          search artifacts with ripgrep, then browse matches",
 		CHECKPOINT_USAGE,
-		"/trail continue <id|last>",
-		"/trail resume <id|last>",
+		"/trail continue [id|last]",
+		"/trail resume [id|last]",
 		"/trail list",
 		"/trail ref <artifact-id>       inject compact artifact reference",
 		"/trail inject <artifact-id>    alias for ref",
@@ -95,9 +95,9 @@ function tokenize(input: string): { ok: true; tokens: string[] } | { ok: false; 
 	return { ok: true, tokens };
 }
 
-function parseContinueCommand(command: string, rest: string[], fallback: string): ParseResult {
-	if (rest.length === 0) return { ok: true, intent: { kind: "continue", idOrLast: fallback } };
-	if (rest.length > 1) return parseError(`Usage: /trail ${command} <id|last>`);
+function parseContinueCommand(command: string, rest: string[]): ParseResult {
+	if (rest.length === 0) return { ok: true, intent: { kind: "continue" } };
+	if (rest.length > 1) return parseError(`Usage: /trail ${command} [id|last]`);
 	return { ok: true, intent: { kind: "continue", idOrLast: rest[0]! } };
 }
 
@@ -158,7 +158,7 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "browse") return { ok: true, intent: { kind: "browse" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint") return parseCheckpoint(rest);
-	if (command === "continue" || command === "resume") return parseContinueCommand(command, rest, "last");
+	if (command === "continue" || command === "resume") return parseContinueCommand(command, rest);
 	if (command === "list") {
 		if (rest.length > 0) return parseError("Usage: /trail list");
 		return { ok: true, intent: { kind: "list" } };

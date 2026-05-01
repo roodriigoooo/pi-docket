@@ -95,8 +95,8 @@ continue from the latest checkpoint in a fresh session:
 - `/trail` — open artifact navigator
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — create editable summarized checkpoint
-- `/trail continue <id|last>` — start fresh session with checkpoint loaded into editor
-- `/trail resume <id|last>` — alias for continue
+- `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
+- `/trail resume [id|last]` — alias for continue
 - `/trail list` — list checkpoints
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`

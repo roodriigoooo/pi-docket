@@ -7,7 +7,7 @@ Session artifacts as first-class objects for Pi.
 - `/trail` — open Vim-like artifact navigator
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
-- `/trail continue <id|last>` — start fresh session with checkpoint loaded into editor
+- `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
 - `/trail list` — list checkpoints
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference

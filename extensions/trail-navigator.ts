@@ -56,9 +56,8 @@ export function selectedArtifact(state: NavigatorState, artifacts: Artifact[]): 
 export function navigatorViewModel(state: NavigatorState, artifacts: Artifact[], windowSize = 12): NavigatorViewModel {
 	const items = filteredArtifacts(state, artifacts);
 	const selected = Math.min(Math.max(0, state.selected), Math.max(0, items.length - 1));
-	const start = Math.max(0, selected - Math.floor(windowSize / 2));
-	const end = Math.max(windowSize, selected + Math.ceil(windowSize / 2));
-	const visible = items.slice(start, end);
+	const start = Math.max(0, Math.min(selected - Math.floor(windowSize / 2), items.length - windowSize));
+	const visible = items.slice(start, start + windowSize);
 	return { items, selected, selectedArtifact: items[selected], visible, visibleStart: start };
 }
 

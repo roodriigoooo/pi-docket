@@ -33,7 +33,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { createCheckpointStore } from "./checkpoint-store.js";
+import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
 import { parseTrailCommand, trailUsage, TRAIL_COMMANDS, type CheckpointCreateOptions } from "./trail-command-grammar.js";
 import { handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
@@ -635,12 +635,58 @@ class TrailTextViewer implements Component {
 	}
 }
 
+async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => new TrailTextViewer(tui, theme, title, text, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "90%", minWidth: 90, maxHeight: "95%", margin: 1 },
+	});
+}
+
 async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifact: Artifact): Promise<void> {
 	const inspected = await catalog.inspect(artifact);
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => new TrailTextViewer(tui, theme, inspected.title, inspected.text, done), {
-		overlay: true,
-		overlayOptions: { anchor: "right-center", width: "90%", minWidth: 90, maxHeight: "95%", margin: 1 },
-	});
+	await showTextViewer(ctx, inspected.title, inspected.text);
+}
+
+function relativeTime(timestamp?: number): string {
+	if (!timestamp) return "";
+	const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+	if (seconds < 60) return `${seconds}s ago`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days < 7) return `${days}d ago`;
+	return new Date(timestamp).toLocaleDateString();
+}
+
+function kindLabel(kind: ArtifactKind): string {
+	const labels: Record<ArtifactKind, string> = { command: "cmd", error: "err", file: "file", code: "code", prompt: "ask", response: "resp", checkpoint: "ckpt" };
+	return labels[kind];
+}
+
+function colorKind(theme: any, kind: ArtifactKind, text: string): string {
+	if (kind === "error") return theme.fg("error", text);
+	if (kind === "command") return theme.fg("success", text);
+	if (kind === "file") return theme.fg("toolDiffAdded", text);
+	if (kind === "code") return theme.fg("warning", text);
+	if (kind === "checkpoint") return theme.fg("accent", text);
+	if (kind === "prompt") return theme.fg("customMessageLabel", text);
+	return theme.fg("muted", text);
+}
+
+function filterBar(theme: any, active: string): string {
+	const filters: Array<{ value: string; label: string }> = [
+		{ value: "all", label: "all" },
+		{ value: "error", label: "err" },
+		{ value: "command", label: "cmd" },
+		{ value: "file", label: "file" },
+		{ value: "code", label: "code" },
+		{ value: "prompt", label: "ask" },
+		{ value: "response", label: "resp" },
+		{ value: "checkpoint", label: "ckpt" },
+	];
+	return filters.map((filter) => filter.value === active ? theme.fg("accent", `[${filter.label}]`) : theme.fg("dim", ` ${filter.label} `)).join(" ");
 }
 
 class TrailView implements Component {
@@ -688,35 +734,43 @@ class TrailView implements Component {
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 		this.container = new Container();
-		const view = navigatorViewModel(this.state, this.artifacts);
+		const view = navigatorViewModel(this.state, this.artifacts, this.state.showDetail ? 10 : 18);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
+		const border = (s: string) => this.theme.fg("borderMuted", s);
 
-		this.container.addChild(new DynamicBorder((s: string) => accent(s)));
-		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts:${view.items.length}/${this.artifacts.length} filter:${this.state.filter}`)}`, 1, 0));
+		this.container.addChild(new DynamicBorder(border));
+		const selectedId = view.selectedArtifact ? ` · selected ${view.selectedArtifact.id}` : "";
+		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts ${view.items.length}/${this.artifacts.length}${selectedId}`)}`, 1, 0));
+		this.container.addChild(new Text(filterBar(this.theme, this.state.filter), 1, 0));
 
 		const listWidth = Math.max(30, width);
 		for (let i = 0; i < view.visible.length; i++) {
 			const artifact = view.visible[i];
 			if (!artifact) continue;
 			const absolute = view.visibleStart + i;
-			const marker = absolute === view.selected ? accent("▸") : " ";
-			const kind = absolute === view.selected ? accent(artifact.kind.padEnd(10)) : muted(artifact.kind.padEnd(10));
-			const line = `${marker} ${kind} ${artifact.id.padEnd(5)} ${artifact.title} ${dim(artifact.subtitle)}`;
+			const selected = absolute === view.selected;
+			const marker = selected ? accent("▸") : dim(" ");
+			const id = selected ? accent(artifact.id.padEnd(5)) : muted(artifact.id.padEnd(5));
+			const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
+			const age = relativeTime(artifact.timestamp);
+			const meta = [artifact.subtitle, age].filter(Boolean).join(" · ");
+			const title = selected ? this.theme.fg("text", artifact.title) : artifact.title;
+			const line = `${marker} ${id} ${kind} ${title} ${dim(meta)}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 
 		if (this.state.showDetail && view.selectedArtifact) {
-			this.container.addChild(new Text("", 1, 0));
-			this.container.addChild(new DynamicBorder((s: string) => muted(s)));
-			this.container.addChild(new Text(accent(view.selectedArtifact.title), 1, 0));
-			const detail = this.fullText(view.selectedArtifact).split("\n").slice(0, 22);
-			for (const line of detail) this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+			this.container.addChild(new DynamicBorder(border));
+			this.container.addChild(new Text(`${accent("preview")} ${muted(view.selectedArtifact.ref)}`, 1, 0));
+			const detail = this.fullText(view.selectedArtifact).split("\n").slice(0, 14);
+			for (const line of detail) this.container.addChild(new Text(truncateToWidth(dim(line), listWidth - 2), 1, 0));
 		}
 
-		this.container.addChild(new Text(dim("j/k move · tab kind · enter inspect · i/r ref · I full inject · y copy · c checkpoint · v detail · q close"), 1, 0));
-		this.container.addChild(new DynamicBorder((s: string) => accent(s)));
+		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new Text(dim("j/k move · tab filter · enter inspect · i/r ref · I inject · y copy · c checkpoint · v preview · q close"), 1, 0));
+		this.container.addChild(new DynamicBorder(border));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
@@ -726,7 +780,98 @@ class TrailView implements Component {
 async function showTrailBrowser(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifacts: Artifact[]): Promise<{ action: "inspect" | "reference" | "injectFull" | "copy" | "checkpoint"; artifact?: Artifact } | null> {
 	return ctx.ui.custom((tui, theme, _kb, done) => new TrailView(tui, theme, artifacts, (artifact) => catalog.fullText(artifact), done), {
 		overlay: true,
-		overlayOptions: { anchor: "right-center", width: "80%", minWidth: 80, maxHeight: "90%", margin: 1 },
+		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+	});
+}
+
+type ResumeSelection = { action: "continue" | "preview" | "edit"; summary: CheckpointSummary; index: number } | null;
+
+function compactTokens(tokens: number): string {
+	return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
+}
+
+class TrailResumeView implements Component {
+	private container = new Container();
+	private selected: number;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private summaries: CheckpointSummary[],
+		initialSelected: number,
+		private done: (result: ResumeSelection) => void,
+	) {
+		this.selected = Math.min(Math.max(0, initialSelected), Math.max(0, summaries.length - 1));
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+			this.done(null);
+			return;
+		}
+		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
+		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
+		else if (data === "g") this.selected = 0;
+		else if (data === "G") this.selected = Math.max(0, this.summaries.length - 1);
+		else if (matchesKey(data, Key.enter)) this.finish("continue");
+		else if (data === "p") this.finish("preview");
+		else if (data === "e") this.finish("edit");
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	private finish(action: "continue" | "preview" | "edit"): void {
+		const summary = this.summaries[this.selected];
+		if (summary) this.done({ action, summary, index: this.selected });
+	}
+
+	invalidate(): void {
+		this.container.invalidate();
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		this.container = new Container();
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const border = (s: string) => this.theme.fg("borderMuted", s);
+		const listWidth = Math.max(30, width);
+		const start = Math.max(0, Math.min(this.selected - 5, this.summaries.length - 11));
+		const visible = this.summaries.slice(start, start + 11);
+
+		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new Text(`${accent(this.theme.bold("Trail Resume"))} ${dim(`${this.summaries.length} checkpoints`)}`, 1, 0));
+		for (let i = 0; i < visible.length; i++) {
+			const summary = visible[i];
+			if (!summary) continue;
+			const absolute = start + i;
+			const entry = summary.entry;
+			const selected = absolute === this.selected;
+			const marker = selected ? accent("▸") : dim(" ");
+			const id = selected ? accent(entry.id.slice(0, 18).padEnd(18)) : muted(entry.id.slice(0, 18).padEnd(18));
+			const mode = entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
+			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files · ${summary.errors} err · ${summary.commands} cmd`;
+			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
+			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+		}
+		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new Text(dim("j/k move · enter continue · p preview · e edit then continue · q close"), 1, 0));
+		this.container.addChild(new DynamicBorder(border));
+		this.cachedLines = this.container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+}
+
+async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number): Promise<ResumeSelection> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new TrailResumeView(tui, theme, summaries, selected, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
 }
 
@@ -821,14 +966,7 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 	};
 }
 
-async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<void> {
-	const store = createCheckpointStore();
-	const checkpoint = await store.find(idOrLast || "last");
-	if (!checkpoint) {
-		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
-		return;
-	}
-	const content = await fs.readFile(checkpoint.file, "utf8");
+async function startCheckpointSession(pi: ExtensionAPI, ctx: ExtensionCommandContext, store: ReturnType<typeof createCheckpointStore>, checkpoint: CheckpointIndexEntry, content: string): Promise<void> {
 	const parentSession = ctx.sessionManager.getSessionFile();
 	const result = await ctx.newSession({
 		parentSession,
@@ -847,6 +985,52 @@ async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext
 		},
 	});
 	if (result.cancelled) notifyTrail(pi, ctx, "Trail continue cancelled", "info");
+}
+
+async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<void> {
+	const store = createCheckpointStore();
+	const checkpoint = await store.find(idOrLast || "last");
+	if (!checkpoint) {
+		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+		return;
+	}
+	await startCheckpointSession(pi, ctx, store, checkpoint, await store.readMarkdown(checkpoint));
+}
+
+async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const store = createCheckpointStore();
+	if (!ctx.hasUI) {
+		await continueCheckpoint(pi, ctx, "last");
+		return;
+	}
+	const summaries = await store.listSummaries();
+	if (summaries.length === 0) {
+		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+		return;
+	}
+	let selected = Math.max(0, summaries.length - 1);
+	while (true) {
+		const result = await showCheckpointResumeSelector(ctx, summaries, selected);
+		if (!result) return;
+		selected = result.index;
+		const checkpoint = result.summary.entry;
+		const markdown = await store.readMarkdown(checkpoint);
+		if (result.action === "preview") {
+			await showTextViewer(ctx, `Trail checkpoint ${checkpoint.id}`, markdown);
+			continue;
+		}
+		if (result.action === "edit") {
+			const edited = await ctx.ui.editor("Edit Trail checkpoint", markdown);
+			if (edited === undefined) {
+				notifyTrail(pi, ctx, "Trail continue cancelled", "info");
+				return;
+			}
+			await startCheckpointSession(pi, ctx, store, checkpoint, edited);
+			return;
+		}
+		await startCheckpointSession(pi, ctx, store, checkpoint, markdown);
+		return;
+	}
 }
 
 async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -895,7 +1079,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "continue") {
-				await continueCheckpoint(pi, ctx, intent.idOrLast);
+				if (intent.idOrLast) await continueCheckpoint(pi, ctx, intent.idOrLast);
+				else await selectCheckpointToContinue(pi, ctx);
 				return;
 			}
 
