@@ -738,9 +738,10 @@ class TrailView implements Component {
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
-		const border = (s: string) => this.theme.fg("borderMuted", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(outerBorder));
 		const selectedId = view.selectedArtifact ? ` · selected ${view.selectedArtifact.id}` : "";
 		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts ${view.items.length}/${this.artifacts.length}${selectedId}`)}`, 1, 0));
 		this.container.addChild(new Text(filterBar(this.theme, this.state.filter), 1, 0));
@@ -762,15 +763,15 @@ class TrailView implements Component {
 		}
 
 		if (this.state.showDetail && view.selectedArtifact) {
-			this.container.addChild(new DynamicBorder(border));
+			this.container.addChild(new DynamicBorder(dividerBorder));
 			this.container.addChild(new Text(`${accent("preview")} ${muted(view.selectedArtifact.ref)}`, 1, 0));
 			const detail = this.fullText(view.selectedArtifact).split("\n").slice(0, 14);
 			for (const line of detail) this.container.addChild(new Text(truncateToWidth(dim(line), listWidth - 2), 1, 0));
 		}
 
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(dividerBorder));
 		this.container.addChild(new Text(dim("j/k move · tab filter · enter inspect · i/r ref · I inject · y copy · c checkpoint · v preview · q close"), 1, 0));
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(outerBorder));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
@@ -839,12 +840,13 @@ class TrailResumeView implements Component {
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
-		const border = (s: string) => this.theme.fg("borderMuted", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 		const listWidth = Math.max(30, width);
 		const start = Math.max(0, Math.min(this.selected - 5, this.summaries.length - 11));
 		const visible = this.summaries.slice(start, start + 11);
 
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(outerBorder));
 		this.container.addChild(new Text(`${accent(this.theme.bold("Trail Resume"))} ${dim(`${this.summaries.length} checkpoints`)}`, 1, 0));
 		for (let i = 0; i < visible.length; i++) {
 			const summary = visible[i];
@@ -859,9 +861,9 @@ class TrailResumeView implements Component {
 			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(dividerBorder));
 		this.container.addChild(new Text(dim("j/k move · enter continue · p preview · e edit then continue · q close"), 1, 0));
-		this.container.addChild(new DynamicBorder(border));
+		this.container.addChild(new DynamicBorder(outerBorder));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
