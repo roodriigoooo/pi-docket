@@ -22,7 +22,6 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { complete, type Message } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, getAgentDir } from "@mariozechner/pi-coding-agent";
 import {
@@ -35,22 +34,14 @@ import {
 	type TUI,
 } from "@mariozechner/pi-tui";
 import { createCheckpointStore } from "./checkpoint-store.js";
+import { createCheckpointSummarizer, type CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
 import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
-
 
 type TrailConfig = {
 	maxArtifacts: number;
 	maxBodyChars: number;
 	checkpointArtifacts: number;
-	summarizer: {
-		enabled: boolean;
-		provider?: string;
-		model?: string;
-		maxOutputTokens: number;
-		maxInputChars: number;
-		timeoutMs: number;
-		systemPrompt?: string;
-	};
+	summarizer: CheckpointSummarizerConfig;
 };
 
 type ArtifactCatalog = {
@@ -487,107 +478,6 @@ function buildRawCheckpointMarkdown(
 	return lines.join("\n");
 }
 
-function checkpointSystemPrompt(mode: CheckpointMode, maxOutputTokens: number): string {
-	const modeGuidance: Record<CheckpointMode, string> = {
-		handoff: "Preserve continuity for a fresh coding-agent session. Prioritize current goal, decisions, edited/important files, and next steps.",
-		compact: "Make the smallest useful continuation note. Ruthlessly remove transcript noise and low-value details.",
-		debug: "Focus on failing commands, error messages, hypotheses already tried, likely root causes, and safest next debugging steps.",
-		review: "Focus on review state: changed files, design decisions, risks, test status, and what a reviewer should inspect next.",
-	};
-	return [
-		"You are Trail, a context distillation assistant for Pi coding sessions.",
-		"Summarize session artifacts into a fresh-session checkpoint.",
-		"Do not produce a transcript search result or artifact dump.",
-		"Preserve continuity, discard noise, and prevent repeated mistakes.",
-		"Use compact markdown. Target the requested maximum output length.",
-		"Reference artifacts by IDs like [file:f12] or [command:c8] when useful instead of copying large excerpts.",
-		"Never invent files, commands, decisions, or outcomes not present in artifacts.",
-		`Mode: ${mode}. ${modeGuidance[mode]}`,
-		`Maximum output tokens: ${maxOutputTokens}.`,
-	].join("\n");
-}
-
-function checkpointInput(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, mode: CheckpointMode, note: string, artifacts: Artifact[], maxInputChars: number): string {
-	const payload = catalog.checkpointPayload(artifacts, mode);
-	return truncate([
-		`cwd: ${ctx.cwd}`,
-		ctx.sessionManager.getSessionFile() ? `sourceSession: ${ctx.sessionManager.getSessionFile()}` : undefined,
-		`mode: ${mode}`,
-		note ? `userNote: ${note}` : undefined,
-		"",
-		"Write checkpoint markdown with these sections:",
-		"## Summary",
-		"## Decisions / constraints",
-		"## Current state",
-		"## Next steps",
-		"## Avoid repeating",
-		"## References",
-		"",
-		"References available:",
-		buildReferenceList(artifacts, ctx.cwd),
-		"",
-		"Artifacts JSON:",
-		JSON.stringify(payload, null, 2),
-	].filter((line): line is string => line !== undefined).join("\n"), maxInputChars);
-}
-
-async function buildSummarizedCheckpointMarkdown(
-	ctx: ExtensionCommandContext,
-	config: TrailConfig,
-	catalog: ArtifactCatalog,
-	id: string,
-	mode: CheckpointMode,
-	note: string,
-	consumeOnUse: boolean,
-	artifacts: Artifact[],
-	artifactsFile: string,
-	overrides: { model?: string; maxOutputTokens?: number },
-): Promise<string> {
-	const maxOutputTokens = overrides.maxOutputTokens ?? config.summarizer.maxOutputTokens;
-	const modelName = overrides.model ?? (config.summarizer.provider && config.summarizer.model ? `${config.summarizer.provider}/${config.summarizer.model}` : undefined);
-	const model = modelName
-		? (() => {
-			const [provider, ...rest] = modelName.split("/");
-			return provider && rest.length ? ctx.modelRegistry.find(provider, rest.join("/")) : undefined;
-		})()
-		: ctx.model;
-	if (!model) throw new Error("No Trail summarizer model configured and no active model selected");
-
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
-
-	const userMessage: Message = {
-		role: "user",
-		content: [{ type: "text", text: checkpointInput(ctx, catalog, mode, note, artifacts, config.summarizer.maxInputChars) }],
-		timestamp: Date.now(),
-	};
-	const response = await complete(
-		model,
-		{ systemPrompt: config.summarizer.systemPrompt ?? checkpointSystemPrompt(mode, maxOutputTokens), messages: [userMessage] },
-		{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: maxOutputTokens, timeoutMs: config.summarizer.timeoutMs },
-	);
-	const summary = response.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n").trim();
-	if (!summary) throw new Error("Trail summarizer returned empty checkpoint");
-
-	const lines: string[] = [];
-	lines.push(`# Trail checkpoint ${id}`);
-	lines.push("");
-	lines.push(`mode: ${mode}`);
-	lines.push(`summary: llm`);
-	lines.push(`cwd: ${ctx.cwd}`);
-	lines.push(`created: ${new Date().toISOString()}`);
-	if (ctx.sessionManager.getSessionFile()) lines.push(`sourceSession: ${ctx.sessionManager.getSessionFile()}`);
-	if (note) lines.push(`note: ${note}`);
-	if (consumeOnUse) lines.push("consumeOnUse: true");
-	lines.push(`artifacts: ${artifactsFile}`);
-	lines.push("");
-	lines.push(summary);
-	lines.push("");
-	lines.push("## Trail artifact references");
-	lines.push(buildReferenceList(artifacts, ctx.cwd));
-	return lines.join("\n");
-}
-
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args);
@@ -893,6 +783,7 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 	const config = await loadConfig(ctx.cwd);
 	const catalog = createArtifactCatalog(ctx, config);
 	const store = createCheckpointStore();
+	const summarizer = createCheckpointSummarizer();
 
 	const selectArtifacts = (options: CheckpointCreateOptions): Artifact[] => {
 		return catalog.selectForCheckpoint(options.mode, config.checkpointArtifacts);
@@ -904,9 +795,20 @@ async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommand
 		}
 		if (ctx.hasUI) ctx.ui.notify("Trail summarizing checkpoint...", "info");
 		try {
-			return await buildSummarizedCheckpointMarkdown(ctx, config, catalog, id, options.mode, options.note, options.consumeOnUse, artifacts, store.artifactsFile(id), {
-				model: options.model,
-				maxOutputTokens: options.maxOutputTokens,
+			return await summarizer.summarize({
+				id,
+				mode: options.mode,
+				note: options.note,
+				consumeOnUse: options.consumeOnUse,
+				cwd: ctx.cwd,
+				sourceSession: ctx.sessionManager.getSessionFile(),
+				artifactsFile: store.artifactsFile(id),
+				payload: catalog.checkpointPayload(artifacts, options.mode),
+				references: buildReferenceList(artifacts, ctx.cwd),
+				activeModel: ctx.model,
+				modelRegistry: ctx.modelRegistry,
+				config: config.summarizer,
+				overrides: { model: options.model, maxOutputTokens: options.maxOutputTokens },
 			});
 		} catch (err) {
 			notifyTrail(pi, ctx, `Trail summarizer failed; using raw checkpoint: ${String(err)}`, "warning");
