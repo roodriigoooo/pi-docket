@@ -36,6 +36,7 @@ import {
 import { createCheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
 import { parseTrailCommand, trailUsage, TRAIL_COMMANDS, type CheckpointCreateOptions } from "./trail-command-grammar.js";
+import { handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
 
 type TrailConfig = {
@@ -644,9 +645,7 @@ async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: Artifac
 
 class TrailView implements Component {
 	private container = new Container();
-	private selected = 0;
-	private filter: ArtifactKind | "all" = "all";
-	private showDetail = true;
+	private state: NavigatorState = initialNavigatorState();
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -658,35 +657,26 @@ class TrailView implements Component {
 		private done: (result: { action: "inspect" | "reference" | "injectFull" | "copy" | "checkpoint"; artifact?: Artifact } | null) => void,
 	) {}
 
-	private filtered(): Artifact[] {
-		return this.filter === "all" ? this.artifacts : this.artifacts.filter((a) => a.kind === this.filter);
-	}
-
 	handleInput(data: string): void {
-		const items = this.filtered();
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done(null);
-			return;
-		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(this.selected + 1, Math.max(0, items.length - 1));
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = Math.max(0, items.length - 1);
-		else if (data === "v") this.showDetail = !this.showDetail;
-		else if (data === "\t" || matchesKey(data, Key.tab)) this.cycleFilter();
-		else if (matchesKey(data, Key.enter)) this.done({ action: "inspect", artifact: items[this.selected] });
-		else if (data === "r" || data === "i") this.done({ action: "reference", artifact: items[this.selected] });
-		else if (data === "I") this.done({ action: "injectFull", artifact: items[this.selected] });
-		else if (data === "y") this.done({ action: "copy", artifact: items[this.selected] });
-		else if (data === "c") this.done({ action: "checkpoint" });
+		const key: NavigatorKey = {
+			raw: data,
+			isDown: matchesKey(data, Key.down),
+			isUp: matchesKey(data, Key.up),
+			isEnter: matchesKey(data, Key.enter),
+			isTab: matchesKey(data, Key.tab),
+			isEscape: matchesKey(data, Key.escape),
+			isCtrlC: matchesKey(data, Key.ctrl("c")),
+		};
+		const transition = handleNavigatorKey(this.state, this.artifacts, key);
+		this.state = transition.state;
+		if (transition.action) this.finish(transition.action);
 		this.invalidate();
 		this.tui.requestRender();
 	}
 
-	private cycleFilter(): void {
-		const filters: Array<ArtifactKind | "all"> = ["all", "error", "command", "file", "code", "prompt", "response", "checkpoint"];
-		this.filter = filters[(filters.indexOf(this.filter) + 1) % filters.length] ?? "all";
-		this.selected = 0;
+	private finish(action: NavigatorAction): void {
+		if (action.action === "close") this.done(null);
+		else this.done(action);
 	}
 
 	invalidate(): void {
@@ -698,33 +688,30 @@ class TrailView implements Component {
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 		this.container = new Container();
-		const items = this.filtered();
-		const selected = items[this.selected];
+		const view = navigatorViewModel(this.state, this.artifacts);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
 
 		this.container.addChild(new DynamicBorder((s: string) => accent(s)));
-		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts:${items.length}/${this.artifacts.length} filter:${this.filter}`)}`, 1, 0));
+		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts:${view.items.length}/${this.artifacts.length} filter:${this.state.filter}`)}`, 1, 0));
 
 		const listWidth = Math.max(30, width);
-		const visible = items.slice(Math.max(0, this.selected - 6), Math.max(12, this.selected + 6));
-		const start = items.indexOf(visible[0] ?? items[0]);
-		for (let i = 0; i < visible.length; i++) {
-			const artifact = visible[i];
+		for (let i = 0; i < view.visible.length; i++) {
+			const artifact = view.visible[i];
 			if (!artifact) continue;
-			const absolute = start + i;
-			const marker = absolute === this.selected ? accent("▸") : " ";
-			const kind = absolute === this.selected ? accent(artifact.kind.padEnd(10)) : muted(artifact.kind.padEnd(10));
+			const absolute = view.visibleStart + i;
+			const marker = absolute === view.selected ? accent("▸") : " ";
+			const kind = absolute === view.selected ? accent(artifact.kind.padEnd(10)) : muted(artifact.kind.padEnd(10));
 			const line = `${marker} ${kind} ${artifact.id.padEnd(5)} ${artifact.title} ${dim(artifact.subtitle)}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 
-		if (this.showDetail && selected) {
+		if (this.state.showDetail && view.selectedArtifact) {
 			this.container.addChild(new Text("", 1, 0));
 			this.container.addChild(new DynamicBorder((s: string) => muted(s)));
-			this.container.addChild(new Text(accent(selected.title), 1, 0));
-			const detail = this.fullText(selected).split("\n").slice(0, 22);
+			this.container.addChild(new Text(accent(view.selectedArtifact.title), 1, 0));
+			const detail = this.fullText(view.selectedArtifact).split("\n").slice(0, 22);
 			for (const line of detail) this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 
