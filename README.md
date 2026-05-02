@@ -94,30 +94,19 @@ continue from the latest checkpoint in a fresh session:
 
 ## examples to get the idea across
 
-These are short demos rather than polished product tours.
+### Trail in motion
 
-### artifact navigation
+<p align="center">
+  <img src="./assets/compressed_gif1.gif" alt="Trail artifact navigator" width="100%" />
+</p>
 
-In this demo, Trail is used to find and understand a one-off error, then explain why one large file was written.
+<p align="center">
+  <img src="./assets/compressed_gif2.gif" alt="Trail checkpoint workflow" width="100%" />
+</p>
 
-<video src="./assets/first-demo.mp4" controls width="100%"></video>
-
-If your Markdown viewer does not show embedded video, open [assets/first-demo.mp4](./assets/first-demo.mp4).
-
-### compact one-time checkpoint
-
-This demo creates a compact one-time checkpoint, then continues from it in another session:
-
-```bash
-/trail checkpoint --once --compact
-/trail continue
-```
-
-<video src="./assets/second-demo.mp4" controls width="100%"></video>
-
-If your Markdown viewer does not show embedded video, open [assets/second-demo.mp4](./assets/second-demo.mp4).
-
-Checkpoint synthesis time depends on the model and thinking level being used. Smaller models and lower thinking levels usually return faster; larger reasoning models may produce better handoffs but take longer.
+<p align="center">
+  <img src="./assets/compressed_gif_3.gif" alt="Trail checkpoint resume" width="100%" />
+</p>
 
 ## commands
 
@@ -204,6 +193,94 @@ checkpoints live in:
 - `~/.pi/agent/trail/index.json`
 
 `--once` checkpoints are deleted from disk and index after successful `/trail continue` / `/trail resume`.
+
+### example checkpoint markdown
+
+`~/.pi/agent/trail/checkpoints/20260502-184212Z.md`
+
+```md
+# Trail checkpoint 20260502-184212Z
+
+mode: handoff
+summary: llm
+cwd: /Users/me/project
+created: 2026-05-02T18:42:12.000Z
+note: finish checkpoint store refactor
+artifacts: /Users/me/.pi/agent/trail/checkpoints/20260502-184212Z.artifacts.json
+
+## Summary
+Checkpoint store now writes durable markdown plus sidecar artifact JSON.
+
+## Decisions / constraints
+- Keep checkpoints compact; do not preserve full transcript.
+- Store exact artifact refs so fresh sessions can ask for source context.
+
+## Current state
+- `extensions/checkpoint-store.ts` handles save, list, find, read, consume.
+- `--once` checkpoints remove markdown, sidecar JSON, and index entry after resume.
+
+## Next steps
+- Add tests for partial checkpoint id lookup.
+- Run `npm run check`.
+
+## Avoid repeating
+- Do not move checkpoint files into project cwd; storage belongs under Pi agent dir.
+
+## References
+- [file:f12] `extensions/checkpoint-store.ts`
+- [command:c4] `npm run check`
+```
+
+### example checkpoint artifacts
+
+`~/.pi/agent/trail/checkpoints/20260502-184212Z.artifacts.json`
+
+```json
+[
+  {
+    "id": "f12",
+    "displayId": "f12",
+    "ref": "file:abc123:0",
+    "kind": "file",
+    "title": "edit extensions/checkpoint-store.ts",
+    "subtitle": "+ save checkpoint markdown and sidecar artifacts",
+    "body": "export function createCheckpointStore(): CheckpointStore { ... }",
+    "timestamp": 1777747332000,
+    "meta": {
+      "path": "extensions/checkpoint-store.ts"
+    }
+  },
+  {
+    "id": "c4",
+    "displayId": "c4",
+    "ref": "command:def456:0",
+    "kind": "command",
+    "title": "npm run check",
+    "subtitle": "exit 0",
+    "body": "tsc --noEmit",
+    "timestamp": 1777747390000
+  }
+]
+```
+
+### example checkpoint index
+
+`~/.pi/agent/trail/index.json`
+
+```json
+[
+  {
+    "id": "20260502-184212Z",
+    "mode": "handoff",
+    "file": "/Users/me/.pi/agent/trail/checkpoints/20260502-184212Z.md",
+    "createdAt": "2026-05-02T18:42:12.000Z",
+    "cwd": "/Users/me/project",
+    "sourceSession": "/Users/me/.pi/sessions/project/session.jsonl",
+    "note": "finish checkpoint store refactor",
+    "consumeOnUse": false
+  }
+]
+```
 
 ## development
 
