@@ -139,6 +139,45 @@ test("Checkpoint Lifecycle raw flow saves checkpoint, appends session entry, and
 	assert.deepEqual(notifications, ["Trail checkpoint saved: ck-test"]);
 });
 
+test("Checkpoint Lifecycle saves only artifacts accepted by selector", async () => {
+	const fakePi = pi();
+	const fakeStore = store();
+	const fileArtifact: Artifact = { ...artifact, id: "f2", displayId: "f2", ref: "file:t2:0", kind: "file", title: "edit src/a.ts" };
+	const lifecycle = await createCheckpointLifecycle(fakePi.api, ctx(), {
+		loadConfig: async () => config(false),
+		createCatalog: () => catalog([artifact, fileArtifact]),
+		store: fakeStore.store,
+		makeId: () => "ck-test",
+		selectArtifactsForCheckpoint: async (artifacts) => [artifacts[1]!],
+		notify: () => {},
+	});
+
+	await lifecycle.create(options);
+	assert.equal(fakeStore.saves.length, 1);
+	assert.deepEqual(fakeStore.saves[0].artifacts.map((saved: Artifact) => saved.ref), ["file:t2:0"]);
+	assert.match(fakeStore.saves[0].markdown, /edit src\/a\.ts/);
+	assert.doesNotMatch(fakeStore.saves[0].markdown, /\$ npm test/);
+});
+
+test("Checkpoint Lifecycle cancel during artifact selection does not persist", async () => {
+	const fakePi = pi();
+	const fakeStore = store();
+	const notifications: string[] = [];
+	const lifecycle = await createCheckpointLifecycle(fakePi.api, ctx(), {
+		loadConfig: async () => config(false),
+		createCatalog: () => catalog([artifact]),
+		store: fakeStore.store,
+		makeId: () => "ck-test",
+		selectArtifactsForCheckpoint: async () => null,
+		notify: (text) => notifications.push(text),
+	});
+
+	await lifecycle.create(options);
+	assert.deepEqual(fakeStore.saves, []);
+	assert.deepEqual(fakePi.appended, []);
+	assert.deepEqual(notifications, ["Trail checkpoint cancelled"]);
+});
+
 test("Checkpoint Lifecycle cancel during review does not persist", async () => {
 	const fakePi = pi();
 	const fakeStore = store();
@@ -149,6 +188,7 @@ test("Checkpoint Lifecycle cancel during review does not persist", async () => {
 		store: fakeStore.store,
 		makeId: () => "ck-test",
 		reviewMarkdown: async () => null,
+		selectArtifactsForCheckpoint: async (artifacts) => artifacts,
 		notify: (text) => notifications.push(text),
 	});
 

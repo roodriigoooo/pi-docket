@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { createArtifactCatalog, buildReferenceList, truncateText, type ArtifactCatalog } from "./artifact-catalog.js";
+import { showCheckpointSelector } from "./checkpoint-selector.js";
 import { createCheckpointStore, type CheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizer } from "./checkpoint-summarizer.js";
 import { loadConfig, type TrailConfig } from "./trail-config.js";
@@ -19,6 +20,7 @@ type CheckpointLifecycleDeps = {
 	summarizer?: CheckpointSummarizer;
 	makeId?: () => string;
 	reviewMarkdown?: (markdown: string) => Promise<string | null>;
+	selectArtifactsForCheckpoint?: (artifacts: Artifact[], options: CheckpointCreateOptions) => Promise<Artifact[] | null> | Artifact[] | null;
 	notify?: (text: string, level: NotifyLevel) => void;
 };
 
@@ -94,6 +96,12 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 		return catalog.selectForCheckpoint(options.mode, config.checkpointArtifacts);
 	};
 
+	const reviewArtifactSelection = async (artifacts: Artifact[], options: CheckpointCreateOptions): Promise<Artifact[] | null> => {
+		if (deps.selectArtifactsForCheckpoint) return deps.selectArtifactsForCheckpoint(artifacts, options);
+		if (!ctx.hasUI) return artifacts;
+		return showCheckpointSelector(ctx, artifacts, options.mode);
+	};
+
 	const draftMarkdown = async (id: string, options: CheckpointCreateOptions, artifacts: Artifact[]): Promise<string> => {
 		if (options.raw || !config.summarizer.enabled) {
 			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts);
@@ -150,7 +158,17 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 
 	return {
 		async create(options: CheckpointCreateOptions): Promise<void> {
-			const artifacts = selectArtifacts(options);
+			const candidates = selectArtifacts(options);
+			if (candidates.length === 0) {
+				notify("Trail found no artifacts to checkpoint", "warning");
+				return;
+			}
+
+			const artifacts = await reviewArtifactSelection(candidates, options);
+			if (artifacts === null) {
+				notify("Trail checkpoint cancelled", "info");
+				return;
+			}
 			if (artifacts.length === 0) {
 				notify("Trail found no artifacts to checkpoint", "warning");
 				return;

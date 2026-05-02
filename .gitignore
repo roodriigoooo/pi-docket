@@ -5,3 +5,5 @@ npm-debug.log*
 dist/
 coverage/
 .test-build/
+
+graphify_out/

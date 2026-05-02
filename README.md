@@ -94,7 +94,7 @@ continue from the latest checkpoint in a fresh session:
 
 - `/trail` — open artifact navigator
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
-- `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — create editable summarized checkpoint
+- `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
 - `/trail list` — list checkpoints
@@ -102,6 +102,19 @@ continue from the latest checkpoint in a fresh session:
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id-or-ref>` — copy artifact to clipboard
+
+## checkpoint review keys
+
+When UI is available, `/trail checkpoint` shows mode-selected artifacts before drafting:
+
+- `j/k` or arrows — move
+- `space` — include/exclude artifact
+- `a` — include all
+- `n` — include none
+- `enter` — create checkpoint from checked artifacts
+- `q` or `esc` — cancel
+
+Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/checkpoint-guidelines.md).
 
 ## navigator keys
 

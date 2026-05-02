@@ -14,6 +14,8 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Checkpoint Lifecycle**: Module that owns creating a checkpoint from selected artifacts, including drafting, review, persistence, and session labeling.
 
+**Checkpoint Selector**: interactive Trail view for accepting or excluding mode-selected artifacts before checkpoint drafting.
+
 **Navigator**: interactive Trail view for browsing, inspecting, referencing, copying, and checkpointing artifacts.
 
 ## Current modules
@@ -44,29 +46,27 @@ Interface:
 
 Owned flow:
 1. Parse checkpoint options.
-2. Select artifacts.
-3. Draft summarized or raw markdown.
-4. Let user review/edit when UI exists.
-5. Persist checkpoint markdown and sidecar artifacts.
-6. Append Trail checkpoint entry and label session leaf.
+2. Select candidate artifacts by mode.
+3. Let user accept/exclude candidate artifacts when UI exists.
+4. Draft summarized or raw markdown.
+5. Let user review/edit markdown when UI exists.
+6. Persist checkpoint markdown and sidecar artifacts.
+7. Append Trail checkpoint entry and label session leaf.
+
+### Checkpoint Selector
+
+Interface:
+
+- `showCheckpointSelector(ctx, artifacts, mode)`
+- `selectedCheckpointArtifacts(artifacts, state)`
+- `checkpointSelectionStats(artifacts, state)`
+
+Leverage:
+- Mode flags define initial candidates.
+- Users can remove noisy artifacts before token budget is spent on summarization.
+- Sidecar JSON preserves only included artifacts.
 
 ## Planned deepening opportunities
-
-### Checkpoint Store Module
-
-Own index, markdown, sidecar persistence, lookup, list, and consume-on-use deletion.
-
-### Summarizer Module
-
-Own prompt construction, model selection, auth, token policy, and output parsing.
-
-### Trail Command Grammar Module
-
-Parse `/trail` raw args into intent objects with validation and help sync.
-
-### Navigator Action Module
-
-Separate movement/filter/action state transitions from TUI rendering.
 
 ### Search Index Module
 
