@@ -40,7 +40,7 @@ export function trailUsage(): string {
 	return [
 		"Trail commands:",
 		"/trail                         browse artifacts",
-		"/trail search <query>          search artifacts with ripgrep, then browse matches",
+		"/trail search <query>          search ranked artifacts, then browse matches",
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",

@@ -6,7 +6,7 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Artifact**: structured object derived from session activity, such as a command, file operation, prompt, response, code block, error, or checkpoint.
 
-**Artifact Catalog**: Module that owns artifact extraction, identity, lookup, references, full text, inspection, search, and checkpoint payloads.
+**Artifact Catalog**: Module that owns artifact extraction, identity, lookup, references, full text, inspection, and checkpoint payloads.
 
 **Reference**: compact prompt-safe pointer to an artifact that preserves intent without injecting full artifact text.
 
@@ -38,6 +38,24 @@ Leverage:
 - Stable artifact refs survive beyond current navigator display IDs.
 - Checkpoints, search, reference injection, and inspect share one artifact truth.
 
+### Search Index
+
+Interface:
+
+- `searchArtifacts(query, artifacts)`
+- `buildArtifactSearchDocument(artifact)`
+
+Owned flow:
+1. Build artifact search documents from the shared Artifact model.
+2. Use ripgrep as candidate-finder adapter over temporary search docs.
+3. Rank results by artifact relevance, favoring errors, files, and commands before transcript-like prompt/response matches.
+4. Fall back to in-memory search when the ripgrep adapter fails.
+
+Leverage:
+- Search returns artifacts, not raw grep lines.
+- Search documents are separate from checkpoint payloads and references, but derived from the same Artifact model.
+- Checkpoint payload shape is not reused for search ranking.
+
 ### Checkpoint Lifecycle
 
 Interface:
@@ -67,7 +85,3 @@ Leverage:
 - Sidecar JSON preserves only included artifacts.
 
 ## Planned deepening opportunities
-
-### Search Index Module
-
-Own artifact search documents, ranking, and ripgrep Adapter.

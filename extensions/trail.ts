@@ -3,7 +3,7 @@
  *
  * Commands:
  *   /trail                         browse artifacts
- *   /trail search <query>           search artifacts with ripgrep
+ *   /trail search <query>           ranked artifact search
  *   /trail checkpoint [flags] [note]
  *   /trail continue <id|last>
  *   /trail resume [id|last]
@@ -885,6 +885,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
+		if (loadedCheckpoint) {
+			loadedCheckpoint = undefined;
+			setLoadedCheckpointWidget(ctx, undefined);
+		}
 		if (chips.length === 0) return { action: "continue" };
 		const result = await expandChipsForSubmit(ctx, event.text);
 		if (result.expanded === 0 && result.missing.length === 0) return { action: "continue" };

@@ -1,7 +1,6 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { searchArtifacts } from "./search-index.js";
 import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
 
 export type ArtifactCatalogConfig = {
@@ -324,45 +323,6 @@ export function buildReferenceList(artifacts: Artifact[], cwd: string): string {
 		lines.push("", "File refs point to current disk paths; read current contents if needed. Do not paste file contents unless asked.");
 	}
 	return lines.join("\n");
-}
-
-async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(command, args);
-		let stdout = "";
-		let stderr = "";
-		child.stdout.on("data", (data) => (stdout += data.toString("utf8")));
-		child.stderr.on("data", (data) => (stderr += data.toString("utf8")));
-		child.on("error", reject);
-		child.on("close", (code) => resolve({ code, stdout, stderr }));
-		child.stdin.end(input ?? "");
-	});
-}
-
-async function searchArtifacts(query: string, artifacts: Artifact[]): Promise<Artifact[]> {
-	const tempDir = await fs.mkdtemp(path.join(tmpdir(), "pi-trail-"));
-	try {
-		for (const artifact of artifacts) {
-			const file = path.join(tempDir, `${artifact.id}.md`);
-			const content = `${formatArtifact(artifact)}\n\nmetadata:\n${JSON.stringify(artifact.meta ?? {}, null, 2)}\n`;
-			await fs.writeFile(file, content, "utf8");
-		}
-
-		try {
-			const result = await runCommand("rg", ["--files-with-matches", "--fixed-strings", "--ignore-case", "-e", query, tempDir]);
-			if (result.code === 0) {
-				const ids = new Set(result.stdout.split("\n").map((line) => path.basename(line, ".md")).filter(Boolean));
-				return artifacts.filter((artifact) => ids.has(artifact.id));
-			}
-			if (result.code !== 1) throw new Error(result.stderr || `rg exited ${result.code}`);
-		} catch {
-			const needle = query.toLowerCase();
-			return artifacts.filter((artifact) => formatArtifact(artifact).toLowerCase().includes(needle));
-		}
-		return [];
-	} finally {
-		await fs.rm(tempDir, { recursive: true, force: true });
-	}
 }
 
 export function artifactFilePath(artifact: Artifact, cwd: string): string | undefined {
