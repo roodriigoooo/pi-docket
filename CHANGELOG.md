@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+Included:
+- cleaner checkpoint reference lists with single file guidance note
+- hidden checkpoint context loading for `/trail continue` to avoid editor prompt bloat
+- loaded checkpoint chip above the editor
+- `/trail delete [id|last]` command
+- checkpoint selector delete action with confirmation
+
 ## 0.1.1
 
 Included:
