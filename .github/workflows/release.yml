@@ -26,6 +26,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
       - run: npm ci
       - run: npm run check
       - name: Resolve release version
