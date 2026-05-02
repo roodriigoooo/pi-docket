@@ -49,7 +49,7 @@ pi install git:github.com/roodriigoooo/trail
 pinned GitHub release:
 
 ```bash
-pi install git:github.com/roodriigoooo/trail@v0.1.1
+pi install git:github.com/roodriigoooo/trail@v0.1.2
 ```
 
 from npm after publish:
