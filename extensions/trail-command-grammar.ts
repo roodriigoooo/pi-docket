@@ -15,6 +15,7 @@ export type TrailIntent =
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
+	| { kind: "delete"; idOrLast?: string }
 	| { kind: "list" }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
@@ -23,7 +24,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const CHECKPOINT_USAGE = "/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]";
 const MODE_FLAGS: Record<string, CheckpointMode> = {
@@ -43,6 +44,7 @@ export function trailUsage(): string {
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
+		"/trail delete [id|last]",
 		"/trail list",
 		"/trail ref <artifact-id>       add compact ref chip (@id) above editor",
 		"/trail inject <artifact-id>    alias for ref",
@@ -97,10 +99,10 @@ function tokenize(input: string): { ok: true; tokens: string[] } | { ok: false; 
 	return { ok: true, tokens };
 }
 
-function parseContinueCommand(command: string, rest: string[]): ParseResult {
-	if (rest.length === 0) return { ok: true, intent: { kind: "continue" } };
+function parseCheckpointIdCommand(kind: "continue" | "delete", command: string, rest: string[]): ParseResult {
+	if (rest.length === 0) return { ok: true, intent: { kind } };
 	if (rest.length > 1) return parseError(`Usage: /trail ${command} [id|last]`);
-	return { ok: true, intent: { kind: "continue", idOrLast: rest[0]! } };
+	return { ok: true, intent: { kind, idOrLast: rest[0]! } };
 }
 
 function requireArtifactArg(action: "ref" | "inject" | "inject-full" | "copy", rest: string[]): ParseResult {
@@ -160,7 +162,8 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "browse") return { ok: true, intent: { kind: "browse" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint") return parseCheckpoint(rest);
-	if (command === "continue" || command === "resume") return parseContinueCommand(command, rest);
+	if (command === "continue" || command === "resume") return parseCheckpointIdCommand("continue", command, rest);
+	if (command === "delete") return parseCheckpointIdCommand("delete", command, rest);
 	if (command === "list") {
 		if (rest.length > 0) return parseError("Usage: /trail list");
 		return { ok: true, intent: { kind: "list" } };

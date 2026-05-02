@@ -8,6 +8,7 @@
  *   /trail continue <id|last>
  *   /trail resume [id|last]
  *   /trail list
+ *   /trail delete [id|last]
  *   /trail ref <artifact-id>
  *   /trail inject <artifact-id>     alias for ref
  *   /trail inject-full <artifact-id>
@@ -423,7 +424,7 @@ async function showTrailBrowser(ctx: ExtensionCommandContext, catalog: ArtifactC
 	});
 }
 
-type ResumeSelection = { action: "continue" | "preview" | "edit"; summary: CheckpointSummary; index: number } | null;
+type ResumeSelection = { action: "continue" | "preview" | "edit" | "delete"; summary: CheckpointSummary; index: number } | null;
 
 function compactTokens(tokens: number): string {
 	return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
@@ -441,6 +442,7 @@ class TrailResumeView implements Component {
 		private summaries: CheckpointSummary[],
 		initialSelected: number,
 		private done: (result: ResumeSelection) => void,
+		private mode: "resume" | "delete" = "resume",
 	) {
 		this.selected = Math.min(Math.max(0, initialSelected), Math.max(0, summaries.length - 1));
 	}
@@ -454,14 +456,15 @@ class TrailResumeView implements Component {
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
 		else if (data === "g") this.selected = 0;
 		else if (data === "G") this.selected = Math.max(0, this.summaries.length - 1);
-		else if (matchesKey(data, Key.enter)) this.finish("continue");
+		else if (matchesKey(data, Key.enter)) this.finish(this.mode === "delete" ? "delete" : "continue");
 		else if (data === "p") this.finish("preview");
-		else if (data === "e") this.finish("edit");
+		else if (data === "e" && this.mode === "resume") this.finish("edit");
+		else if (data === "d") this.finish("delete");
 		this.invalidate();
 		this.tui.requestRender();
 	}
 
-	private finish(action: "continue" | "preview" | "edit"): void {
+	private finish(action: "continue" | "preview" | "edit" | "delete"): void {
 		const summary = this.summaries[this.selected];
 		if (summary) this.done({ action, summary, index: this.selected });
 	}
@@ -485,7 +488,7 @@ class TrailResumeView implements Component {
 		const start = Math.max(0, Math.min(this.selected - 5, this.summaries.length - 11));
 		const visible = this.summaries.slice(start, start + 11);
 
-		const headerLeft = ` ${accent(this.theme.bold("trail · resume"))} ${dim(`${this.summaries.length} checkpoint${this.summaries.length === 1 ? "" : "s"}`)} `;
+		const headerLeft = ` ${accent(this.theme.bold(`trail · ${this.mode}`))} ${dim(`${this.summaries.length} checkpoint${this.summaries.length === 1 ? "" : "s"}`)} `;
 		this.container.addChild(new Text(fitBorder(headerLeft, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 		for (let i = 0; i < visible.length; i++) {
 			const summary = visible[i];
@@ -501,7 +504,8 @@ class TrailResumeView implements Component {
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · enter continue · p preview · e edit then continue · q close"), 1, 0));
+		const help = this.mode === "delete" ? "j/k move · enter delete · p preview · q close" : "j/k move · enter continue · p preview · e edit · d delete · q close";
+		this.container.addChild(new Text(dim(help), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -509,8 +513,8 @@ class TrailResumeView implements Component {
 	}
 }
 
-async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number): Promise<ResumeSelection> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new TrailResumeView(tui, theme, summaries, selected, done), {
+async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number, mode: "resume" | "delete" = "resume"): Promise<ResumeSelection> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new TrailResumeView(tui, theme, summaries, selected, done, mode), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -597,6 +601,27 @@ async function startCheckpointSession(pi: ExtensionAPI, ctx: ExtensionCommandCon
 	if (result.cancelled) notifyTrail(pi, ctx, "Trail continue cancelled", "info");
 }
 
+async function confirmDeleteCheckpoint(ctx: ExtensionCommandContext, checkpoint: CheckpointIndexEntry): Promise<boolean> {
+	if (!ctx.hasUI) return true;
+	return ctx.ui.confirm("Delete Trail checkpoint?", `Delete checkpoint ${checkpoint.id}? This cannot be undone.`);
+}
+
+async function deleteCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<boolean> {
+	const store = createCheckpointStore();
+	const checkpoint = await store.find(idOrLast || "last");
+	if (!checkpoint) {
+		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+		return false;
+	}
+	if (!(await confirmDeleteCheckpoint(ctx, checkpoint))) {
+		notifyTrail(pi, ctx, "Trail delete cancelled", "info");
+		return false;
+	}
+	await store.consume(checkpoint);
+	notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
+	return true;
+}
+
 async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<void> {
 	const store = createCheckpointStore();
 	const checkpoint = await store.find(idOrLast || "last");
@@ -613,7 +638,7 @@ async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionComman
 		await continueCheckpoint(pi, ctx, "last");
 		return;
 	}
-	const summaries = await store.listSummaries();
+	let summaries = await store.listSummaries();
 	if (summaries.length === 0) {
 		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 		return;
@@ -624,6 +649,15 @@ async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionComman
 		if (!result) return;
 		selected = result.index;
 		const checkpoint = result.summary.entry;
+		if (result.action === "delete") {
+			if (!(await confirmDeleteCheckpoint(ctx, checkpoint))) continue;
+			await store.consume(checkpoint);
+			notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
+			summaries = await store.listSummaries();
+			if (summaries.length === 0) return;
+			selected = Math.min(selected, summaries.length - 1);
+			continue;
+		}
 		const markdown = await store.readMarkdown(checkpoint);
 		if (result.action === "preview") {
 			await showTextViewer(ctx, `Trail checkpoint ${checkpoint.id}`, markdown);
@@ -640,6 +674,36 @@ async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionComman
 		}
 		await startCheckpointSession(pi, ctx, store, checkpoint, markdown);
 		return;
+	}
+}
+
+async function selectCheckpointToDelete(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const store = createCheckpointStore();
+	if (!ctx.hasUI) {
+		await deleteCheckpoint(pi, ctx, "last");
+		return;
+	}
+	let summaries = await store.listSummaries();
+	if (summaries.length === 0) {
+		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+		return;
+	}
+	let selected = Math.max(0, summaries.length - 1);
+	while (true) {
+		const result = await showCheckpointResumeSelector(ctx, summaries, selected, "delete");
+		if (!result) return;
+		selected = result.index;
+		const checkpoint = result.summary.entry;
+		if (result.action === "preview") {
+			await showTextViewer(ctx, `Trail checkpoint ${checkpoint.id}`, await store.readMarkdown(checkpoint));
+			continue;
+		}
+		if (!(await confirmDeleteCheckpoint(ctx, checkpoint))) continue;
+		await store.consume(checkpoint);
+		notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
+		summaries = await store.listSummaries();
+		if (summaries.length === 0) return;
+		selected = Math.min(selected, summaries.length - 1);
 	}
 }
 
@@ -868,6 +932,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 			if (intent.kind === "continue") {
 				if (intent.idOrLast) await continueCheckpoint(pi, ctx, intent.idOrLast);
 				else await selectCheckpointToContinue(pi, ctx);
+				return;
+			}
+
+			if (intent.kind === "delete") {
+				if (intent.idOrLast) await deleteCheckpoint(pi, ctx, intent.idOrLast);
+				else await selectCheckpointToDelete(pi, ctx);
 				return;
 			}
 

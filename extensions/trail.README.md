@@ -9,11 +9,21 @@ Session artifacts as first-class objects for Pi.
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
+- `/trail delete [id|last]` — choose or delete a checkpoint
 - `/trail list` — list checkpoints
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id>` — copy artifact to clipboard
+
+## Checkpoint resume keys
+
+- `j/k` or arrows — move
+- `enter` — continue from selected checkpoint
+- `p` — preview checkpoint markdown
+- `e` — edit then continue
+- `d` — delete selected checkpoint after confirmation
+- `q` or `esc` — close
 
 ## Navigator keys
 
