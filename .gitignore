@@ -4,3 +4,4 @@ npm-debug.log*
 *.tgz
 dist/
 coverage/
+.test-build/

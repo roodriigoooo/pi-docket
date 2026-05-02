@@ -39,6 +39,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
     "pack:dry": "npm pack --dry-run",
     "smoke:help": "pi --no-extensions -e ./extensions/trail.ts --mode json --no-session \"/trail help\""
   },
