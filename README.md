@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/trail-logo.png" alt="Trail logo" width="220" />
+  <img src="./assets/trail_logo.jpeg" alt="Trail logo" width="220" />
 </p>
 
 # trail for pi
@@ -49,10 +49,10 @@ pi install git:github.com/roodriigoooo/trail
 pinned GitHub release:
 
 ```bash
-pi install git:github.com/roodriigoooo/trail@v0.1.2
+pi install git:github.com/roodriigoooo/trail@v0.1.3
 ```
 
-from npm after publish:
+from npm:
 
 ```bash
 pi install npm:@roodriigoooo/trail
@@ -72,6 +72,8 @@ search the current session artifacts:
 /trail search migration failed
 ```
 
+search returns ranked artifacts, not raw grep lines. Trail favours errors, files, and commands before transcript-like matches.
+
 create a handoff checkpoint:
 
 ```bash
@@ -90,10 +92,37 @@ continue from the latest checkpoint in a fresh session:
 /trail continue last
 ```
 
+## examples to get the idea across
+
+These are short demos rather than polished product tours.
+
+### artifact navigation
+
+In this demo, Trail is used to find and understand a one-off error, then explain why one large file was written.
+
+<video src="./assets/first-demo.mp4" controls width="100%"></video>
+
+If your Markdown viewer does not show embedded video, open [assets/first-demo.mp4](./assets/first-demo.mp4).
+
+### compact one-time checkpoint
+
+This demo creates a compact one-time checkpoint, then continues from it in another session:
+
+```bash
+/trail checkpoint --once --compact
+/trail continue
+```
+
+<video src="./assets/second-demo.mp4" controls width="100%"></video>
+
+If your Markdown viewer does not show embedded video, open [assets/second-demo.mp4](./assets/second-demo.mp4).
+
+Checkpoint synthesis time depends on the model and thinking level being used. Smaller models and lower thinking levels usually return faster; larger reasoning models may produce better handoffs but take longer.
+
 ## commands
 
 - `/trail` — open artifact navigator
-- `/trail search <query>` — search artifact docs with ripgrep, then browse matches
+- `/trail search <query>` — search ranked artifact docs, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
