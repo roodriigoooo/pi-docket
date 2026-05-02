@@ -23,7 +23,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, getAgentDir } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, getAgentDir, getLanguageFromPath, highlightCode } from "@mariozechner/pi-coding-agent";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import {
 	Box,
@@ -32,6 +32,7 @@ import {
 	Text,
 	matchesKey,
 	truncateToWidth,
+	visibleWidth,
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
@@ -616,21 +617,116 @@ class TrailTextViewer implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const container = new Container();
+		const container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
-		container.addChild(new DynamicBorder((s: string) => accent(s)));
-		container.addChild(new Text(`${accent(this.theme.bold("Trail inspect"))} ${dim(this.title)}`, 1, 0));
-		container.addChild(new Text(dim(`lines ${Math.min(this.offset + 1, this.lines.length)}-${Math.min(this.offset + 34, this.lines.length)} / ${this.lines.length}`), 1, 0));
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const headerLeft = ` ${accent(this.theme.bold("trail · inspect"))} ${dim(this.title)} `;
+		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${Math.min(this.offset + 34, this.lines.length)}/${this.lines.length}`)} `;
+		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 		for (const line of this.lines.slice(this.offset, this.offset + 34)) {
-			container.addChild(new Text(truncateToWidth(line, width - 2), 1, 0));
+			container.addChild(new Text(truncateToWidth(line, innerWidth - 2), 1, 0));
 		}
 		container.addChild(new Text(dim("j/k scroll · d/u half-page · g/G top/bottom · q close"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => accent(s)));
+		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
 	}
+}
+
+class TrailFileViewer implements Component {
+	private offset = 0;
+	private viewportHeight = 30;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private filePath: string,
+		private language: string | undefined,
+		private lines: string[],
+		private done: () => void,
+	) {}
+
+	handleInput(data: string): void {
+		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
+		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+			this.done();
+			return;
+		}
+		const half = Math.floor(this.viewportHeight / 2);
+		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
+		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
+		else if (data === "d") this.offset = Math.min(maxOffset, this.offset + half);
+		else if (data === "u") this.offset = Math.max(0, this.offset - half);
+		else if (data === "g") this.offset = 0;
+		else if (data === "G") this.offset = maxOffset;
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+
+		const lineNumWidth = Math.max(3, String(this.lines.length).length);
+		const last = Math.min(this.offset + this.viewportHeight, this.lines.length);
+		const visible = this.lines.slice(this.offset, this.offset + this.viewportHeight);
+		const langTag = this.language ?? "text";
+		const headerLeft = ` ${accent(this.theme.bold(this.filePath))} ${dim(langTag)} `;
+		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${last}/${this.lines.length}`)} `;
+		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
+
+		for (let i = 0; i < visible.length; i++) {
+			const lineNo = this.offset + i + 1;
+			const numStr = muted(String(lineNo).padStart(lineNumWidth));
+			const code = visible[i] ?? "";
+			container.addChild(new Text(truncateToWidth(`${numStr}  ${code}`, innerWidth - 2), 1, 0));
+		}
+		for (let i = visible.length; i < this.viewportHeight; i++) {
+			container.addChild(new Text("", 1, 0));
+		}
+
+		container.addChild(new Text(dim("j/k scroll · d/u half-page · g/G top/bottom · q close"), 1, 0));
+		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+}
+
+async function showFileViewer(ctx: ExtensionCommandContext, filePath: string): Promise<void> {
+	let content: string;
+	try {
+		const stat = await fs.stat(filePath);
+		if (!stat.isFile()) {
+			await showTextViewer(ctx, filePath, `[Trail: ${filePath} is not a file]`);
+			return;
+		}
+		content = await fs.readFile(filePath, "utf8");
+	} catch (err) {
+		await showTextViewer(ctx, filePath, `[Trail could not read ${filePath}: ${String(err)}]`);
+		return;
+	}
+	const language = getLanguageFromPath(filePath);
+	const highlighted = highlightCode(content, language);
+	await ctx.ui.custom<void>(
+		(tui, theme, _kb, done) => new TrailFileViewer(tui, theme, filePath, language, highlighted, done),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "92%", minWidth: 84, maxHeight: "95%", margin: 1 } },
+	);
 }
 
 async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
@@ -641,6 +737,13 @@ async function showTextViewer(ctx: ExtensionCommandContext, title: string, text:
 }
 
 async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifact: Artifact): Promise<void> {
+	if (artifact.kind === "file") {
+		const filePath = artifactFilePath(artifact, ctx.cwd);
+		if (filePath) {
+			await showFileViewer(ctx, filePath);
+			return;
+		}
+	}
 	const inspected = await catalog.inspect(artifact);
 	await showTextViewer(ctx, inspected.title, inspected.text);
 }
@@ -659,7 +762,7 @@ function relativeTime(timestamp?: number): string {
 }
 
 function kindLabel(kind: ArtifactKind): string {
-	const labels: Record<ArtifactKind, string> = { command: "cmd", error: "err", file: "file", code: "code", prompt: "ask", response: "resp", checkpoint: "ckpt" };
+	const labels: Record<ArtifactKind, string> = { command: "cmd", error: "err", file: "file", code: "code", prompt: "user", response: "ai", checkpoint: "ckpt" };
 	return labels[kind];
 }
 
@@ -673,6 +776,39 @@ function colorKind(theme: any, kind: ArtifactKind, text: string): string {
 	return theme.fg("muted", text);
 }
 
+type BorderOptions = {
+	fill?: (s: string) => string;
+	left?: string;
+	right?: string;
+};
+
+function fitBorder(left: string, right: string, width: number, border: (s: string) => string, options: BorderOptions = {}): string {
+	const cornerL = options.left ?? "─";
+	const cornerR = options.right ?? "─";
+	const fill = options.fill ?? border;
+	if (width <= 0) return "";
+	if (width === 1) return border(cornerL);
+	let leftText = left;
+	let rightText = right;
+	const fixedWidth = 2;
+	const minimumGap = leftText || rightText ? 3 : 0;
+	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(rightText) > 0) {
+		rightText = truncateToWidth(rightText, Math.max(0, visibleWidth(rightText) - 1), "");
+	}
+	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(leftText) > 0) {
+		leftText = truncateToWidth(leftText, Math.max(0, visibleWidth(leftText) - 1), "");
+	}
+	const gapWidth = Math.max(0, width - fixedWidth - visibleWidth(leftText) - visibleWidth(rightText));
+	return `${border(cornerL)}${leftText}${fill("─".repeat(gapWidth))}${rightText}${border(cornerR)}`;
+}
+
+const TOP_CORNERS: BorderOptions = { left: "╭", right: "╮" };
+const BOTTOM_CORNERS: BorderOptions = { left: "╰", right: "╯" };
+
+function trailCardBg(theme: any): (s: string) => string {
+	return (s: string) => theme.bg("customMessageBg", s);
+}
+
 function filterBar(theme: any, active: string): string {
 	const filters: Array<{ value: string; label: string }> = [
 		{ value: "all", label: "all" },
@@ -680,15 +816,15 @@ function filterBar(theme: any, active: string): string {
 		{ value: "command", label: "cmd" },
 		{ value: "file", label: "file" },
 		{ value: "code", label: "code" },
-		{ value: "prompt", label: "ask" },
-		{ value: "response", label: "resp" },
+		{ value: "prompt", label: "user" },
+		{ value: "response", label: "ai" },
 		{ value: "checkpoint", label: "ckpt" },
 	];
 	return filters.map((filter) => filter.value === active ? theme.fg("accent", `[${filter.label}]`) : theme.fg("dim", ` ${filter.label} `)).join(" ");
 }
 
 class TrailView implements Component {
-	private container = new Container();
+	private container: Container | Box = new Container();
 	private state: NavigatorState = initialNavigatorState();
 	private cachedWidth?: number;
 	private cachedLines?: string[];
@@ -731,7 +867,8 @@ class TrailView implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		this.container = new Container();
+		this.container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
 		const view = navigatorViewModel(this.state, this.artifacts, this.state.showDetail ? 10 : 18);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
@@ -739,25 +876,44 @@ class TrailView implements Component {
 		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
-		this.container.addChild(new DynamicBorder(outerBorder));
-		const selectedId = view.selectedArtifact ? ` · selected ${view.selectedArtifact.id}` : "";
-		this.container.addChild(new Text(`${accent(this.theme.bold("Trail"))} ${dim(`artifacts ${view.items.length}/${this.artifacts.length}${selectedId}`)}`, 1, 0));
+		const sel = view.selectedArtifact;
+		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`${view.items.length}/${this.artifacts.length}`)} `;
+		const headerRight = sel
+			? ` ${dim(`@${sel.id}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} `
+			: "";
+		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 		this.container.addChild(new Text(filterBar(this.theme, this.state.filter), 1, 0));
 
-		const listWidth = Math.max(30, width);
-		for (let i = 0; i < view.visible.length; i++) {
-			const artifact = view.visible[i];
-			if (!artifact) continue;
-			const absolute = view.visibleStart + i;
-			const selected = absolute === view.selected;
-			const marker = selected ? accent("▸") : dim(" ");
-			const id = selected ? accent(artifact.id.padEnd(5)) : muted(artifact.id.padEnd(5));
-			const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
-			const age = relativeTime(artifact.timestamp);
-			const meta = [artifact.subtitle, age].filter(Boolean).join(" · ");
-			const title = selected ? this.theme.fg("text", artifact.title) : artifact.title;
-			const line = `${marker} ${id} ${kind} ${title} ${dim(meta)}`;
-			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+		const listWidth = Math.max(30, innerWidth);
+		if (view.visible.length === 0) {
+			const isAllEmpty = this.artifacts.length === 0;
+			const title = isAllEmpty
+				? muted("no artifacts captured yet")
+				: muted(`no ${this.state.filter === "all" ? "" : `${kindLabel(this.state.filter)} `}artifacts in this filter`);
+			const hint = isAllEmpty
+				? dim("run a command, ask the agent, or create a checkpoint")
+				: dim("tab to switch filter · q close");
+			this.container.addChild(new Text("", 1, 0));
+			this.container.addChild(new Text(title, 2, 0));
+			this.container.addChild(new Text(hint, 2, 0));
+			this.container.addChild(new Text("", 1, 0));
+		} else {
+			for (let i = 0; i < view.visible.length; i++) {
+				const artifact = view.visible[i];
+				if (!artifact) continue;
+				const absolute = view.visibleStart + i;
+				const selected = absolute === view.selected;
+				const marker = selected ? accent("▸") : dim(" ");
+				const id = selected ? accent(this.theme.bold(artifact.id.padEnd(5))) : muted(artifact.id.padEnd(5));
+				const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
+				const age = relativeTime(artifact.timestamp);
+				const meta = [artifact.subtitle, age].filter(Boolean).join(" · ");
+				const title = selected
+					? this.theme.bold(this.theme.fg("text", artifact.title))
+					: muted(artifact.title);
+				const line = `${marker} ${id} ${kind} ${title} ${dim(meta)}`;
+				this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+			}
 		}
 
 		if (this.state.showDetail && view.selectedArtifact) {
@@ -768,8 +924,8 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · tab filter · enter inspect · r chip · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
-		this.container.addChild(new DynamicBorder(outerBorder));
+		this.container.addChild(new Text(dim("j/k move · tab filter · enter open · r cite · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
@@ -790,7 +946,7 @@ function compactTokens(tokens: number): string {
 }
 
 class TrailResumeView implements Component {
-	private container = new Container();
+	private container: Container | Box = new Container();
 	private selected: number;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
@@ -834,18 +990,19 @@ class TrailResumeView implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		this.container = new Container();
+		this.container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
 		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
-		const listWidth = Math.max(30, width);
+		const listWidth = Math.max(30, innerWidth);
 		const start = Math.max(0, Math.min(this.selected - 5, this.summaries.length - 11));
 		const visible = this.summaries.slice(start, start + 11);
 
-		this.container.addChild(new DynamicBorder(outerBorder));
-		this.container.addChild(new Text(`${accent(this.theme.bold("Trail Resume"))} ${dim(`${this.summaries.length} checkpoints`)}`, 1, 0));
+		const headerLeft = ` ${accent(this.theme.bold("trail · resume"))} ${dim(`${this.summaries.length} checkpoint${this.summaries.length === 1 ? "" : "s"}`)} `;
+		this.container.addChild(new Text(fitBorder(headerLeft, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 		for (let i = 0; i < visible.length; i++) {
 			const summary = visible[i];
 			if (!summary) continue;
@@ -853,7 +1010,7 @@ class TrailResumeView implements Component {
 			const entry = summary.entry;
 			const selected = absolute === this.selected;
 			const marker = selected ? accent("▸") : dim(" ");
-			const id = selected ? accent(entry.id.slice(0, 18).padEnd(18)) : muted(entry.id.slice(0, 18).padEnd(18));
+			const id = selected ? accent(this.theme.bold(entry.id.slice(0, 18).padEnd(18))) : muted(entry.id.slice(0, 18).padEnd(18));
 			const mode = entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
 			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files · ${summary.errors} err · ${summary.commands} cmd`;
 			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
@@ -861,7 +1018,7 @@ class TrailResumeView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
 		this.container.addChild(new Text(dim("j/k move · enter continue · p preview · e edit then continue · q close"), 1, 0));
-		this.container.addChild(new DynamicBorder(outerBorder));
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
 		return this.cachedLines;
