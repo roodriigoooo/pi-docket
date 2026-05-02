@@ -55,6 +55,7 @@ function checkpointSystemPrompt(mode: CheckpointMode, maxOutputTokens: number): 
 		"Do not produce a transcript search result or artifact dump.",
 		"Use compact markdown. Target the requested maximum output length.",
 		"Reference artifacts by IDs like [file:f12] or [command:c8] when useful instead of copying large excerpts.",
+		"If file-reference guidance is needed, say it once for the reference list, not once per file.",
 		"Never invent files, commands, decisions, or outcomes not present in artifacts.",
 		`Mode: ${mode}. ${modeGuidance[mode]}`,
 		`Maximum output tokens: ${maxOutputTokens}.`,

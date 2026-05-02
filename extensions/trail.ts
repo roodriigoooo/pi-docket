@@ -521,12 +521,67 @@ function renderArtifactList(artifacts: Artifact[]): string {
 	return artifacts.map((a) => `${a.displayId}\t${a.ref}\t${a.kind}\t${a.title}\t${a.subtitle}`).join("\n");
 }
 
+const TRAIL_CHECKPOINT_CONTEXT_TYPE = "trail:checkpoint-context";
+const TRAIL_CHECKPOINT_WIDGET_ID = "trail-loaded-checkpoint";
+
+type LoadedCheckpoint = {
+	id: string;
+	mode: CheckpointIndexEntry["mode"];
+	note?: string;
+	consumeOnUse?: boolean;
+};
+
+function checkpointContextContent(checkpoint: CheckpointIndexEntry, content: string): string {
+	return [`<<trail-checkpoint ${checkpoint.id}>>`, content.trim(), `<</trail-checkpoint>>`].join("\n");
+}
+
+function loadedCheckpointMeta(checkpoint: CheckpointIndexEntry): LoadedCheckpoint {
+	return { id: checkpoint.id, mode: checkpoint.mode, note: checkpoint.note, consumeOnUse: checkpoint.consumeOnUse };
+}
+
+function loadedCheckpointFromSession(ctx: ExtensionContext): LoadedCheckpoint | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i] as any;
+		if (entry?.type !== "custom_message" || entry.customType !== TRAIL_CHECKPOINT_CONTEXT_TYPE) continue;
+		const details = entry.details as Partial<LoadedCheckpoint> | undefined;
+		if (typeof details?.id === "string" && typeof details.mode === "string") return details as LoadedCheckpoint;
+	}
+	return undefined;
+}
+
+function setLoadedCheckpointWidget(ctx: ExtensionContext, checkpoint: LoadedCheckpoint | undefined): void {
+	if (!ctx.hasUI) return;
+	if (!checkpoint) {
+		ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
+		return;
+	}
+	ctx.ui.setWidget(
+		TRAIL_CHECKPOINT_WIDGET_ID,
+		(_tui, theme) => {
+			const accent = (s: string) => theme.fg("accent", s);
+			const dim = (s: string) => theme.fg("dim", s);
+			const muted = (s: string) => theme.fg("muted", s);
+			const once = checkpoint.consumeOnUse ? muted("/once") : "";
+			const note = checkpoint.note ? dim(` · ${truncateToWidth(checkpoint.note, 48)}`) : "";
+			const container = new Container();
+			container.addChild(new Text(`${accent(theme.bold("trail"))} ${dim("·")} ${accent(`@ckpt:${checkpoint.id}`)}${muted(`/${checkpoint.mode}`)}${once} ${dim("loaded in context")}${note}`, 0, 0));
+			return container;
+		},
+		{ placement: "aboveEditor" },
+	);
+}
+
 async function startCheckpointSession(pi: ExtensionAPI, ctx: ExtensionCommandContext, store: ReturnType<typeof createCheckpointStore>, checkpoint: CheckpointIndexEntry, content: string): Promise<void> {
 	const parentSession = ctx.sessionManager.getSessionFile();
+	const checkpointMeta = loadedCheckpointMeta(checkpoint);
 	const result = await ctx.newSession({
 		parentSession,
+		setup: async (sessionManager) => {
+			sessionManager.appendCustomMessageEntry(TRAIL_CHECKPOINT_CONTEXT_TYPE, checkpointContextContent(checkpoint, content), false, checkpointMeta);
+		},
 		withSession: async (replacementCtx) => {
-			replacementCtx.ui.setEditorText(content);
+			setLoadedCheckpointWidget(replacementCtx, checkpointMeta);
 			if (checkpoint.consumeOnUse) {
 				try {
 					await store.consume(checkpoint);
@@ -652,6 +707,7 @@ type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
 
 export default function trailExtension(pi: ExtensionAPI) {
 	let chips: Chip[] = [];
+	let loadedCheckpoint: LoadedCheckpoint | undefined;
 	let activeCtx: ExtensionContext | undefined;
 
 	const findChipIndex = (ref: string): number => chips.findIndex((c) => c.ref === ref);
@@ -751,12 +807,16 @@ export default function trailExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		chips = [];
+		loadedCheckpoint = loadedCheckpointFromSession(ctx);
 		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
+		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
 		activeCtx = undefined;
 		chips = [];
+		loadedCheckpoint = undefined;
+		if (ctx.hasUI) ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
 	});
 
 	pi.on("input", async (event, ctx) => {

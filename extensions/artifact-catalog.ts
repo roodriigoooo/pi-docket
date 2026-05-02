@@ -301,12 +301,13 @@ function artifactRefId(artifact: Artifact): string {
 	return artifact.ref;
 }
 
-function buildArtifactReference(artifact: Artifact, cwd: string): string {
+function buildArtifactReference(artifact: Artifact, cwd: string, options: { includeFileGuidance?: boolean } = {}): string {
 	const ref = artifactRefId(artifact);
 	if (artifact.kind === "file") {
 		const file = artifactFilePath(artifact, cwd);
+		const guidance = options.includeFileGuidance === false ? "" : " Use current file contents from disk if needed; do not paste file contents unless asked.";
 		return file
-			? `Reference Trail ${ref}: file \`${path.relative(cwd, file) || file}\` (${artifact.title}). Use current file contents from disk if needed; do not paste file contents unless asked.`
+			? `Reference Trail ${ref}: file \`${path.relative(cwd, file) || file}\` (${artifact.title}).${guidance}`
 			: `Reference Trail ${ref}: file artifact \`${artifact.title}\`. ${artifact.subtitle}`;
 	}
 	if (artifact.kind === "command") return `Reference Trail ${ref}: command ${artifact.title} (${artifact.subtitle}). Use result only if relevant; avoid repeating failed command unless correcting it.`;
@@ -318,7 +319,11 @@ function buildArtifactReference(artifact: Artifact, cwd: string): string {
 }
 
 export function buildReferenceList(artifacts: Artifact[], cwd: string): string {
-	return artifacts.map((artifact) => `- ${artifactRefId(artifact)} ${buildArtifactReference(artifact, cwd)}`).join("\n");
+	const lines = artifacts.map((artifact) => `- ${buildArtifactReference(artifact, cwd, { includeFileGuidance: false })}`);
+	if (artifacts.some((artifact) => artifact.kind === "file")) {
+		lines.push("", "File refs point to current disk paths; read current contents if needed. Do not paste file contents unless asked.");
+	}
+	return lines.join("\n");
 }
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {

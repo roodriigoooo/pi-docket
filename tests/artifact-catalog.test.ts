@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createArtifactCatalog } from "../extensions/artifact-catalog.js";
+import { buildReferenceList, createArtifactCatalog } from "../extensions/artifact-catalog.js";
 
 function text(text: string) {
 	return [{ type: "text", text }];
@@ -108,4 +108,13 @@ test("Artifact Catalog selects and truncates checkpoint payloads by mode", async
 	const payload = catalog.checkpointPayload(selected, "compact");
 	assert.equal(payload[0]?.kind, "error");
 	assert.match(String(payload[0]?.body), /Trail truncated/);
+});
+
+test("Reference lists keep file guidance once", async () => {
+	const { cwd, catalog } = await fixtureCatalog();
+	const files = catalog.list().filter((artifact) => artifact.kind === "file");
+	const refs = buildReferenceList([...files, ...files], cwd);
+	assert.equal((refs.match(/Use current file contents/g) ?? []).length, 0);
+	assert.equal((refs.match(/File refs point to current disk paths/g) ?? []).length, 1);
+	assert.equal((refs.match(/Reference Trail/g) ?? []).length, 2);
 });
