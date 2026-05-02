@@ -22,9 +22,11 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import {
+	Box,
 	Container,
 	Key,
 	Text,
@@ -159,6 +161,8 @@ function extractCodeBlocks(text: string): Array<{ lang: string; code: string }> 
 	return blocks;
 }
 
+type TrailRuntimeContext = ExtensionContext & Partial<ExtensionCommandContext>;
+
 function fileArtifactFromTool(call: ToolCallInfo, entry: any, cwd: string): Omit<Artifact, "id" | "displayId" | "ref"> | null {
 	const args = call.args;
 	const pathArg = asString(args.path) ?? asString(args.file) ?? asString(args.pattern);
@@ -190,7 +194,7 @@ function fileArtifactFromTool(call: ToolCallInfo, entry: any, cwd: string): Omit
 	};
 }
 
-function buildArtifacts(ctx: ExtensionCommandContext, config: TrailConfig): Artifact[] {
+function buildArtifacts(ctx: TrailRuntimeContext, config: TrailConfig): Artifact[] {
 	const branch = ctx.sessionManager.getBranch();
 	const calls = new Map<string, ToolCallInfo>();
 	const artifacts: Artifact[] = [];
@@ -500,12 +504,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
 	return false;
 }
 
-function injectIntoEditor(ctx: ExtensionCommandContext, text: string): void {
-	if (!ctx.hasUI) return;
-	const current = ctx.ui.getEditorText?.() ?? "";
-	ctx.ui.setEditorText(current.trim() ? `${current}\n\n${text}` : text);
-}
-
 function artifactFilePath(artifact: Artifact, cwd: string): string | undefined {
 	if (artifact.kind !== "file") return undefined;
 	const args = (artifact.meta?.args ?? {}) as Record<string, unknown>;
@@ -531,7 +529,7 @@ async function inspectTextForArtifact(artifact: Artifact, cwd: string): Promise<
 	}
 }
 
-function createArtifactCatalog(ctx: ExtensionCommandContext, config: TrailConfig): ArtifactCatalog {
+function createArtifactCatalog(ctx: TrailRuntimeContext, config: TrailConfig): ArtifactCatalog {
 	const artifacts = buildArtifacts(ctx, config);
 	const byId = new Map<string, Artifact>();
 	for (const artifact of artifacts) {
@@ -770,7 +768,7 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · tab filter · enter inspect · i/r ref · I inject · y copy · c checkpoint · v preview · q close"), 1, 0));
+		this.container.addChild(new Text(dim("j/k move · tab filter · enter inspect · r chip · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
 		this.container.addChild(new DynamicBorder(outerBorder));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1041,20 +1039,185 @@ async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext
 	const lines = index.length
 		? index.map((c) => `${c.id}\t${c.mode}${c.consumeOnUse ? ":once" : ""}\t${c.cwd}\t${c.note ?? ""}`).join("\n")
 		: "No Trail checkpoints";
-	emitText(pi, ctx, lines);
+	emitText(pi, ctx, lines, "list", "trail · checkpoints");
 }
 
-function emitText(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: string): void {
-	if (ctx.hasUI) ctx.ui.setEditorText(text);
-	else pi.sendMessage({ customType: "trail", content: text, display: true }, { triggerTurn: false });
+type TrailMessageKind = "help" | "list" | "notice" | "error" | "usage";
+
+type TrailMessageDetails = { kind: TrailMessageKind; heading?: string };
+
+function emitText(pi: ExtensionAPI, _ctx: ExtensionCommandContext, text: string, kind: TrailMessageKind = "notice", heading?: string): void {
+	pi.sendMessage(
+		{ customType: "trail", content: text, display: true, details: { kind, heading } satisfies TrailMessageDetails },
+		{ triggerTurn: false },
+	);
 }
 
 function notifyTrail(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: string, level: "info" | "warning" | "error" = "info"): void {
 	if (ctx.hasUI) ctx.ui.notify(text, level);
-	else pi.sendMessage({ customType: "trail", content: text, display: true }, { triggerTurn: false });
+	else pi.sendMessage({ customType: "trail", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } satisfies TrailMessageDetails }, { triggerTurn: false });
 }
 
+function trailMessageRenderer(): MessageRenderer<TrailMessageDetails> {
+	return (message, _options, theme) => {
+		const details = (message.details ?? { kind: "notice" }) as TrailMessageDetails;
+		const kind = details.kind ?? "notice";
+		const labelByKind: Record<TrailMessageKind, ThemeColor> = {
+			help: "accent",
+			list: "customMessageLabel",
+			notice: "muted",
+			usage: "warning",
+			error: "error",
+		};
+		const labelColor: ThemeColor = labelByKind[kind] ?? "muted";
+		const headingText = details.heading ?? `trail · ${kind}`;
+		const content = typeof message.content === "string" ? message.content : "";
+		const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
+		box.addChild(new Text(theme.fg(labelColor, theme.bold(headingText)), 0, 0));
+		box.addChild(new Text("", 0, 0));
+		for (const rawLine of content.split("\n")) {
+			const colored = kind === "error" ? theme.fg("error", rawLine) : rawLine;
+			box.addChild(new Text(colored, 0, 0));
+		}
+		return box;
+	};
+}
+
+type ChipMode = "ref" | "full";
+
+type Chip = {
+	displayId: string;
+	ref: string;
+	mode: ChipMode;
+	kind: ArtifactKind;
+	title: string;
+};
+
+type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
+
 export default function trailExtension(pi: ExtensionAPI) {
+	let chips: Chip[] = [];
+	let activeCtx: ExtensionContext | undefined;
+
+	const findChipIndex = (ref: string): number => chips.findIndex((c) => c.ref === ref);
+
+	const toggleChip = (artifact: Artifact, mode: ChipMode): ChipToggleResult => {
+		const idx = findChipIndex(artifact.ref);
+		if (idx === -1) {
+			chips = [...chips, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }];
+			return "added";
+		}
+		const existing = chips[idx]!;
+		if (existing.mode === mode) {
+			chips = chips.filter((_, i) => i !== idx);
+			return "removed";
+		}
+		chips = chips.map((c, i) => (i === idx ? { ...c, mode } : c));
+		return mode === "full" ? "upgraded" : "downgraded";
+	};
+
+	const clearChips = (): boolean => {
+		if (chips.length === 0) return false;
+		chips = [];
+		return true;
+	};
+
+	const refreshChipWidget = (): void => {
+		const ctx = activeCtx;
+		if (!ctx?.hasUI) return;
+		if (chips.length === 0) {
+			ctx.ui.setWidget("trail-chips", undefined);
+			return;
+		}
+		const snapshot = chips;
+		ctx.ui.setWidget(
+			"trail-chips",
+			(_tui, theme) => {
+				const accent = (s: string) => theme.fg("accent", s);
+				const dim = (s: string) => theme.fg("dim", s);
+				const muted = (s: string) => theme.fg("muted", s);
+				const tags = snapshot
+					.map((c) => `${accent(`@${c.displayId}${c.mode === "full" ? "*" : ""}`)}${muted(`/${kindLabel(c.kind)}`)}`)
+					.join(" ");
+				const label = accent(theme.bold("trail"));
+				const summary = dim(`${snapshot.length} chip${snapshot.length === 1 ? "" : "s"} · expand at send · /trail clear`);
+				const container = new Container();
+				container.addChild(new Text(`${label} ${dim("·")} ${tags}  ${summary}`, 0, 0));
+				return container;
+			},
+			{ placement: "aboveEditor" },
+		);
+	};
+
+	const renderChipBlock = (chip: Chip, content: string): string => {
+		const opener = `<<trail @${chip.displayId} ${chip.mode}>>`;
+		const closer = `<</trail>>`;
+		return `${opener}\n${content}\n${closer}`;
+	};
+
+	const expandChipsForSubmit = async (
+		ctx: ExtensionContext,
+		userText: string,
+	): Promise<{ text: string; expanded: number; missing: string[] }> => {
+		if (chips.length === 0) return { text: userText, expanded: 0, missing: [] };
+		const config = await loadConfig(ctx.cwd);
+		const catalog = createArtifactCatalog(ctx, config);
+		const blocks: string[] = [];
+		const missing: string[] = [];
+		for (const chip of chips) {
+			const artifact = catalog.find(chip.ref) ?? catalog.find(chip.displayId);
+			if (!artifact) {
+				missing.push(chip.displayId);
+				continue;
+			}
+			const body = chip.mode === "full" ? catalog.fullText(artifact) : catalog.reference(artifact);
+			blocks.push(renderChipBlock(chip, body));
+		}
+		if (blocks.length === 0) return { text: userText, expanded: 0, missing };
+		const header = `<<trail-context: ${blocks.length} reference${blocks.length === 1 ? "" : "s"}>>`;
+		const footer = `<</trail-context>>`;
+		const wrapped = `${header}\n${blocks.join("\n\n")}\n${footer}`;
+		const text = userText.trim() ? `${wrapped}\n\n${userText}` : wrapped;
+		return { text, expanded: blocks.length, missing };
+	};
+
+	const announceChipChange = (ctx: ExtensionCommandContext, chip: Chip, result: ChipToggleResult): void => {
+		const name = `@${chip.displayId}${chip.mode === "full" ? "*" : ""}`;
+		const verb =
+			result === "added" ? "added" :
+			result === "removed" ? "removed" :
+			result === "upgraded" ? "→ full" :
+			"→ ref";
+		notifyTrail(pi, ctx, `Trail chip ${name} ${verb}`, "info");
+	};
+
+	pi.registerMessageRenderer("trail", trailMessageRenderer());
+
+	pi.on("session_start", (_event, ctx) => {
+		activeCtx = ctx;
+		chips = [];
+		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
+	});
+
+	pi.on("session_shutdown", () => {
+		activeCtx = undefined;
+		chips = [];
+	});
+
+	pi.on("input", async (event, ctx) => {
+		if (event.source === "extension") return { action: "continue" };
+		if (chips.length === 0) return { action: "continue" };
+		const result = await expandChipsForSubmit(ctx, event.text);
+		if (result.expanded === 0 && result.missing.length === 0) return { action: "continue" };
+		if (result.missing.length > 0 && ctx.hasUI) {
+			ctx.ui.notify(`Trail dropped stale chip(s): ${result.missing.join(", ")}`, "warning");
+		}
+		chips = [];
+		refreshChipWidget();
+		if (result.expanded === 0) return { action: "continue" };
+		return { action: "transform", text: result.text };
+	});
+
 	pi.registerCommand("trail", {
 		description: "Navigate session artifacts and create fresh-session checkpoints",
 		getArgumentCompletions: (prefix: string) => {
@@ -1064,13 +1227,20 @@ export default function trailExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const parsed = parseTrailCommand(args);
 			if (!parsed.ok) {
-				emitText(pi, ctx, `${parsed.message}\n\n${parsed.usage}`);
+				emitText(pi, ctx, `${parsed.message}\n\n${parsed.usage}`, "usage", "trail · usage");
 				return;
 			}
 
 			const intent = parsed.intent;
 			if (intent.kind === "help") {
-				emitText(pi, ctx, trailUsage());
+				emitText(pi, ctx, trailUsage(), "help", "trail · help");
+				return;
+			}
+
+			if (intent.kind === "clear") {
+				const had = clearChips();
+				refreshChipWidget();
+				notifyTrail(pi, ctx, had ? "Trail chips cleared" : "Trail had no chips", "info");
 				return;
 			}
 
@@ -1102,7 +1272,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 					return;
 				}
 				if (!ctx.hasUI) {
-					emitText(pi, ctx, renderArtifactList(artifacts));
+					emitText(pi, ctx, renderArtifactList(artifacts), "list", `trail · search "${intent.query}"`);
 					return;
 				}
 			}
@@ -1114,11 +1284,13 @@ export default function trailExtension(pi: ExtensionAPI) {
 					return;
 				}
 				if (intent.action === "ref" || intent.action === "inject") {
-					injectIntoEditor(ctx, catalog.reference(artifact));
-					notifyTrail(pi, ctx, `Trail referenced ${artifact.id}`, "info");
+					const r = toggleChip(artifact, "ref");
+					refreshChipWidget();
+					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "ref", kind: artifact.kind, title: artifact.title }, r);
 				} else if (intent.action === "inject-full") {
-					injectIntoEditor(ctx, catalog.fullText(artifact));
-					notifyTrail(pi, ctx, `Trail injected full ${artifact.id}`, "info");
+					const r = toggleChip(artifact, "full");
+					refreshChipWidget();
+					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, r);
 				} else {
 					const ok = await copyToClipboard(catalog.fullText(artifact));
 					notifyTrail(pi, ctx, ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
@@ -1127,7 +1299,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (!ctx.hasUI) {
-				emitText(pi, ctx, renderArtifactList(artifacts));
+				emitText(pi, ctx, renderArtifactList(artifacts), "list", "trail · artifacts");
 				return;
 			}
 
@@ -1144,15 +1316,18 @@ export default function trailExtension(pi: ExtensionAPI) {
 					await showArtifactViewer(ctx, catalog, result.artifact);
 					continue;
 				}
+				const artifact = result.artifact;
 				if (result.action === "reference") {
-					injectIntoEditor(ctx, catalog.reference(result.artifact));
-					notifyTrail(pi, ctx, `Trail referenced ${result.artifact.id}`, "info");
+					const r = toggleChip(artifact, "ref");
+					refreshChipWidget();
+					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "ref", kind: artifact.kind, title: artifact.title }, r);
 				} else if (result.action === "injectFull") {
-					injectIntoEditor(ctx, catalog.fullText(result.artifact));
-					notifyTrail(pi, ctx, `Trail injected full ${result.artifact.id}`, "info");
+					const r = toggleChip(artifact, "full");
+					refreshChipWidget();
+					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, r);
 				} else if (result.action === "copy") {
-					const ok = await copyToClipboard(catalog.fullText(result.artifact));
-					notifyTrail(pi, ctx, ok ? `Trail copied ${result.artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
+					const ok = await copyToClipboard(catalog.fullText(artifact));
+					notifyTrail(pi, ctx, ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
 				}
 				return;
 			}

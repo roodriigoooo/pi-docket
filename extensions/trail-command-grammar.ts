@@ -12,6 +12,7 @@ export type CheckpointCreateOptions = {
 export type TrailIntent =
 	| { kind: "help" }
 	| { kind: "browse" }
+	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
 	| { kind: "list" }
@@ -22,7 +23,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "list", "ref", "inject", "inject-full", "copy", "help"] as const;
+export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const CHECKPOINT_USAGE = "/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]";
 const MODE_FLAGS: Record<string, CheckpointMode> = {
@@ -43,10 +44,11 @@ export function trailUsage(): string {
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
 		"/trail list",
-		"/trail ref <artifact-id>       inject compact artifact reference",
+		"/trail ref <artifact-id>       add compact ref chip (@id) above editor",
 		"/trail inject <artifact-id>    alias for ref",
-		"/trail inject-full <artifact-id>",
-		"/trail copy <artifact-id>",
+		"/trail inject-full <artifact-id>  add full chip (@id*) above editor",
+		"/trail copy <artifact-id>      copy artifact to clipboard",
+		"/trail clear                   drop all pending chips",
 	].join("\n");
 }
 
@@ -162,6 +164,10 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "list") {
 		if (rest.length > 0) return parseError("Usage: /trail list");
 		return { ok: true, intent: { kind: "list" } };
+	}
+	if (command === "clear") {
+		if (rest.length > 0) return parseError("Usage: /trail clear");
+		return { ok: true, intent: { kind: "clear" } };
 	}
 	if (command === "search") {
 		if (rest.length === 0) return parseError("Usage: /trail search <query>");
