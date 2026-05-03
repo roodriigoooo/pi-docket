@@ -26,6 +26,8 @@ some of the situations that inspired it:
 
 Claude Code's `/compact` was also a big inspiration. unlike `/compact`, which compresses the current conversation, Trail lets users navigate, select, verify, and package the exact commands, errors, files, decisions, dead ends, and next steps needed to continue work in a fresh session.
 
+Trail's worker flow was also inspired by the lightweight multi-session style of the [pi-chat extension](https://www.npmjs.com/package/pi-chat): spin up another Pi session, let it investigate independently, then pull back only the useful artifacts.
+
 | Feature | `/compact` | Trail |
 | --- | --- | --- |
 | Compress current conversation | Yes | Yes, optionally |
@@ -49,7 +51,7 @@ pi install git:github.com/roodriigoooo/trail
 pinned GitHub release:
 
 ```bash
-pi install git:github.com/roodriigoooo/trail@v0.1.3
+pi install git:github.com/roodriigoooo/trail@v0.1.4
 ```
 
 from npm:
@@ -80,7 +82,7 @@ create a handoff checkpoint:
 /trail checkpoint --handoff finish the checkpoint store refactor
 ```
 
-create a one-time debug checkpoint that deletes itself after resume:
+create a one-time debug checkpoint that is soft-consumed after use:
 
 ```bash
 /trail checkpoint --debug --once --raw investigate failing ci
@@ -90,6 +92,18 @@ continue from the latest checkpoint in a fresh session:
 
 ```bash
 /trail continue last
+```
+
+spawn a tmux-backed worker session to investigate in parallel:
+
+```bash
+/trail spawn inspect package scripts and suggest one risk
+```
+
+load worker artifacts back into the current session without spending model-context tokens:
+
+```bash
+/trail load w1
 ```
 
 ## examples to get the idea across
@@ -108,6 +122,16 @@ continue from the latest checkpoint in a fresh session:
   <img src="./assets/compressed_gif_3.gif" alt="Trail checkpoint resume" width="100%" />
 </p>
 
+### Trail workers with tmux
+
+Trail can spawn tmux-backed Pi worker sessions. A worker investigates in its own session, snapshots its artifacts to disk, and the parent session can mount those artifacts later with `/trail load w<N>`. Loading costs zero model-context tokens until you choose a specific artifact reference or full injection.
+
+<p align="center">
+  <img src="./assets/trail_workers_tmux.gif" alt="Trail tmux worker spawn and load workflow" width="100%" />
+</p>
+
+If `/trail spawn` is unknown, you are running an older installed Trail. Install/pin `v0.1.4` or run this repo locally with `pi --no-extensions -e ./extensions/trail.ts`.
+
 ## commands
 
 - `/trail` — open artifact navigator
@@ -115,14 +139,42 @@ continue from the latest checkpoint in a fresh session:
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last] [--include-consumed]` — load a prior checkpoint's artifacts into the navigator without spending model-context tokens
-- `/trail unload <id|all>` — drop a loaded checkpoint from the session
-- `/trail delete [id|last]` — permanently delete a checkpoint (bypasses soft-consume)
-- `/trail list [--include-consumed]` — list checkpoints
+- `/trail load [id|last|w<N>] [--include-consumed]` — load checkpoint or worker artifacts into the navigator without spending model-context tokens
+- `/trail unload <id|w<N>|all>` — drop loaded checkpoint or worker artifacts from the session
+- `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
+- `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
+- `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id-or-ref>` — copy artifact to clipboard
+
+## worker flow
+
+Workers are regular Pi sessions launched in tmux. They get their own session directory and periodically write their Artifact snapshot to `~/.pi/agent/trail/workers/<id>/artifacts.json`.
+
+Typical flow:
+
+```bash
+/trail spawn investigate flaky test output
+/trail list --workers
+/trail load w1
+/trail
+```
+
+After loading a worker, press `s` in the Navigator until the worker source slot (`w1`, `w2`, etc.) is active. Then use `r`/`i` for compact References or `I` for full Artifact injection.
+
+## load picker keys
+
+When UI is available and you run `/trail load` without an id, Trail shows checkpoints and workers in one picker:
+
+- `tab` — switch between checkpoints and workers
+- `1` — checkpoints tab
+- `2` — workers tab
+- `j/k` or arrows — move
+- `enter` — load selected checkpoint or worker
+- `p` — preview selected checkpoint markdown
+- `q` or `esc` — close
 
 ## checkpoint resume keys
 
@@ -153,7 +205,7 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 - `j/k` or arrows — move
 - `g/G` — top/bottom
 - `tab` — cycle artifact kind filter
-- `s` — cycle source (current / all / loaded slots like `c1`, `c2`)
+- `s` — cycle source (current / all / loaded slots like `c1`, `c2`, `w1`, `w2`)
 - `enter` — inspect selected artifact; file artifacts open current full file contents
 - `i` or `r` — inject compact artifact reference
 - `I` — inject full artifact text
@@ -195,10 +247,21 @@ checkpoints live in:
 - `~/.pi/agent/trail/checkpoints/<id>.md`
 - `~/.pi/agent/trail/checkpoints/<id>.artifacts.json`
 - `~/.pi/agent/trail/index.json`
+- `~/.pi/agent/trail/events.ndjson`
 
-`--once` checkpoints are **soft-consumed** at the end of the session in which they were used (`/trail continue`, `/trail resume`, or `/trail load`). The index entry is marked `consumedAt`, hidden from default listings, and the underlying files stay on disk for `consumedRetentionDays` (default 7) so an accidental cancel is recoverable. `/trail unload <id>` cancels the pending consume contract for the current session. `/trail delete` always purges immediately. Pass `--include-consumed` to `list` / `load` to see soft-consumed entries.
+workers live in:
+
+- `~/.pi/agent/trail/workers/<id>/task.md`
+- `~/.pi/agent/trail/workers/<id>/status.json`
+- `~/.pi/agent/trail/workers/<id>/artifacts.json`
+
+Checkpoint state is event-backed (`events.ndjson`) with a legacy `index.json` snapshot for compatibility. Worker artifact snapshots are refreshed by the worker session heartbeat and mounted into the parent session as source slots like `w1`, `w2`, etc.
+
+`--once` checkpoints are **soft-consumed** at the end of the session in which they were used (`/trail continue`, `/trail resume`, or `/trail load`). The index entry is marked `consumedAt`, hidden from default listings, and the underlying files stay on disk for `consumedRetentionDays` (default 7) so an accidental cancel is recoverable. `/trail unload <id>` cancels the pending consume contract for the current session. `/trail delete` always purges checkpoints immediately. Pass `--include-consumed` to `list` / `load` to see soft-consumed entries.
 
 File-path references inside an injected checkpoint always survive consume — they point to your project's disk paths, not Trail storage. Only artifact-level lookups (`/trail ref c1.f12`, etc.) require the original `artifacts.json` to still exist; `/trail load` rehydrates them from the sidecar without spending any model-context tokens.
+
+Worker artifacts are similar carryover sources, but they come from `workers/<id>/artifacts.json`. `/trail load w<N>` mounts them into the navigator; `/trail delete w<N>` kills/purges the worker; `/trail unload w<N>` only removes the mounted source from the current session.
 
 ### example checkpoint markdown
 
@@ -223,7 +286,7 @@ Checkpoint store now writes durable markdown plus sidecar artifact JSON.
 
 ## Current state
 - `extensions/checkpoint-store.ts` handles save, list, find, read, consume.
-- `--once` checkpoints remove markdown, sidecar JSON, and index entry after resume.
+- `--once` checkpoints are soft-consumed after use; markdown and sidecar artifacts are retained until the consumed retention window expires.
 
 ## Next steps
 - Add tests for partial checkpoint id lookup.
