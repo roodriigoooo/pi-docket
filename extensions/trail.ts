@@ -42,6 +42,7 @@ import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
 import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
+import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerStatus } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -735,6 +736,72 @@ async function selectCheckpointToDelete(pi: ExtensionAPI, ctx: ExtensionCommandC
 	}
 }
 
+function workerAge(updatedAt: string): string {
+	const ageMs = Date.now() - Date.parse(updatedAt);
+	if (!Number.isFinite(ageMs) || ageMs < 0) return updatedAt;
+	const seconds = Math.round(ageMs / 1000);
+	if (seconds < 60) return `${seconds}s ago`;
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.round(minutes / 60);
+	return `${hours}h ago`;
+}
+
+async function showWorkerList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const workerStore = createWorkerStore();
+	const workers = await workerStore.list();
+	if (workers.length === 0) {
+		emitText(pi, ctx, "No Trail workers", "list", "trail · workers");
+		return;
+	}
+	const lines = workers
+		.map((w) => {
+			const label = workerShortLabel(w.index).padEnd(4);
+			const state = (w.state ?? "?").padEnd(8);
+			const artifacts = `${w.artifactCount ?? "?"} artifacts`.padEnd(14);
+			const age = workerAge(w.updatedAt).padEnd(8);
+			return `${label}  ${state}  ${artifacts}  ${age}  ${workerSummaryName(w, 48)}`;
+		})
+		.join("\n");
+	emitText(pi, ctx, lines, "list", "trail · workers");
+}
+
+type CompletionCandidate = { value: string; label: string };
+
+async function checkpointAndWorkerCandidates(subcommand: string): Promise<CompletionCandidate[]> {
+	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete";
+	const wantCheckpoints = subcommand !== "unload"; // unload also accepts checkpoints, but keep both for everyone
+	const out: CompletionCandidate[] = [];
+
+	if (wantCheckpoints) {
+		try {
+			const store = createCheckpointStore();
+			const list = await store.list({ includeConsumed: true });
+			const recent = list.slice(-10).reverse();
+			if (recent.length > 0) out.push({ value: "last", label: `last → ${recent[0]!.id}` });
+			for (const entry of recent) {
+				const tag = entry.consumedAt ? ":consumed" : entry.consumeOnUse ? ":once" : "";
+				out.push({ value: entry.id, label: `${entry.id}  ${entry.mode}${tag}  ${entry.note ?? ""}`.trim() });
+			}
+		} catch { /* ignore */ }
+	}
+
+	if (wantWorkers) {
+		try {
+			const workerStore = createWorkerStore();
+			const workers = await workerStore.list();
+			for (const w of workers.slice(-10).reverse()) {
+				const label = `${workerShortLabel(w.index)}  ${w.state}  ${workerSummaryName(w, 40)}`;
+				out.push({ value: workerShortLabel(w.index), label });
+			}
+		} catch { /* ignore */ }
+	}
+
+	if (subcommand === "unload") out.unshift({ value: "all", label: "all  drop every loaded slot" });
+
+	return out;
+}
+
 async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext, includeConsumed = false): Promise<void> {
 	const store = createCheckpointStore();
 	const index = await store.list({ includeConsumed });
@@ -747,13 +814,35 @@ async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext
 	emitText(pi, ctx, lines, "list", "trail · checkpoints");
 }
 
-type TrailMessageKind = "help" | "list" | "notice" | "error" | "usage";
+type TrailMessageKind = "help" | "list" | "notice" | "action" | "success" | "warning" | "error" | "usage";
 
-type TrailMessageDetails = { kind: TrailMessageKind; heading?: string };
+type TrailMessageDetails = { kind: TrailMessageKind; heading?: string; subject?: string };
 
-function emitText(pi: ExtensionAPI, _ctx: ExtensionCommandContext, text: string, kind: TrailMessageKind = "notice", heading?: string): void {
+const KIND_GLYPH: Record<TrailMessageKind, string> = {
+	help: "?",
+	list: "≡",
+	notice: "·",
+	action: "▸",
+	success: "✓",
+	warning: "!",
+	error: "✗",
+	usage: "?",
+};
+
+const KIND_COLOR: Record<TrailMessageKind, ThemeColor> = {
+	help: "accent",
+	list: "customMessageLabel",
+	notice: "muted",
+	action: "accent",
+	success: "success",
+	warning: "warning",
+	usage: "warning",
+	error: "error",
+};
+
+function emitText(pi: ExtensionAPI, _ctx: ExtensionCommandContext, text: string, kind: TrailMessageKind = "notice", heading?: string, subject?: string): void {
 	pi.sendMessage(
-		{ customType: "trail", content: text, display: true, details: { kind, heading } satisfies TrailMessageDetails },
+		{ customType: "trail", content: text, display: true, details: { kind, heading, subject } satisfies TrailMessageDetails },
 		{ triggerTurn: false },
 	);
 }
@@ -763,26 +852,51 @@ function notifyTrail(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: strin
 	else pi.sendMessage({ customType: "trail", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } satisfies TrailMessageDetails }, { triggerTurn: false });
 }
 
+function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: TrailMessageKind = "action"): void {
+	pi.sendMessage(
+		{
+			customType: "trail",
+			content: detail ?? "",
+			display: true,
+			details: { kind, subject, heading: `trail · ${kind}` } satisfies TrailMessageDetails,
+		},
+		{ triggerTurn: false },
+	);
+}
+
 function trailMessageRenderer(): MessageRenderer<TrailMessageDetails> {
 	return (message, _options, theme) => {
 		const details = (message.details ?? { kind: "notice" }) as TrailMessageDetails;
 		const kind = details.kind ?? "notice";
-		const labelByKind: Record<TrailMessageKind, ThemeColor> = {
-			help: "accent",
-			list: "customMessageLabel",
-			notice: "muted",
-			usage: "warning",
-			error: "error",
-		};
-		const labelColor: ThemeColor = labelByKind[kind] ?? "muted";
+		const labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
+		const glyph = KIND_GLYPH[kind] ?? "·";
 		const headingText = details.heading ?? `trail · ${kind}`;
+		const subject = details.subject;
 		const content = typeof message.content === "string" ? message.content : "";
 		const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
-		box.addChild(new Text(theme.fg(labelColor, theme.bold(headingText)), 0, 0));
-		box.addChild(new Text("", 0, 0));
-		for (const rawLine of content.split("\n")) {
-			const colored = kind === "error" ? theme.fg("error", rawLine) : rawLine;
-			box.addChild(new Text(colored, 0, 0));
+
+		const accent = (s: string) => theme.fg(labelColor, s);
+		const dim = (s: string) => theme.fg("dim", s);
+		const muted = (s: string) => theme.fg("muted", s);
+
+		const headerLine = `${accent(theme.bold(`${glyph} ${headingText}`))}`;
+		box.addChild(new Text(headerLine, 0, 0));
+
+		if (subject) {
+			box.addChild(new Text(theme.bold(theme.fg("text", subject)), 0, 0));
+		}
+
+		if (content) {
+			if (subject) box.addChild(new Text("", 0, 0));
+			for (const rawLine of content.split("\n")) {
+				let line: string;
+				if (kind === "error") line = theme.fg("error", rawLine);
+				else if (kind === "warning") line = theme.fg("warning", rawLine);
+				else if (kind === "action" || kind === "success") line = muted(rawLine);
+				else if (kind === "list") line = rawLine;
+				else line = dim(rawLine);
+				box.addChild(new Text(line, 0, 0));
+			}
 		}
 		return box;
 	};
@@ -800,11 +914,16 @@ type Chip = {
 
 type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
 
+type CarryoverKind = "checkpoint" | "worker";
+
 type CarryoverSlot = {
 	slot: string;
-	checkpoint: CheckpointIndexEntry;
+	kind: CarryoverKind;
+	sourceId: string;
 	artifacts: Artifact[];
+	checkpoint?: CheckpointIndexEntry;
 };
+
 
 export default function trailExtension(pi: ExtensionAPI) {
 	let chips: Chip[] = [];
@@ -814,6 +933,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let carryover: Map<string, CarryoverSlot> = new Map();
 	let nextSlotIndex = 1;
 	let sweptOnce = false;
+	let heartbeatTimer: NodeJS.Timeout | undefined;
 
 	const carryoverArtifacts = (): Artifact[] => {
 		const out: Artifact[] = [];
@@ -828,24 +948,49 @@ export default function trailExtension(pi: ExtensionAPI) {
 		});
 	};
 
-	const loadCarryover = async (checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> => {
-		const existing = carryover.get(checkpoint.id);
+	const findSlotForSource = (kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined => {
+		for (const slot of carryover.values()) {
+			if (slot.kind === kind && slot.sourceId === sourceId) return slot;
+		}
+		return undefined;
+	};
+
+	const loadCheckpointCarryover = async (checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("checkpoint", checkpoint.id);
 		if (existing) return existing;
 		const store = createCheckpointStore();
 		const raw = await store.readArtifacts(checkpoint);
 		const slot = `c${nextSlotIndex++}`;
 		const namespaced = namespaceCarryover(raw, slot);
-		const entry: CarryoverSlot = { slot, checkpoint, artifacts: namespaced };
-		carryover.set(checkpoint.id, entry);
+		const entry: CarryoverSlot = { slot, kind: "checkpoint", sourceId: checkpoint.id, artifacts: namespaced, checkpoint };
+		carryover.set(slot, entry);
 		return entry;
 	};
 
-	const unloadCarryover = (checkpointId: string): CarryoverSlot | undefined => {
-		const entry = carryover.get(checkpointId);
-		if (!entry) return undefined;
-		carryover.delete(checkpointId);
-		pendingShutdownConsume.delete(checkpointId);
+	const loadWorkerCarryover = async (worker: WorkerStatus): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("worker", worker.id);
+		if (existing) return existing;
+		const workerStore = createWorkerStore();
+		const raw = await workerStore.readArtifacts(worker.id);
+		const slot = workerShortLabel(worker.index);
+		const namespaced = namespaceCarryover(raw, slot);
+		const entry: CarryoverSlot = { slot, kind: "worker", sourceId: worker.id, artifacts: namespaced };
+		carryover.set(slot, entry);
 		return entry;
+	};
+
+	const unloadCarryoverBySlot = (slot: string): CarryoverSlot | undefined => {
+		const entry = carryover.get(slot);
+		if (!entry) return undefined;
+		carryover.delete(slot);
+		if (entry.kind === "checkpoint") pendingShutdownConsume.delete(entry.sourceId);
+		return entry;
+	};
+
+	const unloadCarryoverBySource = (kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined => {
+		const entry = findSlotForSource(kind, sourceId);
+		if (!entry) return undefined;
+		return unloadCarryoverBySlot(entry.slot);
 	};
 
 	const queueShutdownConsume: QueueConsume = (checkpoint) => {
@@ -966,6 +1111,27 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	pi.registerMessageRenderer("trail", trailMessageRenderer());
 
+	const workerId = process.env[TRAIL_WORKER_ENV];
+
+	const writeWorkerHeartbeat = async (ctx: ExtensionContext): Promise<void> => {
+		if (!workerId) return;
+		try {
+			const config = await loadConfig(ctx.cwd);
+			const catalog = createArtifactCatalog(ctx, config, []);
+			const artifacts = catalog.list();
+			const workerStore = createWorkerStore();
+			await workerStore.writeArtifacts(workerId, artifacts);
+			await workerStore.patchStatus(workerId, {
+				state: "active",
+				pid: process.pid,
+				sessionFile: ctx.sessionManager.getSessionFile?.(),
+				artifactCount: artifacts.length,
+			});
+		} catch {
+			// best-effort heartbeat; never crash the worker
+		}
+	};
+
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		chips = [];
@@ -976,9 +1142,21 @@ export default function trailExtension(pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
 		void maybeSweep(ctx.cwd);
+		if (workerId) {
+			void writeWorkerHeartbeat(ctx);
+			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
+			heartbeatTimer.unref?.();
+		}
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		if (heartbeatTimer) {
+			clearInterval(heartbeatTimer);
+			heartbeatTimer = undefined;
+		}
+		if (workerId) {
+			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
+		}
 		await drainShutdownConsume();
 		activeCtx = undefined;
 		chips = [];
@@ -1006,9 +1184,25 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("trail", {
 		description: "Navigate session artifacts and create fresh-session checkpoints",
-		getArgumentCompletions: (prefix: string) => {
-			const items = TRAIL_COMMANDS.filter((c) => c.startsWith(prefix)).map((c) => ({ value: c, label: c }));
-			return items.length ? items : null;
+		getArgumentCompletions: async (prefix: string) => {
+			const trimmed = prefix.replace(/^\s+/, "");
+			const firstSpace = trimmed.indexOf(" ");
+			if (firstSpace === -1) {
+				const items = TRAIL_COMMANDS.filter((c) => c.startsWith(trimmed)).map((c) => ({ value: c, label: c }));
+				return items.length ? items : null;
+			}
+			const subcommand = trimmed.slice(0, firstSpace);
+			const rest = trimmed.slice(firstSpace + 1);
+			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume") {
+				const lastSpace = rest.lastIndexOf(" ");
+				const partial = lastSpace === -1 ? rest : rest.slice(lastSpace + 1);
+				const completed = lastSpace === -1 ? "" : `${rest.slice(0, lastSpace + 1)}`;
+				const candidates = await checkpointAndWorkerCandidates(subcommand);
+				const matches = candidates.filter((c) => c.value.toLowerCase().startsWith(partial.toLowerCase()));
+				const items = matches.map((c) => ({ value: `${subcommand} ${completed}${c.value}`, label: c.label }));
+				return items.length ? items : null;
+			}
+			return null;
 		},
 		handler: async (args, ctx) => {
 			const parsed = parseTrailCommand(args);
@@ -1043,22 +1237,89 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "delete") {
-				if (intent.idOrLast) await deleteCheckpoint(pi, ctx, intent.idOrLast);
+				if (intent.targetKind === "worker") {
+					if (!intent.target) {
+						notifyTrail(pi, ctx, "Usage: /trail delete w<N>", "error");
+						return;
+					}
+					const workerStore = createWorkerStore();
+					const worker = await workerStore.find(intent.target);
+					if (!worker) {
+						notifyTrail(pi, ctx, "Trail worker not found", "error");
+						return;
+					}
+					unloadCarryoverBySource("worker", worker.id);
+					await workerStore.purge(worker.id);
+					announceAction(pi, ctx, `worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}`);
+					return;
+				}
+				if (intent.target) await deleteCheckpoint(pi, ctx, intent.target);
 				else await selectCheckpointToDelete(pi, ctx);
 				return;
 			}
 
 			if (intent.kind === "list") {
+				if (intent.workers === true) {
+					await showWorkerList(pi, ctx);
+					return;
+				}
 				await showCheckpointList(pi, ctx, intent.includeConsumed === true);
 				return;
 			}
 
+			if (intent.kind === "spawn") {
+				try {
+					const workerStore = createWorkerStore();
+					const worker = await workerStore.spawn({ task: intent.task, cwd: ctx.cwd, parentSession: ctx.sessionManager.getSessionFile?.() });
+					const label = workerShortLabel(worker.index);
+					announceAction(
+						pi,
+						ctx,
+						`spawned ${label}`,
+						[
+							workerSummaryName(worker),
+							`attach: tmux attach -t ${worker.tmuxSession}`,
+							`load:   /trail load ${label}`,
+						].join("\n"),
+					);
+				} catch (err) {
+					notifyTrail(pi, ctx, `Trail spawn failed: ${String(err)}`, "error");
+				}
+				return;
+			}
+
 			if (intent.kind === "load") {
+				if (intent.refKind === "worker") {
+					if (!intent.ref) {
+						notifyTrail(pi, ctx, "Usage: /trail load w<N>", "error");
+						return;
+					}
+					try {
+						const workerStore = createWorkerStore();
+						const worker = await workerStore.find(intent.ref);
+						if (!worker) {
+							notifyTrail(pi, ctx, "Trail worker not found", "error");
+							return;
+						}
+						const slot = await loadWorkerCarryover(worker);
+						announceAction(
+							pi,
+							ctx,
+							`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
+							`${workerSummaryName(worker)}\nrefs: @${slot.slot}.<id>`,
+							"success",
+						);
+					} catch (err) {
+						notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
+					}
+					return;
+				}
+
 				const store = createCheckpointStore();
 				const opts = { includeConsumed: intent.includeConsumed === true };
 				let checkpoint: CheckpointIndexEntry | undefined;
-				if (intent.idOrLast) {
-					checkpoint = await store.find(intent.idOrLast, opts);
+				if (intent.ref) {
+					checkpoint = await store.find(intent.ref, opts);
 					if (!checkpoint) {
 						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 						return;
@@ -1081,10 +1342,16 @@ export default function trailExtension(pi: ExtensionAPI) {
 					}
 				}
 				try {
-					const slot = await loadCarryover(checkpoint);
+					const slot = await loadCheckpointCarryover(checkpoint);
 					if (checkpoint.consumeOnUse) queueShutdownConsume(checkpoint);
-					const tag = checkpoint.consumeOnUse ? " (consume on session end)" : "";
-					notifyTrail(pi, ctx, `Trail loaded ${slot.artifacts.length} artifact(s) from ${checkpoint.id} as @${slot.slot}.* ${tag}`.trim(), "info");
+					const tag = checkpoint.consumeOnUse ? "consume on session end" : `${checkpoint.mode} checkpoint`;
+					announceAction(
+						pi,
+						ctx,
+						`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
+						`${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`,
+						"success",
+					);
 				} catch (err) {
 					notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
 				}
@@ -1092,17 +1359,27 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "unload") {
-				if (intent.idOrAll === "all") {
-					const ids = [...carryover.keys()];
-					for (const id of ids) unloadCarryover(id);
-					notifyTrail(pi, ctx, ids.length ? `Trail unloaded ${ids.length} checkpoint(s)` : "Trail had no loaded checkpoints", "info");
+				if (intent.targetKind === "all") {
+					const slots = [...carryover.keys()];
+					for (const slot of slots) unloadCarryoverBySlot(slot);
+					if (slots.length) announceAction(pi, ctx, `unloaded ${slots.length} slot${slots.length === 1 ? "" : "s"}`, slots.join(", "));
+					else notifyTrail(pi, ctx, "Trail had no loaded slots", "info");
+					return;
+				}
+				if (intent.targetKind === "worker") {
+					const workerStore = createWorkerStore();
+					const worker = await workerStore.find(intent.target);
+					const removed = worker ? unloadCarryoverBySource("worker", worker.id) : undefined;
+					if (removed) announceAction(pi, ctx, `unloaded ${removed.slot}`, worker ? workerSummaryName(worker) : undefined);
+					else notifyTrail(pi, ctx, "Trail worker not loaded", "warning");
 					return;
 				}
 				const store = createCheckpointStore();
-				const checkpoint = await store.find(intent.idOrAll, { includeConsumed: true });
-				const targetId = checkpoint?.id ?? intent.idOrAll;
-				const removed = unloadCarryover(targetId);
-				notifyTrail(pi, ctx, removed ? `Trail unloaded checkpoint ${removed.checkpoint.id}` : "Trail checkpoint not loaded", removed ? "info" : "warning");
+				const checkpoint = await store.find(intent.target, { includeConsumed: true });
+				const targetId = checkpoint?.id ?? intent.target;
+				const removed = unloadCarryoverBySource("checkpoint", targetId);
+				if (removed) announceAction(pi, ctx, `unloaded ${removed.slot}`, removed.sourceId);
+				else notifyTrail(pi, ctx, "Trail checkpoint not loaded", "warning");
 				return;
 			}
 

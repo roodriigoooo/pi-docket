@@ -3,33 +3,55 @@ import assert from "node:assert/strict";
 import { parseTrailCommand, TRAIL_COMMANDS, trailUsage } from "../extensions/trail-command-grammar.js";
 
 test("Trail grammar parses checkpoint delete commands", () => {
-	assert.deepEqual(parseTrailCommand("delete"), { ok: true, intent: { kind: "delete" } });
-	assert.deepEqual(parseTrailCommand("delete last"), { ok: true, intent: { kind: "delete", idOrLast: "last" } });
-	assert.deepEqual(parseTrailCommand("delete ck-123"), { ok: true, intent: { kind: "delete", idOrLast: "ck-123" } });
+	assert.deepEqual(parseTrailCommand("delete"), { ok: true, intent: { kind: "delete", target: undefined, targetKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("delete last"), { ok: true, intent: { kind: "delete", target: "last", targetKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("delete ck-123"), { ok: true, intent: { kind: "delete", target: "ck-123", targetKind: "checkpoint" } });
 
 	const invalid = parseTrailCommand("delete one two");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail delete \[id\|last\]/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail delete \[id\|last\|w:<worker>\]/);
 });
 
-test("Trail grammar advertises checkpoint delete", () => {
+test("Trail grammar parses worker delete via w: prefix", () => {
+	assert.deepEqual(parseTrailCommand("delete w:auth-bug-a3b1"), { ok: true, intent: { kind: "delete", target: "auth-bug-a3b1", targetKind: "worker" } });
+});
+
+test("Trail grammar parses bare wN as worker reference", () => {
+	assert.deepEqual(parseTrailCommand("load w1"), { ok: true, intent: { kind: "load", ref: "w1", includeConsumed: false, refKind: "worker" } });
+	assert.deepEqual(parseTrailCommand("unload w12"), { ok: true, intent: { kind: "unload", target: "w12", targetKind: "worker" } });
+	assert.deepEqual(parseTrailCommand("delete w3"), { ok: true, intent: { kind: "delete", target: "w3", targetKind: "worker" } });
+});
+
+test("Trail grammar advertises checkpoint and worker delete", () => {
 	assert.ok(TRAIL_COMMANDS.includes("delete"));
-	assert.match(trailUsage(), /\/trail delete \[id\|last\]/);
+	assert.ok(TRAIL_COMMANDS.includes("spawn"));
+	assert.match(trailUsage(), /\/trail delete \[id\|last\|w<N>\]/);
 });
 
 test("Trail grammar parses load and unload commands", () => {
-	assert.deepEqual(parseTrailCommand("load"), { ok: true, intent: { kind: "load", idOrLast: undefined, includeConsumed: false } });
-	assert.deepEqual(parseTrailCommand("load last"), { ok: true, intent: { kind: "load", idOrLast: "last", includeConsumed: false } });
-	assert.deepEqual(parseTrailCommand("load ck-1 --include-consumed"), { ok: true, intent: { kind: "load", idOrLast: "ck-1", includeConsumed: true } });
-	assert.deepEqual(parseTrailCommand("unload all"), { ok: true, intent: { kind: "unload", idOrAll: "all" } });
-	assert.deepEqual(parseTrailCommand("unload ck-9"), { ok: true, intent: { kind: "unload", idOrAll: "ck-9" } });
+	assert.deepEqual(parseTrailCommand("load"), { ok: true, intent: { kind: "load", ref: undefined, includeConsumed: false, refKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("load last"), { ok: true, intent: { kind: "load", ref: "last", includeConsumed: false, refKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("load ck-1 --include-consumed"), { ok: true, intent: { kind: "load", ref: "ck-1", includeConsumed: true, refKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("load w:auth-bug-a3b1"), { ok: true, intent: { kind: "load", ref: "auth-bug-a3b1", includeConsumed: false, refKind: "worker" } });
+
+	assert.deepEqual(parseTrailCommand("unload all"), { ok: true, intent: { kind: "unload", target: "all", targetKind: "all" } });
+	assert.deepEqual(parseTrailCommand("unload ck-9"), { ok: true, intent: { kind: "unload", target: "ck-9", targetKind: "checkpoint" } });
+	assert.deepEqual(parseTrailCommand("unload w:auth-bug-a3b1"), { ok: true, intent: { kind: "unload", target: "auth-bug-a3b1", targetKind: "worker" } });
 
 	const invalid = parseTrailCommand("unload");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail unload <id\|all>/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail unload/);
 });
 
-test("Trail grammar parses list with --include-consumed", () => {
-	assert.deepEqual(parseTrailCommand("list"), { ok: true, intent: { kind: "list", includeConsumed: false } });
-	assert.deepEqual(parseTrailCommand("list --include-consumed"), { ok: true, intent: { kind: "list", includeConsumed: true } });
+test("Trail grammar parses list with --include-consumed and --workers", () => {
+	assert.deepEqual(parseTrailCommand("list"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: false } });
+	assert.deepEqual(parseTrailCommand("list --include-consumed"), { ok: true, intent: { kind: "list", includeConsumed: true, workers: false } });
+	assert.deepEqual(parseTrailCommand("list --workers"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: true } });
+});
+
+test("Trail grammar parses spawn", () => {
+	assert.deepEqual(parseTrailCommand("spawn investigate auth bug"), { ok: true, intent: { kind: "spawn", task: "investigate auth bug" } });
+	const invalid = parseTrailCommand("spawn");
+	assert.equal(invalid.ok, false);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
 });
