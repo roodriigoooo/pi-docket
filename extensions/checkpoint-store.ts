@@ -23,13 +23,18 @@ export type CheckpointSummary = {
 	estimatedTokens: number;
 };
 
+type ListOptions = { includeConsumed?: boolean };
+
 export type CheckpointStore = {
 	save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry>;
-	find(idOrLast: string): Promise<CheckpointIndexEntry | undefined>;
-	list(): Promise<CheckpointIndexEntry[]>;
-	listSummaries(): Promise<CheckpointSummary[]>;
+	find(idOrLast: string, options?: ListOptions): Promise<CheckpointIndexEntry | undefined>;
+	list(options?: ListOptions): Promise<CheckpointIndexEntry[]>;
+	listSummaries(options?: ListOptions): Promise<CheckpointSummary[]>;
 	readMarkdown(checkpoint: CheckpointIndexEntry): Promise<string>;
-	consume(checkpoint: CheckpointIndexEntry): Promise<void>;
+	readArtifacts(checkpoint: CheckpointIndexEntry): Promise<Artifact[]>;
+	markConsumed(checkpoint: CheckpointIndexEntry, timestamp?: string): Promise<void>;
+	purge(checkpoint: CheckpointIndexEntry): Promise<void>;
+	sweepConsumed(retentionDays: number): Promise<number>;
 	artifactsFile(id: string): string;
 };
 
@@ -112,6 +117,11 @@ async function checkpointSummary(entry: CheckpointIndexEntry): Promise<Checkpoin
 	};
 }
 
+function applyConsumedFilter(entries: CheckpointIndexEntry[], options?: ListOptions): CheckpointIndexEntry[] {
+	if (options?.includeConsumed) return entries;
+	return entries.filter((entry) => !entry.consumedAt);
+}
+
 export function createCheckpointStore(): CheckpointStore {
 	return {
 		async save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry> {
@@ -135,30 +145,68 @@ export function createCheckpointStore(): CheckpointStore {
 			return entry;
 		},
 
-		async find(idOrLast: string): Promise<CheckpointIndexEntry | undefined> {
-			const index = await this.list();
+		async find(idOrLast: string, options?: ListOptions): Promise<CheckpointIndexEntry | undefined> {
+			const index = await this.list(options);
 			if (index.length === 0) return undefined;
 			if (!idOrLast || idOrLast === "last") return index[index.length - 1];
 			return [...index].reverse().find((entry) => entry.id === idOrLast || entry.id.startsWith(idOrLast));
 		},
 
-		async list(): Promise<CheckpointIndexEntry[]> {
-			return existingMarkdownEntries(await loadCheckpointIndex());
+		async list(options?: ListOptions): Promise<CheckpointIndexEntry[]> {
+			const present = await existingMarkdownEntries(await loadCheckpointIndex());
+			return applyConsumedFilter(present, options);
 		},
 
-		async listSummaries(): Promise<CheckpointSummary[]> {
-			return Promise.all((await this.list()).map((entry) => checkpointSummary(entry)));
+		async listSummaries(options?: ListOptions): Promise<CheckpointSummary[]> {
+			return Promise.all((await this.list(options)).map((entry) => checkpointSummary(entry)));
 		},
 
 		async readMarkdown(checkpoint: CheckpointIndexEntry): Promise<string> {
 			return fs.readFile(checkpoint.file, "utf8");
 		},
 
-		async consume(checkpoint: CheckpointIndexEntry): Promise<void> {
+		async readArtifacts(checkpoint: CheckpointIndexEntry): Promise<Artifact[]> {
+			return checkpointArtifacts(checkpoint.id);
+		},
+
+		async markConsumed(checkpoint: CheckpointIndexEntry, timestamp?: string): Promise<void> {
+			const index = await loadCheckpointIndex();
+			const stamp = timestamp ?? new Date().toISOString();
+			let changed = false;
+			const updated = index.map((entry) => {
+				if (entry.id !== checkpoint.id) return entry;
+				if (entry.consumedAt) return entry;
+				changed = true;
+				return { ...entry, consumedAt: stamp };
+			});
+			if (changed) await saveCheckpointIndex(updated);
+		},
+
+		async purge(checkpoint: CheckpointIndexEntry): Promise<void> {
 			const index = await loadCheckpointIndex();
 			await saveCheckpointIndex(index.filter((entry) => entry.id !== checkpoint.id));
 			await fs.rm(checkpoint.file, { force: true });
 			await fs.rm(checkpointArtifactsFile(checkpoint.id), { force: true });
+		},
+
+		async sweepConsumed(retentionDays: number): Promise<number> {
+			if (!Number.isFinite(retentionDays) || retentionDays < 0) return 0;
+			const index = await loadCheckpointIndex();
+			const cutoff = Date.now() - retentionDays * 86400000;
+			const expired: CheckpointIndexEntry[] = [];
+			const survivors: CheckpointIndexEntry[] = [];
+			for (const entry of index) {
+				const consumed = entry.consumedAt ? Date.parse(entry.consumedAt) : NaN;
+				if (Number.isFinite(consumed) && consumed <= cutoff) expired.push(entry);
+				else survivors.push(entry);
+			}
+			if (expired.length === 0) return 0;
+			await saveCheckpointIndex(survivors);
+			await Promise.all(expired.flatMap((entry) => [
+				fs.rm(entry.file, { force: true }),
+				fs.rm(checkpointArtifactsFile(entry.id), { force: true }),
+			]));
+			return expired.length;
 		},
 
 		artifactsFile(id: string): string {

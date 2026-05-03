@@ -350,8 +350,13 @@ async function inspectTextForArtifact(artifact: Artifact, cwd: string): Promise<
 	}
 }
 
-export function createArtifactCatalog(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig): ArtifactCatalog {
-	const artifacts = buildArtifacts(ctx, config);
+export function createArtifactCatalog(
+	ctx: TrailRuntimeContext,
+	config: ArtifactCatalogConfig,
+	carryover: Artifact[] = [],
+): ArtifactCatalog {
+	const current = buildArtifacts(ctx, config);
+	const artifacts: Artifact[] = [...current, ...carryover];
 	const byId = new Map<string, Artifact>();
 	for (const artifact of artifacts) {
 		byId.set(artifact.displayId.toLowerCase(), artifact);
@@ -378,7 +383,7 @@ export function createArtifactCatalog(ctx: TrailRuntimeContext, config: Artifact
 			return searchArtifacts(query, artifacts);
 		},
 		selectForCheckpoint(mode: CheckpointMode, limit: number) {
-			return chooseCheckpointArtifacts(artifacts, mode, limit);
+			return chooseCheckpointArtifacts(current, mode, limit);
 		},
 		checkpointPayload(selected: Artifact[], mode: CheckpointMode) {
 			return selected.map((artifact) => ({

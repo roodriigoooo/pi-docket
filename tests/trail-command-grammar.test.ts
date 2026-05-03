@@ -16,3 +16,20 @@ test("Trail grammar advertises checkpoint delete", () => {
 	assert.ok(TRAIL_COMMANDS.includes("delete"));
 	assert.match(trailUsage(), /\/trail delete \[id\|last\]/);
 });
+
+test("Trail grammar parses load and unload commands", () => {
+	assert.deepEqual(parseTrailCommand("load"), { ok: true, intent: { kind: "load", idOrLast: undefined, includeConsumed: false } });
+	assert.deepEqual(parseTrailCommand("load last"), { ok: true, intent: { kind: "load", idOrLast: "last", includeConsumed: false } });
+	assert.deepEqual(parseTrailCommand("load ck-1 --include-consumed"), { ok: true, intent: { kind: "load", idOrLast: "ck-1", includeConsumed: true } });
+	assert.deepEqual(parseTrailCommand("unload all"), { ok: true, intent: { kind: "unload", idOrAll: "all" } });
+	assert.deepEqual(parseTrailCommand("unload ck-9"), { ok: true, intent: { kind: "unload", idOrAll: "ck-9" } });
+
+	const invalid = parseTrailCommand("unload");
+	assert.equal(invalid.ok, false);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail unload <id\|all>/);
+});
+
+test("Trail grammar parses list with --include-consumed", () => {
+	assert.deepEqual(parseTrailCommand("list"), { ok: true, intent: { kind: "list", includeConsumed: false } });
+	assert.deepEqual(parseTrailCommand("list --include-consumed"), { ok: true, intent: { kind: "list", includeConsumed: true } });
+});

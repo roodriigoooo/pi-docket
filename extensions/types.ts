@@ -12,6 +12,7 @@ export type Artifact = {
 	entryId?: string;
 	timestamp?: number;
 	meta?: Record<string, unknown>;
+	source?: string; // undefined = current session; otherwise carryover slot id (e.g. "c1")
 };
 
 export type ArtifactSummary = Pick<Artifact, "displayId" | "ref" | "kind" | "title" | "subtitle" | "timestamp">;
@@ -25,4 +26,5 @@ export type CheckpointIndexEntry = {
 	sourceSession?: string;
 	note?: string;
 	consumeOnUse?: boolean;
+	consumedAt?: string;
 };

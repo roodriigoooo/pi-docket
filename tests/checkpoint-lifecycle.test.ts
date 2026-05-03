@@ -21,6 +21,7 @@ function config(enabled = false) {
 		maxArtifacts: 50,
 		maxBodyChars: 2000,
 		checkpointArtifacts: 24,
+		consumedRetentionDays: 7,
 		summarizer: {
 			enabled,
 			maxOutputTokens: 1200,
@@ -76,7 +77,10 @@ function store() {
 			list: async () => [],
 			listSummaries: async () => [],
 			readMarkdown: async () => "",
-			consume: async () => {},
+			readArtifacts: async () => [],
+			markConsumed: async () => {},
+			purge: async () => {},
+			sweepConsumed: async () => 0,
 			artifactsFile: (id: string) => `/tmp/${id}.artifacts.json`,
 		},
 	};

@@ -8,6 +8,7 @@ export type TrailConfig = {
 	maxArtifacts: number;
 	maxBodyChars: number;
 	checkpointArtifacts: number;
+	consumedRetentionDays: number;
 	summarizer: CheckpointSummarizerConfig;
 };
 
@@ -15,6 +16,7 @@ export const DEFAULT_CONFIG: TrailConfig = {
 	maxArtifacts: 300,
 	maxBodyChars: 6000,
 	checkpointArtifacts: 24,
+	consumedRetentionDays: 7,
 	summarizer: {
 		enabled: true,
 		maxOutputTokens: 1200,

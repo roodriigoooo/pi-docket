@@ -16,7 +16,9 @@ export type TrailIntent =
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
 	| { kind: "delete"; idOrLast?: string }
-	| { kind: "list" }
+	| { kind: "list"; includeConsumed?: boolean }
+	| { kind: "load"; idOrLast?: string; includeConsumed?: boolean }
+	| { kind: "unload"; idOrAll: string }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
 
@@ -24,7 +26,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const CHECKPOINT_USAGE = "/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]";
 const MODE_FLAGS: Record<string, CheckpointMode> = {
@@ -44,8 +46,10 @@ export function trailUsage(): string {
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
+		"/trail load [id|last] [--include-consumed]   load prior checkpoint artifacts into navigator (no context bytes)",
+		"/trail unload <id|all>         drop a loaded checkpoint from session",
 		"/trail delete [id|last]",
-		"/trail list",
+		"/trail list [--include-consumed]",
 		"/trail ref <artifact-id>       add compact ref chip (@id) above editor",
 		"/trail inject <artifact-id>    alias for ref",
 		"/trail inject-full <artifact-id>  add full chip (@id*) above editor",
@@ -165,8 +169,29 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "continue" || command === "resume") return parseCheckpointIdCommand("continue", command, rest);
 	if (command === "delete") return parseCheckpointIdCommand("delete", command, rest);
 	if (command === "list") {
-		if (rest.length > 0) return parseError("Usage: /trail list");
-		return { ok: true, intent: { kind: "list" } };
+		let includeConsumed = false;
+		const extras: string[] = [];
+		for (const token of rest) {
+			if (token === "--include-consumed") includeConsumed = true;
+			else extras.push(token);
+		}
+		if (extras.length > 0) return parseError("Usage: /trail list [--include-consumed]");
+		return { ok: true, intent: { kind: "list", includeConsumed } };
+	}
+	if (command === "load") {
+		let includeConsumed = false;
+		const positional: string[] = [];
+		for (const token of rest) {
+			if (token === "--include-consumed") includeConsumed = true;
+			else positional.push(token);
+		}
+		if (positional.length > 1) return parseError("Usage: /trail load [id|last] [--include-consumed]");
+		const idOrLast = positional[0];
+		return { ok: true, intent: { kind: "load", idOrLast, includeConsumed } };
+	}
+	if (command === "unload") {
+		if (rest.length !== 1) return parseError("Usage: /trail unload <id|all>");
+		return { ok: true, intent: { kind: "unload", idOrAll: rest[0]! } };
 	}
 	if (command === "clear") {
 		if (rest.length > 0) return parseError("Usage: /trail clear");

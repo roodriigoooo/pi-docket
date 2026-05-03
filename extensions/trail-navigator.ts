@@ -1,10 +1,12 @@
 import type { Artifact, ArtifactKind } from "./types.js";
 
 export type NavigatorFilter = ArtifactKind | "all";
+export type NavigatorSource = "current" | "all" | string;
 
 export type NavigatorState = {
 	selected: number;
 	filter: NavigatorFilter;
+	source: NavigatorSource;
 	showDetail: boolean;
 };
 
@@ -42,11 +44,34 @@ export type NavigatorViewModel = {
 const FILTERS: NavigatorFilter[] = ["all", "error", "command", "file", "code", "prompt", "response", "checkpoint"];
 
 export function initialNavigatorState(): NavigatorState {
-	return { selected: 0, filter: "all", showDetail: true };
+	return { selected: 0, filter: "all", source: "current", showDetail: true };
+}
+
+export function availableSources(artifacts: Artifact[]): NavigatorSource[] {
+	const slots = new Set<string>();
+	let hasCurrent = false;
+	let hasCarryover = false;
+	for (const artifact of artifacts) {
+		if (artifact.source) { slots.add(artifact.source); hasCarryover = true; }
+		else hasCurrent = true;
+	}
+	const out: NavigatorSource[] = [];
+	if (hasCurrent) out.push("current");
+	if (hasCarryover && hasCurrent) out.push("all");
+	for (const slot of [...slots].sort()) out.push(slot);
+	if (out.length === 0) out.push("all");
+	return out;
+}
+
+function applySourceFilter(artifacts: Artifact[], source: NavigatorSource): Artifact[] {
+	if (source === "all") return artifacts;
+	if (source === "current") return artifacts.filter((artifact) => !artifact.source);
+	return artifacts.filter((artifact) => artifact.source === source);
 }
 
 export function filteredArtifacts(state: NavigatorState, artifacts: Artifact[]): Artifact[] {
-	return state.filter === "all" ? artifacts : artifacts.filter((artifact) => artifact.kind === state.filter);
+	const sourced = applySourceFilter(artifacts, state.source);
+	return state.filter === "all" ? sourced : sourced.filter((artifact) => artifact.kind === state.filter);
 }
 
 export function selectedArtifact(state: NavigatorState, artifacts: Artifact[]): Artifact | undefined {
@@ -69,6 +94,13 @@ function cycleFilter(filter: NavigatorFilter): NavigatorFilter {
 	return FILTERS[(FILTERS.indexOf(filter) + 1) % FILTERS.length] ?? "all";
 }
 
+function cycleSource(current: NavigatorSource, artifacts: Artifact[]): NavigatorSource {
+	const sources = availableSources(artifacts);
+	const idx = sources.indexOf(current);
+	if (idx === -1) return sources[0] ?? "current";
+	return sources[(idx + 1) % sources.length] ?? sources[0]!;
+}
+
 function withSelectedArtifact(state: NavigatorState, artifacts: Artifact[], action: "inspect" | "reference" | "injectFull" | "copy"): NavigatorTransition {
 	const artifact = selectedArtifact(state, artifacts);
 	return artifact ? { state, action: { action, artifact } } : { state };
@@ -86,6 +118,7 @@ export function handleNavigatorKey(state: NavigatorState, artifacts: Artifact[],
 	if (key.raw === "G") return { state: { ...normalizedState, selected: Math.max(0, items.length - 1) } };
 	if (key.raw === "v") return { state: { ...normalizedState, showDetail: !normalizedState.showDetail } };
 	if (key.raw === "\t" || key.isTab) return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
+	if (key.raw === "s") return { state: { ...normalizedState, source: cycleSource(normalizedState.source, artifacts), selected: 0 } };
 	if (key.isEnter) return withSelectedArtifact(normalizedState, artifacts, "inspect");
 	if (key.raw === "r" || key.raw === "i") return withSelectedArtifact(normalizedState, artifacts, "reference");
 	if (key.raw === "I") return withSelectedArtifact(normalizedState, artifacts, "injectFull");

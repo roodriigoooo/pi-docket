@@ -115,8 +115,10 @@ continue from the latest checkpoint in a fresh session:
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail delete [id|last]` — choose or delete a checkpoint
-- `/trail list` — list checkpoints
+- `/trail load [id|last] [--include-consumed]` — load a prior checkpoint's artifacts into the navigator without spending model-context tokens
+- `/trail unload <id|all>` — drop a loaded checkpoint from the session
+- `/trail delete [id|last]` — permanently delete a checkpoint (bypasses soft-consume)
+- `/trail list [--include-consumed]` — list checkpoints
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
@@ -150,7 +152,8 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
-- `tab` — cycle artifact type
+- `tab` — cycle artifact kind filter
+- `s` — cycle source (current / all / loaded slots like `c1`, `c2`)
 - `enter` — inspect selected artifact; file artifacts open current full file contents
 - `i` or `r` — inject compact artifact reference
 - `I` — inject full artifact text
@@ -173,6 +176,7 @@ example:
   "maxArtifacts": 300,
   "maxBodyChars": 6000,
   "checkpointArtifacts": 24,
+  "consumedRetentionDays": 7,
   "summarizer": {
     "enabled": true,
     "provider": "openai",
@@ -192,7 +196,9 @@ checkpoints live in:
 - `~/.pi/agent/trail/checkpoints/<id>.artifacts.json`
 - `~/.pi/agent/trail/index.json`
 
-`--once` checkpoints are deleted from disk and index after successful `/trail continue` / `/trail resume`.
+`--once` checkpoints are **soft-consumed** at the end of the session in which they were used (`/trail continue`, `/trail resume`, or `/trail load`). The index entry is marked `consumedAt`, hidden from default listings, and the underlying files stay on disk for `consumedRetentionDays` (default 7) so an accidental cancel is recoverable. `/trail unload <id>` cancels the pending consume contract for the current session. `/trail delete` always purges immediately. Pass `--include-consumed` to `list` / `load` to see soft-consumed entries.
+
+File-path references inside an injected checkpoint always survive consume — they point to your project's disk paths, not Trail storage. Only artifact-level lookups (`/trail ref c1.f12`, etc.) require the original `artifacts.json` to still exist; `/trail load` rehydrates them from the sidecar without spending any model-context tokens.
 
 ### example checkpoint markdown
 

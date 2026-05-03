@@ -40,7 +40,7 @@ import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
-import { handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
+import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -308,6 +308,13 @@ function filterBar(theme: any, active: string): string {
 	return filters.map((filter) => filter.value === active ? theme.fg("accent", `[${filter.label}]`) : theme.fg("dim", ` ${filter.label} `)).join(" ");
 }
 
+function sourceBar(theme: any, sources: string[], active: string): string {
+	if (sources.length <= 1) return "";
+	return sources
+		.map((source) => source === active ? theme.fg("accent", `[${source}]`) : theme.fg("dim", ` ${source} `))
+		.join(" ");
+}
+
 class TrailView implements Component {
 	private container: Container | Box = new Container();
 	private state: NavigatorState = initialNavigatorState();
@@ -362,13 +369,18 @@ class TrailView implements Component {
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
 		const sel = view.selectedArtifact;
-		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`${view.items.length}/${this.artifacts.length}`)} `;
+		const sources = availableSources(this.artifacts);
+		const sourceLabel = this.state.source;
+		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`· ${sourceLabel} ·`)} ${dim(`${view.items.length}/${this.artifacts.length}`)} `;
 		const headerRight = sel
 			? ` ${dim(`@${sel.id}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} `
 			: "";
 		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 		this.container.addChild(new Text(filterBar(this.theme, this.state.filter), 1, 0));
+		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
+		if (sourceLine) this.container.addChild(new Text(sourceLine, 1, 0));
 
+		const idWidth = Math.max(5, ...view.visible.map((a) => a?.id.length ?? 0));
 		const listWidth = Math.max(30, innerWidth);
 		if (view.visible.length === 0) {
 			const isAllEmpty = this.artifacts.length === 0;
@@ -377,7 +389,7 @@ class TrailView implements Component {
 				: muted(`no ${this.state.filter === "all" ? "" : `${kindLabel(this.state.filter)} `}artifacts in this filter`);
 			const hint = isAllEmpty
 				? dim("run a command, ask the agent, or create a checkpoint")
-				: dim("tab to switch filter · q close");
+				: dim("tab/s to switch filter/source · q close");
 			this.container.addChild(new Text("", 1, 0));
 			this.container.addChild(new Text(title, 2, 0));
 			this.container.addChild(new Text(hint, 2, 0));
@@ -389,14 +401,16 @@ class TrailView implements Component {
 				const absolute = view.visibleStart + i;
 				const selected = absolute === view.selected;
 				const marker = selected ? accent("▸") : dim(" ");
-				const id = selected ? accent(this.theme.bold(artifact.id.padEnd(5))) : muted(artifact.id.padEnd(5));
+				const idText = artifact.id.padEnd(idWidth);
+				const id = selected ? accent(this.theme.bold(idText)) : muted(idText);
 				const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
+				const sourcePill = artifact.source ? muted(`[${artifact.source}]`) : "      ";
 				const age = relativeTime(artifact.timestamp);
 				const meta = [artifact.subtitle, age].filter(Boolean).join(" · ");
 				const title = selected
 					? this.theme.bold(this.theme.fg("text", artifact.title))
 					: muted(artifact.title);
-				const line = `${marker} ${id} ${kind} ${title} ${dim(meta)}`;
+				const line = `${marker} ${sourcePill} ${id} ${kind} ${title} ${dim(meta)}`;
 				this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 			}
 		}
@@ -409,7 +423,7 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · tab filter · enter open · r cite · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
+		this.container.addChild(new Text(dim("j/k move · tab filter · s source · enter open · r cite · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -424,7 +438,9 @@ async function showTrailBrowser(ctx: ExtensionCommandContext, catalog: ArtifactC
 	});
 }
 
-type ResumeSelection = { action: "continue" | "preview" | "edit" | "delete"; summary: CheckpointSummary; index: number } | null;
+type ResumeAction = "continue" | "preview" | "edit" | "delete" | "load";
+type ResumeMode = "resume" | "delete" | "load";
+type ResumeSelection = { action: ResumeAction; summary: CheckpointSummary; index: number } | null;
 
 function compactTokens(tokens: number): string {
 	return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
@@ -442,7 +458,7 @@ class TrailResumeView implements Component {
 		private summaries: CheckpointSummary[],
 		initialSelected: number,
 		private done: (result: ResumeSelection) => void,
-		private mode: "resume" | "delete" = "resume",
+		private mode: ResumeMode = "resume",
 	) {
 		this.selected = Math.min(Math.max(0, initialSelected), Math.max(0, summaries.length - 1));
 	}
@@ -456,15 +472,18 @@ class TrailResumeView implements Component {
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
 		else if (data === "g") this.selected = 0;
 		else if (data === "G") this.selected = Math.max(0, this.summaries.length - 1);
-		else if (matchesKey(data, Key.enter)) this.finish(this.mode === "delete" ? "delete" : "continue");
+		else if (matchesKey(data, Key.enter)) {
+			const action: ResumeAction = this.mode === "delete" ? "delete" : this.mode === "load" ? "load" : "continue";
+			this.finish(action);
+		}
 		else if (data === "p") this.finish("preview");
 		else if (data === "e" && this.mode === "resume") this.finish("edit");
-		else if (data === "d") this.finish("delete");
+		else if (data === "d" && this.mode !== "load") this.finish("delete");
 		this.invalidate();
 		this.tui.requestRender();
 	}
 
-	private finish(action: "continue" | "preview" | "edit" | "delete"): void {
+	private finish(action: ResumeAction): void {
 		const summary = this.summaries[this.selected];
 		if (summary) this.done({ action, summary, index: this.selected });
 	}
@@ -504,7 +523,11 @@ class TrailResumeView implements Component {
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const help = this.mode === "delete" ? "j/k move · enter delete · p preview · q close" : "j/k move · enter continue · p preview · e edit · d delete · q close";
+		const help = this.mode === "delete"
+			? "j/k move · enter delete · p preview · q close"
+			: this.mode === "load"
+				? "j/k move · enter load · p preview · q close"
+				: "j/k move · enter continue · p preview · e edit · d delete · q close";
 		this.container.addChild(new Text(dim(help), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -513,7 +536,7 @@ class TrailResumeView implements Component {
 	}
 }
 
-async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number, mode: "resume" | "delete" = "resume"): Promise<ResumeSelection> {
+async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number, mode: ResumeMode = "resume"): Promise<ResumeSelection> {
 	return ctx.ui.custom((tui, theme, _kb, done) => new TrailResumeView(tui, theme, summaries, selected, done, mode), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
@@ -576,7 +599,14 @@ function setLoadedCheckpointWidget(ctx: ExtensionContext, checkpoint: LoadedChec
 	);
 }
 
-async function startCheckpointSession(pi: ExtensionAPI, ctx: ExtensionCommandContext, store: ReturnType<typeof createCheckpointStore>, checkpoint: CheckpointIndexEntry, content: string): Promise<void> {
+async function startCheckpointSession(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	store: ReturnType<typeof createCheckpointStore>,
+	checkpoint: CheckpointIndexEntry,
+	content: string,
+	queueConsume: (checkpoint: CheckpointIndexEntry) => void,
+): Promise<void> {
 	const parentSession = ctx.sessionManager.getSessionFile();
 	const checkpointMeta = loadedCheckpointMeta(checkpoint);
 	const result = await ctx.newSession({
@@ -587,12 +617,8 @@ async function startCheckpointSession(pi: ExtensionAPI, ctx: ExtensionCommandCon
 		withSession: async (replacementCtx) => {
 			setLoadedCheckpointWidget(replacementCtx, checkpointMeta);
 			if (checkpoint.consumeOnUse) {
-				try {
-					await store.consume(checkpoint);
-					replacementCtx.ui.notify(`Trail loaded and consumed checkpoint ${checkpoint.id}`, "info");
-				} catch (err) {
-					replacementCtx.ui.notify(`Trail loaded checkpoint ${checkpoint.id}, but could not delete it: ${String(err)}`, "warning");
-				}
+				queueConsume(checkpoint);
+				replacementCtx.ui.notify(`Trail loaded checkpoint ${checkpoint.id} (consume on session end)`, "info");
 			} else {
 				replacementCtx.ui.notify(`Trail loaded checkpoint ${checkpoint.id}`, "info");
 			}
@@ -606,9 +632,11 @@ async function confirmDeleteCheckpoint(ctx: ExtensionCommandContext, checkpoint:
 	return ctx.ui.confirm("Delete Trail checkpoint?", `Delete checkpoint ${checkpoint.id}? This cannot be undone.`);
 }
 
+type QueueConsume = (checkpoint: CheckpointIndexEntry) => void;
+
 async function deleteCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<boolean> {
 	const store = createCheckpointStore();
-	const checkpoint = await store.find(idOrLast || "last");
+	const checkpoint = await store.find(idOrLast || "last", { includeConsumed: true });
 	if (!checkpoint) {
 		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 		return false;
@@ -617,25 +645,25 @@ async function deleteCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, 
 		notifyTrail(pi, ctx, "Trail delete cancelled", "info");
 		return false;
 	}
-	await store.consume(checkpoint);
+	await store.purge(checkpoint);
 	notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
 	return true;
 }
 
-async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string): Promise<void> {
+async function continueCheckpoint(pi: ExtensionAPI, ctx: ExtensionCommandContext, idOrLast: string, queueConsume: QueueConsume): Promise<void> {
 	const store = createCheckpointStore();
 	const checkpoint = await store.find(idOrLast || "last");
 	if (!checkpoint) {
 		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 		return;
 	}
-	await startCheckpointSession(pi, ctx, store, checkpoint, await store.readMarkdown(checkpoint));
+	await startCheckpointSession(pi, ctx, store, checkpoint, await store.readMarkdown(checkpoint), queueConsume);
 }
 
-async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionCommandContext, queueConsume: QueueConsume): Promise<void> {
 	const store = createCheckpointStore();
 	if (!ctx.hasUI) {
-		await continueCheckpoint(pi, ctx, "last");
+		await continueCheckpoint(pi, ctx, "last", queueConsume);
 		return;
 	}
 	let summaries = await store.listSummaries();
@@ -651,7 +679,7 @@ async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionComman
 		const checkpoint = result.summary.entry;
 		if (result.action === "delete") {
 			if (!(await confirmDeleteCheckpoint(ctx, checkpoint))) continue;
-			await store.consume(checkpoint);
+			await store.purge(checkpoint);
 			notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
 			summaries = await store.listSummaries();
 			if (summaries.length === 0) return;
@@ -669,10 +697,10 @@ async function selectCheckpointToContinue(pi: ExtensionAPI, ctx: ExtensionComman
 				notifyTrail(pi, ctx, "Trail continue cancelled", "info");
 				return;
 			}
-			await startCheckpointSession(pi, ctx, store, checkpoint, edited);
+			await startCheckpointSession(pi, ctx, store, checkpoint, edited, queueConsume);
 			return;
 		}
-		await startCheckpointSession(pi, ctx, store, checkpoint, markdown);
+		await startCheckpointSession(pi, ctx, store, checkpoint, markdown, queueConsume);
 		return;
 	}
 }
@@ -683,7 +711,7 @@ async function selectCheckpointToDelete(pi: ExtensionAPI, ctx: ExtensionCommandC
 		await deleteCheckpoint(pi, ctx, "last");
 		return;
 	}
-	let summaries = await store.listSummaries();
+	let summaries = await store.listSummaries({ includeConsumed: true });
 	if (summaries.length === 0) {
 		notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 		return;
@@ -699,19 +727,22 @@ async function selectCheckpointToDelete(pi: ExtensionAPI, ctx: ExtensionCommandC
 			continue;
 		}
 		if (!(await confirmDeleteCheckpoint(ctx, checkpoint))) continue;
-		await store.consume(checkpoint);
+		await store.purge(checkpoint);
 		notifyTrail(pi, ctx, `Trail checkpoint deleted: ${checkpoint.id}`, "info");
-		summaries = await store.listSummaries();
+		summaries = await store.listSummaries({ includeConsumed: true });
 		if (summaries.length === 0) return;
 		selected = Math.min(selected, summaries.length - 1);
 	}
 }
 
-async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function showCheckpointList(pi: ExtensionAPI, ctx: ExtensionCommandContext, includeConsumed = false): Promise<void> {
 	const store = createCheckpointStore();
-	const index = await store.list();
+	const index = await store.list({ includeConsumed });
 	const lines = index.length
-		? index.map((c) => `${c.id}\t${c.mode}${c.consumeOnUse ? ":once" : ""}\t${c.cwd}\t${c.note ?? ""}`).join("\n")
+		? index.map((c) => {
+			const tag = `${c.mode}${c.consumeOnUse ? ":once" : ""}${c.consumedAt ? ":consumed" : ""}`;
+			return `${c.id}\t${tag}\t${c.cwd}\t${c.note ?? ""}`;
+		}).join("\n")
 		: "No Trail checkpoints";
 	emitText(pi, ctx, lines, "list", "trail · checkpoints");
 }
@@ -769,10 +800,77 @@ type Chip = {
 
 type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
 
+type CarryoverSlot = {
+	slot: string;
+	checkpoint: CheckpointIndexEntry;
+	artifacts: Artifact[];
+};
+
 export default function trailExtension(pi: ExtensionAPI) {
 	let chips: Chip[] = [];
 	let loadedCheckpoint: LoadedCheckpoint | undefined;
 	let activeCtx: ExtensionContext | undefined;
+	let pendingShutdownConsume: Map<string, CheckpointIndexEntry> = new Map();
+	let carryover: Map<string, CarryoverSlot> = new Map();
+	let nextSlotIndex = 1;
+	let sweptOnce = false;
+
+	const carryoverArtifacts = (): Artifact[] => {
+		const out: Artifact[] = [];
+		for (const slot of carryover.values()) out.push(...slot.artifacts);
+		return out;
+	};
+
+	const namespaceCarryover = (artifacts: Artifact[], slot: string): Artifact[] => {
+		return artifacts.map((artifact) => {
+			const namespacedId = `${slot}.${artifact.displayId}`;
+			return { ...artifact, id: namespacedId, displayId: namespacedId, source: slot };
+		});
+	};
+
+	const loadCarryover = async (checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> => {
+		const existing = carryover.get(checkpoint.id);
+		if (existing) return existing;
+		const store = createCheckpointStore();
+		const raw = await store.readArtifacts(checkpoint);
+		const slot = `c${nextSlotIndex++}`;
+		const namespaced = namespaceCarryover(raw, slot);
+		const entry: CarryoverSlot = { slot, checkpoint, artifacts: namespaced };
+		carryover.set(checkpoint.id, entry);
+		return entry;
+	};
+
+	const unloadCarryover = (checkpointId: string): CarryoverSlot | undefined => {
+		const entry = carryover.get(checkpointId);
+		if (!entry) return undefined;
+		carryover.delete(checkpointId);
+		pendingShutdownConsume.delete(checkpointId);
+		return entry;
+	};
+
+	const queueShutdownConsume: QueueConsume = (checkpoint) => {
+		pendingShutdownConsume.set(checkpoint.id, checkpoint);
+	};
+
+	const drainShutdownConsume = async (): Promise<void> => {
+		if (pendingShutdownConsume.size === 0) return;
+		const store = createCheckpointStore();
+		const pending = [...pendingShutdownConsume.values()];
+		pendingShutdownConsume = new Map();
+		await Promise.all(pending.map(async (checkpoint) => {
+			try { await store.markConsumed(checkpoint); }
+			catch { /* best-effort */ }
+		}));
+	};
+
+	const maybeSweep = async (cwd: string): Promise<void> => {
+		if (sweptOnce) return;
+		sweptOnce = true;
+		try {
+			const config = await loadConfig(cwd);
+			await createCheckpointStore().sweepConsumed(config.consumedRetentionDays);
+		} catch { /* best-effort */ }
+	};
 
 	const findChipIndex = (ref: string): number => chips.findIndex((c) => c.ref === ref);
 
@@ -836,7 +934,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	): Promise<{ text: string; expanded: number; missing: string[] }> => {
 		if (chips.length === 0) return { text: userText, expanded: 0, missing: [] };
 		const config = await loadConfig(ctx.cwd);
-		const catalog = createArtifactCatalog(ctx, config);
+		const catalog = createArtifactCatalog(ctx, config, carryoverArtifacts());
 		const blocks: string[] = [];
 		const missing: string[] = [];
 		for (const chip of chips) {
@@ -871,12 +969,17 @@ export default function trailExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		chips = [];
+		pendingShutdownConsume = new Map();
+		carryover = new Map();
+		nextSlotIndex = 1;
 		loadedCheckpoint = loadedCheckpointFromSession(ctx);
 		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
+		void maybeSweep(ctx.cwd);
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, ctx) => {
+		await drainShutdownConsume();
 		activeCtx = undefined;
 		chips = [];
 		loadedCheckpoint = undefined;
@@ -934,8 +1037,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "continue") {
-				if (intent.idOrLast) await continueCheckpoint(pi, ctx, intent.idOrLast);
-				else await selectCheckpointToContinue(pi, ctx);
+				if (intent.idOrLast) await continueCheckpoint(pi, ctx, intent.idOrLast, queueShutdownConsume);
+				else await selectCheckpointToContinue(pi, ctx, queueShutdownConsume);
 				return;
 			}
 
@@ -946,12 +1049,65 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "list") {
-				await showCheckpointList(pi, ctx);
+				await showCheckpointList(pi, ctx, intent.includeConsumed === true);
+				return;
+			}
+
+			if (intent.kind === "load") {
+				const store = createCheckpointStore();
+				const opts = { includeConsumed: intent.includeConsumed === true };
+				let checkpoint: CheckpointIndexEntry | undefined;
+				if (intent.idOrLast) {
+					checkpoint = await store.find(intent.idOrLast, opts);
+					if (!checkpoint) {
+						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+						return;
+					}
+				} else {
+					const summaries = await store.listSummaries(opts);
+					if (summaries.length === 0) {
+						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+						return;
+					}
+					if (!ctx.hasUI) {
+						checkpoint = summaries[summaries.length - 1]!.entry;
+					} else {
+						const selected = await showCheckpointResumeSelector(ctx, summaries, summaries.length - 1, "load");
+						if (!selected) {
+							notifyTrail(pi, ctx, "Trail load cancelled", "info");
+							return;
+						}
+						checkpoint = selected.summary.entry;
+					}
+				}
+				try {
+					const slot = await loadCarryover(checkpoint);
+					if (checkpoint.consumeOnUse) queueShutdownConsume(checkpoint);
+					const tag = checkpoint.consumeOnUse ? " (consume on session end)" : "";
+					notifyTrail(pi, ctx, `Trail loaded ${slot.artifacts.length} artifact(s) from ${checkpoint.id} as @${slot.slot}.* ${tag}`.trim(), "info");
+				} catch (err) {
+					notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
+				}
+				return;
+			}
+
+			if (intent.kind === "unload") {
+				if (intent.idOrAll === "all") {
+					const ids = [...carryover.keys()];
+					for (const id of ids) unloadCarryover(id);
+					notifyTrail(pi, ctx, ids.length ? `Trail unloaded ${ids.length} checkpoint(s)` : "Trail had no loaded checkpoints", "info");
+					return;
+				}
+				const store = createCheckpointStore();
+				const checkpoint = await store.find(intent.idOrAll, { includeConsumed: true });
+				const targetId = checkpoint?.id ?? intent.idOrAll;
+				const removed = unloadCarryover(targetId);
+				notifyTrail(pi, ctx, removed ? `Trail unloaded checkpoint ${removed.checkpoint.id}` : "Trail checkpoint not loaded", removed ? "info" : "warning");
 				return;
 			}
 
 			const config = await loadConfig(ctx.cwd);
-			const catalog = createArtifactCatalog(ctx, config);
+			const catalog = createArtifactCatalog(ctx, config, carryoverArtifacts());
 			let artifacts = catalog.list();
 
 			if (intent.kind === "search") {
