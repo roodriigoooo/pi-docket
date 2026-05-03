@@ -14,7 +14,13 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Checkpoint Lifecycle**: Module that owns creating a checkpoint from selected artifacts, including drafting, review, persistence, and session labeling.
 
+**Checkpoint Commands**: Module that owns `/trail` command flows for continuing, resuming, listing, previewing, editing, and deleting Checkpoints. It delegates Checkpoint creation to the Checkpoint Lifecycle.
+
 **Checkpoint Selector**: interactive Trail view for accepting or excluding mode-selected artifacts before checkpoint drafting.
+
+**Loaded Artifact Context**: session-local module that owns mounted Artifact slots, pending Reference chips, Reference/full expansion, stale chip handling, and consume-on-use checkpoint queueing.
+
+**Worker Commands**: Module that owns `/trail` command flows for spawning, listing, loading, unloading, and deleting Trail workers.
 
 **Navigator**: interactive Trail view for browsing, inspecting, referencing, copying, and checkpointing artifacts.
 
@@ -71,6 +77,19 @@ Owned flow:
 6. Persist checkpoint markdown and sidecar artifacts.
 7. Append Trail checkpoint entry and label session leaf.
 
+### Checkpoint Commands
+
+Interface:
+
+- `continue(idOrLast)`
+- `delete(idOrLast)`
+- `list(includeConsumed)`
+
+Leverage:
+- Trail command registration does not own Checkpoint Store lookup, delete confirmation, resume picker loops, preview/edit flow, or list formatting.
+- TUI views and Pi session creation are adapters; Checkpoint command decisions are testable without Pi UI.
+- Checkpoint creation stays in Checkpoint Lifecycle, so command flow and creation lifecycle remain separate Modules.
+
 ### Checkpoint Selector
 
 Interface:
@@ -83,5 +102,38 @@ Leverage:
 - Mode flags define initial candidates.
 - Users can remove noisy artifacts before token budget is spent on summarization.
 - Sidecar JSON preserves only included artifacts.
+
+### Loaded Artifact Context
+
+Interface:
+
+- `loadCheckpoint(checkpoint)`
+- `loadWorker(worker)`
+- `unloadSlot(slot)`
+- `unloadSource(kind, sourceId)`
+- `toggleChip(artifact, mode)`
+- `expandChipsForSubmit(ctx, userText)`
+- `drainCheckpointConsumes(markConsumed)`
+
+Leverage:
+- Trail command flow does not manage chip arrays, carryover maps, slot names, or stale Reference expansion.
+- Mounted Checkpoint and worker Artifacts share one slot and Reference expansion policy.
+- Consume-on-use queueing stays local to mounted Checkpoint state while persistence remains a store adapter.
+
+### Worker Commands
+
+Interface:
+
+- `spawn(task)`
+- `list()`
+- `delete(ref)`
+- `load(ref)`
+- `unload(ref)`
+- `completionCandidates()`
+
+Leverage:
+- Trail command registration does not own worker lookup, spawn announcement formatting, list formatting, or explicit load/unload/delete behavior.
+- Worker Store and Loaded Artifact Context are adapters, so worker command behavior is testable without tmux or Pi UI.
+- Mixed Checkpoint/worker load selection remains outside this Module, keeping Worker Commands focused on explicit worker operations.
 
 ## Planned deepening opportunities

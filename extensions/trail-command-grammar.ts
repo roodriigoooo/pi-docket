@@ -15,10 +15,11 @@ export type TrailIntent =
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
-	| { kind: "delete"; idOrLast?: string }
-	| { kind: "list"; includeConsumed?: boolean }
-	| { kind: "load"; idOrLast?: string; includeConsumed?: boolean }
-	| { kind: "unload"; idOrAll: string }
+	| { kind: "delete"; target: string | undefined; targetKind: "checkpoint" | "worker" }
+	| { kind: "list"; includeConsumed?: boolean; workers?: boolean }
+	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
+	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
+	| { kind: "spawn"; task: string }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
 
@@ -26,7 +27,16 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "spawn", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+
+const WORKER_PREFIX = "w:";
+const WORKER_SHORT = /^w(\d+)$/i;
+
+function stripWorkerPrefix(value: string): { id: string; isWorker: boolean } {
+	if (value.startsWith(WORKER_PREFIX)) return { id: value.slice(WORKER_PREFIX.length), isWorker: true };
+	if (WORKER_SHORT.test(value)) return { id: value, isWorker: true };
+	return { id: value, isWorker: false };
+}
 
 const CHECKPOINT_USAGE = "/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]";
 const MODE_FLAGS: Record<string, CheckpointMode> = {
@@ -46,10 +56,11 @@ export function trailUsage(): string {
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
-		"/trail load [id|last] [--include-consumed]   load prior checkpoint artifacts into navigator (no context bytes)",
-		"/trail unload <id|all>         drop a loaded checkpoint from session",
-		"/trail delete [id|last]",
-		"/trail list [--include-consumed]",
+		"/trail spawn <task>            spawn a tmux pi worker to investigate <task>",
+		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (no context bytes)",
+		"/trail unload <id|w<N>|all>   drop a loaded slot from session",
+		"/trail delete [id|last|w<N>]",
+		"/trail list [--include-consumed] [--workers]",
 		"/trail ref <artifact-id>       add compact ref chip (@id) above editor",
 		"/trail inject <artifact-id>    alias for ref",
 		"/trail inject-full <artifact-id>  add full chip (@id*) above editor",
@@ -103,10 +114,17 @@ function tokenize(input: string): { ok: true; tokens: string[] } | { ok: false; 
 	return { ok: true, tokens };
 }
 
-function parseCheckpointIdCommand(kind: "continue" | "delete", command: string, rest: string[]): ParseResult {
-	if (rest.length === 0) return { ok: true, intent: { kind } };
-	if (rest.length > 1) return parseError(`Usage: /trail ${command} [id|last]`);
-	return { ok: true, intent: { kind, idOrLast: rest[0]! } };
+function parseContinueCommand(rest: string[]): ParseResult {
+	if (rest.length === 0) return { ok: true, intent: { kind: "continue" } };
+	if (rest.length > 1) return parseError("Usage: /trail continue [id|last]");
+	return { ok: true, intent: { kind: "continue", idOrLast: rest[0]! } };
+}
+
+function parseDeleteCommand(rest: string[]): ParseResult {
+	if (rest.length === 0) return { ok: true, intent: { kind: "delete", target: undefined, targetKind: "checkpoint" } };
+	if (rest.length > 1) return parseError("Usage: /trail delete [id|last|w:<worker>]");
+	const { id, isWorker } = stripWorkerPrefix(rest[0]!);
+	return { ok: true, intent: { kind: "delete", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
 }
 
 function requireArtifactArg(action: "ref" | "inject" | "inject-full" | "copy", rest: string[]): ParseResult {
@@ -166,17 +184,19 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "browse") return { ok: true, intent: { kind: "browse" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint") return parseCheckpoint(rest);
-	if (command === "continue" || command === "resume") return parseCheckpointIdCommand("continue", command, rest);
-	if (command === "delete") return parseCheckpointIdCommand("delete", command, rest);
+	if (command === "continue" || command === "resume") return parseContinueCommand(rest);
+	if (command === "delete") return parseDeleteCommand(rest);
 	if (command === "list") {
 		let includeConsumed = false;
+		let workers = false;
 		const extras: string[] = [];
 		for (const token of rest) {
 			if (token === "--include-consumed") includeConsumed = true;
+			else if (token === "--workers") workers = true;
 			else extras.push(token);
 		}
-		if (extras.length > 0) return parseError("Usage: /trail list [--include-consumed]");
-		return { ok: true, intent: { kind: "list", includeConsumed } };
+		if (extras.length > 0) return parseError("Usage: /trail list [--include-consumed] [--workers]");
+		return { ok: true, intent: { kind: "list", includeConsumed, workers } };
 	}
 	if (command === "load") {
 		let includeConsumed = false;
@@ -185,13 +205,22 @@ export function parseTrailCommand(args: string): ParseResult {
 			if (token === "--include-consumed") includeConsumed = true;
 			else positional.push(token);
 		}
-		if (positional.length > 1) return parseError("Usage: /trail load [id|last] [--include-consumed]");
-		const idOrLast = positional[0];
-		return { ok: true, intent: { kind: "load", idOrLast, includeConsumed } };
+		if (positional.length > 1) return parseError("Usage: /trail load [id|last|w:<worker>] [--include-consumed]");
+		const raw = positional[0];
+		if (!raw) return { ok: true, intent: { kind: "load", ref: undefined, includeConsumed, refKind: "checkpoint" } };
+		const { id, isWorker } = stripWorkerPrefix(raw);
+		return { ok: true, intent: { kind: "load", ref: id, includeConsumed, refKind: isWorker ? "worker" : "checkpoint" } };
 	}
 	if (command === "unload") {
-		if (rest.length !== 1) return parseError("Usage: /trail unload <id|all>");
-		return { ok: true, intent: { kind: "unload", idOrAll: rest[0]! } };
+		if (rest.length !== 1) return parseError("Usage: /trail unload <id|w:<worker>|all>");
+		const raw = rest[0]!;
+		if (raw === "all") return { ok: true, intent: { kind: "unload", target: "all", targetKind: "all" } };
+		const { id, isWorker } = stripWorkerPrefix(raw);
+		return { ok: true, intent: { kind: "unload", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
+	}
+	if (command === "spawn") {
+		if (rest.length === 0) return parseError("Usage: /trail spawn <task>");
+		return { ok: true, intent: { kind: "spawn", task: rest.join(" ") } };
 	}
 	if (command === "clear") {
 		if (rest.length > 0) return parseError("Usage: /trail clear");

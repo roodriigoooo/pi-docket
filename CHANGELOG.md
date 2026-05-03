@@ -4,12 +4,17 @@
 
 Included:
 - soft-consume for `--once` checkpoints: marked consumed at session end (not on inject), files retained for `consumedRetentionDays` (default 7) so accidental cancels are recoverable
-- `/trail load [id|last] [--include-consumed]` — lazy carryover of a prior checkpoint's artifacts into the navigator with **zero** model-context cost; injected only when user creates a chip with `/trail ref` or `/trail inject-full`
-- `/trail unload <id|all>` — drop a loaded checkpoint from the session and cancel its pending consume contract
-- navigator `s` key cycles source filter (current / all / `c1` / `c2` / ...); default view is `current`
-- carryover artifacts namespaced as `<slot>.<displayId>` (e.g. `c1.f12`), refs unchanged
+- `/trail load [id|last|w<N>] [--include-consumed]` — lazy carryover of checkpoint or worker artifacts into the navigator with **zero** model-context cost; injected only when user creates a chip with `/trail ref` or `/trail inject-full`
+- unified `/trail load` picker for checkpoints and workers, with preview for checkpoints before loading
+- `/trail unload <id|w<N>|all>` — drop loaded checkpoint/worker artifacts from the session and cancel pending checkpoint consume contracts
+- tmux-backed `/trail spawn <task>` workers, plus `/trail list --workers`, `/trail load w<N>`, and `/trail delete w<N>`
+- worker artifact snapshots so parent sessions can inspect and reference worker findings via loaded slots
+- JSONL-backed checkpoint event log with legacy index backfill
+- navigator `s` key cycles source filter (current / all / `c1` / `w1` / ...); default view is `current`
+- carryover artifacts namespaced as `<slot>.<displayId>` (e.g. `c1.f12` or `w2.c3`), refs unchanged
 - `/trail list [--include-consumed]` shows soft-consumed checkpoints
-- `/trail delete` permanently purges (bypasses soft-consume)
+- `/trail delete` permanently purges checkpoints (bypasses soft-consume) and kills workers when targeting `w<N>`
+- internal deepening: Loaded Artifact Context, Checkpoint Commands, and Worker Commands concentrate reference/carryover and command-flow logic behind tested Modules
 
 ## 0.1.3
 
