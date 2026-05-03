@@ -51,8 +51,6 @@ pi install git:github.com/roodriigoooo/trail
 pinned GitHub release:
 
 ```bash
-pi install git:github.com/roodriigoooo/trail@v0.1.4
-```
 
 from npm:
 
@@ -118,9 +116,6 @@ load worker artifacts back into the current session without spending model-conte
   <img src="./assets/compressed_gif2.gif" alt="Trail checkpoint workflow" width="100%" />
 </p>
 
-<p align="center">
-  <img src="./assets/compressed_gif_3.gif" alt="Trail checkpoint resume" width="100%" />
-</p>
 
 ### Trail workers with tmux
 
