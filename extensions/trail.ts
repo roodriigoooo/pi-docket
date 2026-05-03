@@ -544,6 +544,189 @@ async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summar
 	});
 }
 
+type LoadPickerMode = "checkpoint" | "worker";
+type LoadPickerSelection =
+	| { kind: "checkpoint"; action: "load" | "preview"; summary: CheckpointSummary }
+	| { kind: "worker"; action: "load"; worker: WorkerStatus }
+	| null;
+
+class TrailLoadPicker implements Component {
+	private container: Container | Box = new Container();
+	private mode: LoadPickerMode;
+	private checkpointIndex = 0;
+	private workerIndex = 0;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private checkpoints: CheckpointSummary[],
+		private workers: WorkerStatus[],
+		initialMode: LoadPickerMode,
+		private done: (result: LoadPickerSelection) => void,
+	) {
+		this.mode = this.canonicalMode(initialMode);
+		this.checkpointIndex = Math.max(0, this.checkpoints.length - 1);
+		this.workerIndex = Math.max(0, this.workers.length - 1);
+	}
+
+	private canonicalMode(requested: LoadPickerMode): LoadPickerMode {
+		if (requested === "worker" && this.workers.length === 0 && this.checkpoints.length > 0) return "checkpoint";
+		if (requested === "checkpoint" && this.checkpoints.length === 0 && this.workers.length > 0) return "worker";
+		return requested;
+	}
+
+	private currentMax(): number {
+		return Math.max(0, (this.mode === "checkpoint" ? this.checkpoints.length : this.workers.length) - 1);
+	}
+
+	private currentIndex(): number {
+		return this.mode === "checkpoint" ? this.checkpointIndex : this.workerIndex;
+	}
+
+	private setIndex(value: number): void {
+		const max = this.currentMax();
+		const clamped = Math.max(0, Math.min(value, max));
+		if (this.mode === "checkpoint") this.checkpointIndex = clamped;
+		else this.workerIndex = clamped;
+	}
+
+	private toggleMode(target?: LoadPickerMode): void {
+		const next = target ?? (this.mode === "checkpoint" ? "worker" : "checkpoint");
+		if (next === "checkpoint" && this.checkpoints.length === 0) return;
+		if (next === "worker" && this.workers.length === 0) return;
+		this.mode = next;
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+			this.done(null);
+			return;
+		}
+		if (data === "j" || matchesKey(data, Key.down)) this.setIndex(this.currentIndex() + 1);
+		else if (data === "k" || matchesKey(data, Key.up)) this.setIndex(this.currentIndex() - 1);
+		else if (data === "g") this.setIndex(0);
+		else if (data === "G") this.setIndex(this.currentMax());
+		else if (matchesKey(data, Key.tab)) this.toggleMode();
+		else if (data === "1") this.toggleMode("checkpoint");
+		else if (data === "2") this.toggleMode("worker");
+		else if (matchesKey(data, Key.enter)) this.finishLoad();
+		else if (data === "p" && this.mode === "checkpoint") this.finishPreview();
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	private finishLoad(): void {
+		if (this.mode === "checkpoint") {
+			const summary = this.checkpoints[this.checkpointIndex];
+			if (summary) this.done({ kind: "checkpoint", action: "load", summary });
+			return;
+		}
+		const worker = this.workers[this.workerIndex];
+		if (worker) this.done({ kind: "worker", action: "load", worker });
+	}
+
+	private finishPreview(): void {
+		const summary = this.checkpoints[this.checkpointIndex];
+		if (summary) this.done({ kind: "checkpoint", action: "preview", summary });
+	}
+
+	invalidate(): void {
+		this.container.invalidate();
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		this.container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
+
+		const headerLeft = ` ${accent(this.theme.bold("trail · load"))} ${dim("pick a source")} `;
+		this.container.addChild(new Text(fitBorder(headerLeft, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
+
+		const tabCk = `[1] checkpoints (${this.checkpoints.length})`;
+		const tabWk = `[2] workers (${this.workers.length})`;
+		const tabLine = `${this.mode === "checkpoint" ? accent(this.theme.bold(tabCk)) : muted(tabCk)}    ${this.mode === "worker" ? accent(this.theme.bold(tabWk)) : muted(tabWk)}`;
+		this.container.addChild(new Text(tabLine, 1, 0));
+		this.container.addChild(new DynamicBorder(dividerBorder));
+
+		const listWidth = Math.max(30, innerWidth);
+		if (this.mode === "checkpoint") this.renderCheckpoints(listWidth, accent, dim, muted);
+		else this.renderWorkers(listWidth, accent, dim, muted);
+
+		this.container.addChild(new DynamicBorder(dividerBorder));
+		const help = this.mode === "checkpoint"
+			? "j/k move · tab/1/2 switch · enter load · p preview · q close"
+			: "j/k move · tab/1/2 switch · enter load · q close";
+		this.container.addChild(new Text(dim(help), 1, 0));
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = this.container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+
+	private renderCheckpoints(listWidth: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+		if (this.checkpoints.length === 0) {
+			this.container.addChild(new Text(muted("no checkpoints — press 2 for workers"), 2, 0));
+			return;
+		}
+		const start = Math.max(0, Math.min(this.checkpointIndex - 5, this.checkpoints.length - 11));
+		const visible = this.checkpoints.slice(start, start + 11);
+		for (let i = 0; i < visible.length; i++) {
+			const summary = visible[i];
+			if (!summary) continue;
+			const absolute = start + i;
+			const entry = summary.entry;
+			const selected = absolute === this.checkpointIndex;
+			const marker = selected ? accent("▸") : dim(" ");
+			const id = selected ? accent(this.theme.bold(entry.id.slice(0, 18).padEnd(18))) : muted(entry.id.slice(0, 18).padEnd(18));
+			const mode = entry.consumedAt ? `${entry.mode}:consumed` : entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
+			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files`;
+			const line = `${marker} ${id} ${accent(mode.padEnd(14))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
+			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+		}
+	}
+
+	private renderWorkers(listWidth: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+		if (this.workers.length === 0) {
+			this.container.addChild(new Text(muted("no workers — /trail spawn <task>, then 2"), 2, 0));
+			return;
+		}
+		const start = Math.max(0, Math.min(this.workerIndex - 5, this.workers.length - 11));
+		const visible = this.workers.slice(start, start + 11);
+		for (let i = 0; i < visible.length; i++) {
+			const worker = visible[i];
+			if (!worker) continue;
+			const absolute = start + i;
+			const selected = absolute === this.workerIndex;
+			const marker = selected ? accent("▸") : dim(" ");
+			const label = workerShortLabel(worker.index).padEnd(4);
+			const id = selected ? accent(this.theme.bold(label)) : muted(label);
+			const stateColor = worker.state === "active" ? "success" : worker.state === "error" ? "error" : "muted";
+			const state = this.theme.fg(stateColor, (worker.state ?? "?").padEnd(8));
+			const artifacts = `${worker.artifactCount ?? "?"} art`.padEnd(8);
+			const age = workerAge(worker.updatedAt).padEnd(8);
+			const summary = workerSummaryName(worker, 48);
+			const line = `${marker} ${id} ${state} ${dim(artifacts)} ${dim(age)} ${selected ? this.theme.bold(this.theme.fg("text", summary)) : muted(summary)}`;
+			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+		}
+	}
+}
+
+async function showLoadPicker(ctx: ExtensionCommandContext, checkpoints: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection> {
+	return ctx.ui.custom<LoadPickerSelection>((tui, theme, _kb, done) => new TrailLoadPicker(tui, theme, checkpoints, workers, initialMode, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+	});
+}
+
 function renderArtifactList(artifacts: Artifact[]): string {
 	if (artifacts.length === 0) return "No Trail artifacts";
 	return artifacts.map((a) => `${a.displayId}\t${a.ref}\t${a.kind}\t${a.title}\t${a.subtitle}`).join("\n");
@@ -1325,23 +1508,51 @@ export default function trailExtension(pi: ExtensionAPI) {
 						return;
 					}
 				} else {
-					const summaries = await store.listSummaries(opts);
-					if (summaries.length === 0) {
-						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
+					const [summaries, workers] = await Promise.all([
+						store.listSummaries(opts),
+						createWorkerStore().list(),
+					]);
+					if (summaries.length === 0 && workers.length === 0) {
+						notifyTrail(pi, ctx, "Trail has nothing to load — try /trail checkpoint or /trail spawn", "error");
 						return;
 					}
 					if (!ctx.hasUI) {
-						checkpoint = summaries[summaries.length - 1]!.entry;
-					} else {
-						const selected = await showCheckpointResumeSelector(ctx, summaries, summaries.length - 1, "load");
-						if (!selected) {
-							notifyTrail(pi, ctx, "Trail load cancelled", "info");
+						if (summaries.length > 0) checkpoint = summaries[summaries.length - 1]!.entry;
+						else {
+							const worker = workers[workers.length - 1]!;
+							const slot = await loadWorkerCarryover(worker);
+							announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(worker)}\nrefs: @${slot.slot}.<id>`, "success");
 							return;
 						}
-						checkpoint = selected.summary.entry;
+					} else {
+						const initial: LoadPickerMode = summaries.length > 0 ? "checkpoint" : "worker";
+						while (true) {
+							const selected = await showLoadPicker(ctx, summaries, workers, initial);
+							if (!selected) {
+								notifyTrail(pi, ctx, "Trail load cancelled", "info");
+								return;
+							}
+							if (selected.kind === "worker") {
+								try {
+									const slot = await loadWorkerCarryover(selected.worker);
+									announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(selected.worker)}\nrefs: @${slot.slot}.<id>`, "success");
+								} catch (err) {
+									notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
+								}
+								return;
+							}
+							if (selected.action === "preview") {
+								const md = await store.readMarkdown(selected.summary.entry);
+								await showTextViewer(ctx, `Trail checkpoint ${selected.summary.entry.id}`, md);
+								continue;
+							}
+							checkpoint = selected.summary.entry;
+							break;
+						}
 					}
 				}
 				try {
+					if (!checkpoint) return;
 					const slot = await loadCheckpointCarryover(checkpoint);
 					if (checkpoint.consumeOnUse) queueShutdownConsume(checkpoint);
 					const tag = checkpoint.consumeOnUse ? "consume on session end" : `${checkpoint.mode} checkpoint`;
