@@ -10,7 +10,7 @@ my goal is to make session context less magical and less lossy. when i am workin
 
 Trail turns commands, errors, file operations, code blocks, prompts, responses, and checkpoints into things you can browse, inspect, copy, reference, and package into a handoff for a fresh session.
 
-it is not meant to be history search. it is more like a small artifact navigator and checkpoint tool for agent work.
+it is not meant to be history search. it is more like a small working-set navigator and checkpoint tool for agent work.
 
 ## why i made this
 
@@ -60,7 +60,7 @@ pi install npm:@roodriigoooo/trail
 
 ## example usage
 
-open the artifact navigator:
+open the working set:
 
 ```bash
 /trail
@@ -129,7 +129,8 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 
 ## commands
 
-- `/trail` — open artifact navigator
+- `/trail` — open working set
+- `/trail recall [query]` — recall assistant and worker answers without showing every artifact
 - `/trail search <query>` — search ranked artifact docs, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
@@ -197,16 +198,23 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 
 ## navigator keys
 
+Default `/trail` view is a working set: changed files, errors, pinned items, recent actions, and loaded worker outputs. Preview is off by default.
+
 - `j/k` or arrows — move
 - `g/G` — top/bottom
+- `/` — toggle Recall (assistant/worker answers)
+- `w` — working set
+- `a` — all artifacts
 - `tab` — cycle artifact kind filter
 - `s` — cycle source (current / all / loaded slots like `c1`, `c2`, `w1`, `w2`)
-- `enter` — inspect selected artifact; file artifacts open current full file contents
-- `i` or `r` — inject compact artifact reference
-- `I` — inject full artifact text
+- `enter` — primary action (review diff, inspect failure, view answer, open file)
+- `o` — open current file for file artifacts
+- `i` or `r` — attach compact artifact reference chip
+- `I` — attach full artifact text chip
 - `y` — copy selected artifact
+- `p` — pin/unpin item in working set
 - `c` — create handoff checkpoint
-- `v` — toggle detail
+- `v` — toggle preview
 - `q` or `esc` — close
 
 ## configuration

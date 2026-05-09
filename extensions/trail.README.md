@@ -4,7 +4,8 @@ Session artifacts as first-class objects for Pi.
 
 ## Commands
 
-- `/trail` — open Vim-like artifact navigator
+- `/trail` — open working set
+- `/trail recall [query]` — recall assistant and worker answers
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
@@ -29,16 +30,23 @@ Session artifacts as first-class objects for Pi.
 
 ## Navigator keys
 
+Default `/trail` view is a working set. Preview is off by default.
+
 - `j/k` or arrows — move
 - `g/G` — top/bottom
+- `/` — toggle Recall (assistant/worker answers)
+- `w` — working set
+- `a` — all artifacts
 - `tab` — cycle artifact kind filter
-- `s` — cycle source (current / all / loaded slots like `c1`, `c2`)
-- `enter` — inspect selected artifact; file artifacts open current full file contents
-- `i` or `r` — inject compact artifact reference
-- `I` — inject full artifact text
+- `s` — cycle source (current / all / loaded slots like `c1`, `c2`, `w1`, `w2`)
+- `enter` — primary action (review diff, inspect failure, view answer, open file)
+- `o` — open current file for file artifacts
+- `i` or `r` — attach compact artifact reference chip
+- `I` — attach full artifact text chip
 - `y` — copy selected artifact
+- `p` — pin/unpin item in working set
 - `c` — create handoff checkpoint
-- `v` — toggle detail
+- `v` — toggle preview
 - `q` or `esc` — close
 
 ## Inspect view keys

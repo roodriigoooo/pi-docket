@@ -6,6 +6,10 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Artifact**: structured object derived from session activity, such as a command, file operation, prompt, response, code block, error, or checkpoint.
 
+**Work Item**: actionable Navigator row derived from an Artifact. It exists in the default view only when the user has a likely next action: review diff, inspect failure, view worker answer, pin, attach, copy, or reopen recent work.
+
+**Recall**: secondary Navigator mode for curated answer units (assistant/worker responses). It keeps answers reachable without filling the default working set with transcript-like artifacts.
+
 **Artifact Catalog**: Module that owns artifact extraction, identity, lookup, references, full text, inspection, and checkpoint payloads.
 
 **Reference**: compact prompt-safe pointer to an artifact that preserves intent without injecting full artifact text.
@@ -22,11 +26,23 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Worker Commands**: Module that owns `/trail` command flows for spawning, listing, loading, unloading, and deleting Trail workers.
 
-**Navigator**: interactive Trail view for browsing, inspecting, referencing, copying, and checkpointing artifacts.
+**Navigator**: interactive Trail view for working-set actions, Recall, all-artifact browsing, inspection, referencing, copying, pinning, and checkpointing.
 
 ## Current modules
 
 ### Artifact Catalog
+
+Optional producer metadata contract:
+
+```ts
+message.details.trail = {
+  title?: string,
+  subtitle?: string,
+  kind?: ArtifactKind // defaults to "response"
+}
+```
+
+This lets worker/subagent extensions publish curated answer units without Trail inferring titles from raw text. Trail still works without this metadata.
 
 Interface:
 

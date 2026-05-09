@@ -20,6 +20,7 @@ export type TrailIntent =
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
 	| { kind: "spawn"; task: string }
+	| { kind: "recall"; query?: string }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
 
@@ -27,7 +28,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "spawn", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["recall", "search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "spawn", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -51,7 +52,8 @@ const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 export function trailUsage(): string {
 	return [
 		"Trail commands:",
-		"/trail                         browse artifacts",
+		"/trail                         open working set",
+		"/trail recall [query]          recall assistant/worker answers",
 		"/trail search <query>          search ranked artifacts, then browse matches",
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
@@ -221,6 +223,9 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "spawn") {
 		if (rest.length === 0) return parseError("Usage: /trail spawn <task>");
 		return { ok: true, intent: { kind: "spawn", task: rest.join(" ") } };
+	}
+	if (command === "recall") {
+		return { ok: true, intent: { kind: "recall", query: rest.length ? rest.join(" ") : undefined } };
 	}
 	if (command === "clear") {
 		if (rest.length > 0) return parseError("Usage: /trail clear");

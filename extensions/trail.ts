@@ -2,7 +2,8 @@
  * Trail — session artifacts as first-class objects.
  *
  * Commands:
- *   /trail                         browse artifacts
+ *   /trail                         open working set
+ *   /trail recall [query]           recall assistant/worker answers
  *   /trail search <query>           ranked artifact search
  *   /trail checkpoint [flags] [note]
  *   /trail continue <id|last>
@@ -42,7 +43,7 @@ import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-stor
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
-import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorViewModel, type NavigatorAction, type NavigatorKey, type NavigatorState } from "./trail-navigator.js";
+import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorBucket, navigatorViewModel, selectedArtifact, type NavigatorAction, type NavigatorKey, type NavigatorMode, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerStatus } from "./worker-store.js";
@@ -226,7 +227,7 @@ async function showTextViewer(ctx: ExtensionCommandContext, title: string, text:
 }
 
 async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifact: Artifact): Promise<void> {
-	if (artifact.kind === "file") {
+	if (artifact.kind === "file" && !artifactHasDiff(artifact)) {
 		const filePath = artifactFilePath(artifact, ctx.cwd);
 		if (filePath) {
 			await showFileViewer(ctx, filePath);
@@ -319,9 +320,126 @@ function sourceBar(theme: any, sources: string[], active: string): string {
 		.join(" ");
 }
 
+type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint"; artifact?: Artifact };
+
+type TrailBucket = "needs" | "pinned" | "recent";
+
+function modeBar(theme: any, active: NavigatorMode): string {
+	const modes: Array<{ value: NavigatorMode; label: string }> = [
+		{ value: "work", label: "work" },
+		{ value: "recall", label: "recall" },
+		{ value: "all", label: "all" },
+	];
+	return modes.map((mode) => mode.value === active ? theme.fg("accent", `[${mode.label}]`) : theme.fg("dim", ` ${mode.label} `)).join(" ");
+}
+
+function artifactMeta(artifact: Artifact): Record<string, unknown> {
+	return artifact.meta ?? {};
+}
+
+function artifactTool(artifact: Artifact): string | undefined {
+	const tool = artifactMeta(artifact).tool;
+	return typeof tool === "string" ? tool : undefined;
+}
+
+function artifactHasDiff(artifact: Artifact): boolean {
+	const diff = artifactMeta(artifact).diff;
+	return typeof diff === "string" && diff.length > 0;
+}
+
+function isChangedFileArtifact(artifact: Artifact): boolean {
+	return artifact.kind === "file" && ["edit", "write"].includes(artifactTool(artifact) ?? "");
+}
+
+function isFailedCommandArtifact(artifact: Artifact): boolean {
+	if (artifact.kind !== "command") return false;
+	const exitCode = artifactMeta(artifact).exitCode;
+	return typeof exitCode === "number" && exitCode !== 0;
+}
+
+function trailBucketForArtifact(artifact: Artifact, pinnedRefs: Set<string>, completedRefs: Set<string>): TrailBucket | undefined {
+	if (pinnedRefs.has(artifact.ref)) return "pinned";
+	if (completedRefs.has(artifact.ref)) return "recent";
+	if (artifact.kind === "error") return "needs";
+	if (isChangedFileArtifact(artifact)) return "needs";
+	if (isFailedCommandArtifact(artifact)) return "needs";
+	if (artifact.source && (artifact.kind === "response" || artifact.kind === "code")) return "needs";
+	return undefined;
+}
+
+function trailPrimaryAction(artifact: Artifact): string {
+	if (artifact.kind === "file" && artifactHasDiff(artifact)) return "Review diff";
+	if (artifact.kind === "file") return "Open file";
+	if (artifact.kind === "error") return "Inspect failure";
+	if (artifact.kind === "command") return isFailedCommandArtifact(artifact) ? "Inspect failure" : "Inspect output";
+	if (artifact.kind === "response") return "View answer";
+	if (artifact.kind === "code") return "View code";
+	if (artifact.kind === "checkpoint") return "Open checkpoint";
+	return "Open";
+}
+
+function trailReason(artifact: Artifact): string {
+	const bucket = navigatorBucket(artifact);
+	if (bucket === "pinned") return "pinned";
+	if (bucket === "recent") return "recently acted on";
+	if (artifact.kind === "error") return "needs attention";
+	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changed file" : "created file";
+	if (isFailedCommandArtifact(artifact)) return "failed command";
+	if (artifact.source && artifact.kind === "response") return "worker answer";
+	if (artifact.source && artifact.kind === "code") return "worker output";
+	if (artifact.kind === "response") return "assistant answer";
+	return "";
+}
+
+function trailSecondaryActions(artifact: Artifact): string[] {
+	if (artifact.kind === "file" && artifactHasDiff(artifact)) return ["o open", "r attach"];
+	if (artifact.kind === "file") return ["r attach", "y copy"];
+	if (artifact.kind === "response") return ["r attach", "y copy"];
+	if (artifact.kind === "error") return ["r attach", "y copy"];
+	if (artifact.kind === "code") return ["r attach", "y copy"];
+	return ["r attach", "y copy"];
+}
+
+function decorateTrailArtifacts(artifacts: Artifact[], pinnedRefs: Set<string>, completedRefs: Set<string>): Artifact[] {
+	return artifacts.map((artifact) => {
+		const bucket = trailBucketForArtifact(artifact, pinnedRefs, completedRefs);
+		return {
+			...artifact,
+			meta: {
+				...(artifact.meta ?? {}),
+				...(bucket ? { trailBucket: bucket } : {}),
+				trailPrimaryAction: trailPrimaryAction(artifact),
+				trailReason: trailReason({ ...artifact, meta: { ...(artifact.meta ?? {}), ...(bucket ? { trailBucket: bucket } : {}) } }),
+			},
+		};
+	});
+}
+
+function trailMetaString(artifact: Artifact, key: string): string | undefined {
+	const value = artifactMeta(artifact)[key];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function bucketCounts(artifacts: Artifact[]): Record<TrailBucket, number> {
+	const counts: Record<TrailBucket, number> = { needs: 0, pinned: 0, recent: 0 };
+	for (const artifact of artifacts) {
+		const bucket = navigatorBucket(artifact);
+		if (bucket) counts[bucket]++;
+	}
+	return counts;
+}
+
+function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): { title: string; hint: string } {
+	if (!hasArtifacts) return { title: "no session activity captured yet", hint: "edit files, run tests, ask agent, or load worker output" };
+	if (state.mode === "work") return { title: "working set empty", hint: "/ recall answers · a all artifacts · changed files/errors will appear here" };
+	if (state.mode === "recall") return { title: "no assistant answers in recall", hint: "a all artifacts · tab/s switch filter/source" };
+	const filter = state.filter === "all" ? "" : `${kindLabel(state.filter)} `;
+	return { title: `no ${filter}artifacts in this filter`, hint: "tab/s switch filter/source · w working set" };
+}
+
 class TrailView implements Component {
 	private container: Container | Box = new Container();
-	private state: NavigatorState = initialNavigatorState();
+	private state: NavigatorState;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -329,11 +447,33 @@ class TrailView implements Component {
 		private tui: TUI,
 		private theme: any,
 		private artifacts: Artifact[],
+		private pinnedRefs: Set<string>,
+		private completedRefs: Set<string>,
+		initialMode: NavigatorMode,
 		private fullText: (artifact: Artifact) => string,
-		private done: (result: { action: "inspect" | "reference" | "injectFull" | "copy" | "checkpoint"; artifact?: Artifact } | null) => void,
-	) {}
+		private done: (result: TrailBrowserAction | null) => void,
+	) {
+		const sources = availableSources(artifacts);
+		const source = sources.includes("all") ? "all" : sources.includes("current") ? "current" : sources[0] ?? "all";
+		this.state = { ...initialNavigatorState(), source, mode: initialMode };
+	}
+
+	private decoratedArtifacts(): Artifact[] {
+		return decorateTrailArtifacts(this.artifacts, this.pinnedRefs, this.completedRefs);
+	}
 
 	handleInput(data: string): void {
+		const artifacts = this.decoratedArtifacts();
+		if (data === "p") {
+			const artifact = selectedArtifact(this.state, artifacts);
+			if (artifact) {
+				if (this.pinnedRefs.has(artifact.ref)) this.pinnedRefs.delete(artifact.ref);
+				else this.pinnedRefs.add(artifact.ref);
+			}
+			this.invalidate();
+			this.tui.requestRender();
+			return;
+		}
 		const key: NavigatorKey = {
 			raw: data,
 			isDown: matchesKey(data, Key.down),
@@ -343,7 +483,7 @@ class TrailView implements Component {
 			isEscape: matchesKey(data, Key.escape),
 			isCtrlC: matchesKey(data, Key.ctrl("c")),
 		};
-		const transition = handleNavigatorKey(this.state, this.artifacts, key);
+		const transition = handleNavigatorKey(this.state, artifacts, key);
 		this.state = transition.state;
 		if (transition.action) this.finish(transition.action);
 		this.invalidate();
@@ -363,9 +503,10 @@ class TrailView implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const artifacts = this.decoratedArtifacts();
 		this.container = new Box(2, 1, trailCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
-		const view = navigatorViewModel(this.state, this.artifacts, this.state.showDetail ? 10 : 18);
+		const view = navigatorViewModel(this.state, artifacts, this.state.showDetail ? 10 : 18);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
@@ -373,30 +514,29 @@ class TrailView implements Component {
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
 		const sel = view.selectedArtifact;
-		const sources = availableSources(this.artifacts);
+		const sources = availableSources(artifacts);
 		const sourceLabel = this.state.source;
-		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`· ${sourceLabel} ·`)} ${dim(`${view.items.length}/${this.artifacts.length}`)} `;
+		const modeLabel = this.state.mode === "work" ? "working set" : this.state.mode === "recall" ? "recall" : "all artifacts";
+		const counts = bucketCounts(view.items);
+		const stats = this.state.mode === "work"
+			? `needs ${counts.needs} · pinned ${counts.pinned} · recent ${counts.recent}`
+			: `${view.items.length}/${artifacts.length}`;
+		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`· ${modeLabel} · ${sourceLabel} · ${stats}`)} `;
 		const headerRight = sel
 			? ` ${dim(`@${sel.id}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} `
 			: "";
 		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		this.container.addChild(new Text(filterBar(this.theme, this.state.filter), 1, 0));
+		this.container.addChild(new Text(`${modeBar(this.theme, this.state.mode)}  ${filterBar(this.theme, this.state.filter)}`, 1, 0));
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
 		if (sourceLine) this.container.addChild(new Text(sourceLine, 1, 0));
 
 		const idWidth = Math.max(5, ...view.visible.map((a) => a?.id.length ?? 0));
 		const listWidth = Math.max(30, innerWidth);
 		if (view.visible.length === 0) {
-			const isAllEmpty = this.artifacts.length === 0;
-			const title = isAllEmpty
-				? muted("no artifacts captured yet")
-				: muted(`no ${this.state.filter === "all" ? "" : `${kindLabel(this.state.filter)} `}artifacts in this filter`);
-			const hint = isAllEmpty
-				? dim("run a command, ask the agent, or create a checkpoint")
-				: dim("tab/s to switch filter/source · q close");
+			const empty = emptyTrailMessage(this.state, artifacts.length > 0);
 			this.container.addChild(new Text("", 1, 0));
-			this.container.addChild(new Text(title, 2, 0));
-			this.container.addChild(new Text(hint, 2, 0));
+			this.container.addChild(new Text(muted(empty.title), 2, 0));
+			this.container.addChild(new Text(dim(empty.hint), 2, 0));
 			this.container.addChild(new Text("", 1, 0));
 		} else {
 			for (let i = 0; i < view.visible.length; i++) {
@@ -408,13 +548,20 @@ class TrailView implements Component {
 				const idText = artifact.id.padEnd(idWidth);
 				const id = selected ? accent(this.theme.bold(idText)) : muted(idText);
 				const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
+				const bucket = navigatorBucket(artifact);
+				const bucketLabel = bucket ? bucket.padEnd(6) : (this.state.mode === "recall" ? "answer" : "item").padEnd(6);
+				const bucketPill = bucket === "needs" ? this.theme.fg("warning", bucketLabel) : bucket === "pinned" ? accent(bucketLabel) : muted(bucketLabel);
 				const sourcePill = artifact.source ? muted(`[${artifact.source}]`) : "      ";
 				const age = relativeTime(artifact.timestamp);
-				const meta = [artifact.subtitle, age].filter(Boolean).join(" · ");
+				const reason = trailMetaString(artifact, "trailReason");
+				const meta = [reason, artifact.subtitle, age].filter(Boolean).join(" · ");
 				const title = selected
 					? this.theme.bold(this.theme.fg("text", artifact.title))
 					: muted(artifact.title);
-				const line = `${marker} ${sourcePill} ${id} ${kind} ${title} ${dim(meta)}`;
+				const primary = trailMetaString(artifact, "trailPrimaryAction") ?? trailPrimaryAction(artifact);
+				const secondary = selected ? trailSecondaryActions(artifact).map((action) => muted(action)).join(" ") : "";
+				const actionText = selected ? `${accent(`[${primary}]`)}${secondary ? ` ${secondary}` : ""}` : dim(primary);
+				const line = `${marker} ${bucketPill} ${sourcePill} ${id} ${kind} ${title} ${dim(meta)} ${actionText}`;
 				this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 			}
 		}
@@ -427,7 +574,7 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · tab filter · s source · enter open · r cite · I full · y copy · c checkpoint · v preview · q close"), 1, 0));
+		this.container.addChild(new Text(dim("j/k move · / recall · w work · a all · tab filter · s source · enter primary · o file · r attach · y copy · p pin · v preview · q close"), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -435,8 +582,15 @@ class TrailView implements Component {
 	}
 }
 
-async function showTrailBrowser(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifacts: Artifact[]): Promise<{ action: "inspect" | "reference" | "injectFull" | "copy" | "checkpoint"; artifact?: Artifact } | null> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new TrailView(tui, theme, artifacts, (artifact) => catalog.fullText(artifact), done), {
+async function showTrailBrowser(
+	ctx: ExtensionCommandContext,
+	catalog: ArtifactCatalog,
+	artifacts: Artifact[],
+	pinnedRefs: Set<string>,
+	completedRefs: Set<string>,
+	initialMode: NavigatorMode = "work",
+): Promise<TrailBrowserAction | null> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new TrailView(tui, theme, artifacts, pinnedRefs, completedRefs, initialMode, (artifact) => catalog.fullText(artifact), done), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -936,6 +1090,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let activeCtx: ExtensionContext | undefined;
 	let sweptOnce = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
+	let pinnedRefs = new Set<string>();
+	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
 		readCheckpointArtifacts: async (checkpoint) => createCheckpointStore().readArtifacts(checkpoint),
 		readWorkerArtifacts: async (worker) => createWorkerStore().readArtifacts(worker.id),
@@ -1020,6 +1176,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
+		pinnedRefs = new Set();
+		completedRefs = new Set();
 		loadedArtifacts.reset();
 		loadedCheckpoint = loadedCheckpointFromSession(ctx);
 		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
@@ -1042,6 +1200,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}
 		await drainShutdownConsume();
 		activeCtx = undefined;
+		pinnedRefs = new Set();
+		completedRefs = new Set();
 		loadedArtifacts.reset();
 		loadedCheckpoint = undefined;
 		if (ctx.hasUI) ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
@@ -1256,8 +1416,24 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const config = await loadConfig(ctx.cwd);
 			const catalog = createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 			let artifacts = catalog.list();
+			let initialMode: NavigatorMode = "work";
+
+			if (intent.kind === "recall") {
+				initialMode = "recall";
+				if (intent.query) artifacts = (await catalog.search(intent.query)).filter((artifact) => artifact.kind === "response");
+				else artifacts = artifacts.filter((artifact) => artifact.kind === "response");
+				if (artifacts.length === 0) {
+					notifyTrail(pi, ctx, intent.query ? `Trail recall found no answers for: ${intent.query}` : "Trail recall has no answers yet", "info");
+					return;
+				}
+				if (!ctx.hasUI) {
+					emitText(pi, ctx, renderArtifactList(artifacts), "list", intent.query ? `trail · recall "${intent.query}"` : "trail · recall");
+					return;
+				}
+			}
 
 			if (intent.kind === "search") {
+				initialMode = "all";
 				artifacts = await catalog.search(intent.query);
 				if (artifacts.length === 0) {
 					notifyTrail(pi, ctx, `Trail search found no artifacts for: ${intent.query}`, "info");
@@ -1275,6 +1451,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 					notifyTrail(pi, ctx, "Trail artifact not found", "error");
 					return;
 				}
+				completedRefs.add(artifact.ref);
 				if (intent.action === "ref" || intent.action === "inject") {
 					const r = loadedArtifacts.toggleChip(artifact, "ref");
 					refreshChipWidget();
@@ -1296,7 +1473,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			while (true) {
-				const result = await showTrailBrowser(ctx, catalog, artifacts);
+				const result = await showTrailBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode);
 				if (!result) return;
 				if (result.action === "checkpoint") {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
@@ -1304,8 +1481,15 @@ export default function trailExtension(pi: ExtensionAPI) {
 					return;
 				}
 				if (!result.artifact) return;
+				completedRefs.add(result.artifact.ref);
 				if (result.action === "inspect") {
 					await showArtifactViewer(ctx, catalog, result.artifact);
+					continue;
+				}
+				if (result.action === "openFile") {
+					const filePath = artifactFilePath(result.artifact, ctx.cwd);
+					if (filePath) await showFileViewer(ctx, filePath);
+					else await showArtifactViewer(ctx, catalog, result.artifact);
 					continue;
 				}
 				const artifact = result.artifact;

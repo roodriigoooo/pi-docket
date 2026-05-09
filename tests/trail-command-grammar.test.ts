@@ -55,3 +55,10 @@ test("Trail grammar parses spawn", () => {
 	assert.equal(invalid.ok, false);
 	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
 });
+
+test("Trail grammar parses recall", () => {
+	assert.deepEqual(parseTrailCommand("recall"), { ok: true, intent: { kind: "recall", query: undefined } });
+	assert.deepEqual(parseTrailCommand("recall worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
+	assert.ok(TRAIL_COMMANDS.includes("recall"));
+	assert.match(trailUsage(), /\/trail recall \[query\]/);
+});
