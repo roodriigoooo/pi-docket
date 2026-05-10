@@ -216,6 +216,7 @@ Default `/trail` view is a working set: next items, pinned items, and done items
 - `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview
+- `?` — show full shortcut help
 - `q` or `esc` — close
 
 ## configuration

@@ -29,6 +29,7 @@ import {
 	Box,
 	Container,
 	Key,
+	Spacer,
 	Text,
 	matchesKey,
 	truncateToWidth,
@@ -292,11 +293,23 @@ function fitBorder(left: string, right: string, width: number, border: (s: strin
 	return `${border(cornerL)}${leftText}${fill("─".repeat(gapWidth))}${rightText}${border(cornerR)}`;
 }
 
+function padAnsi(text: string, width: number): string {
+	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
+}
+
 const TOP_CORNERS: BorderOptions = { left: "╭", right: "╮" };
 const BOTTOM_CORNERS: BorderOptions = { left: "╰", right: "╯" };
 
 function trailCardBg(theme: any): (s: string) => string {
 	return (s: string) => theme.bg("customMessageBg", s);
+}
+
+function activePill(theme: any, label: string): string {
+	return theme.bg("selectedBg", theme.fg("text", ` ${theme.bold(label)} `));
+}
+
+function inactivePill(theme: any, label: string): string {
+	return theme.fg("dim", ` ${label} `);
 }
 
 function filterBar(theme: any, active: string): string {
@@ -310,13 +323,13 @@ function filterBar(theme: any, active: string): string {
 		{ value: "response", label: "ai" },
 		{ value: "checkpoint", label: "ckpt" },
 	];
-	return filters.map((filter) => filter.value === active ? theme.fg("accent", `[${filter.label}]`) : theme.fg("dim", ` ${filter.label} `)).join(" ");
+	return filters.map((filter) => filter.value === active ? activePill(theme, filter.label) : inactivePill(theme, filter.label)).join(" ");
 }
 
 function sourceBar(theme: any, sources: string[], active: string): string {
 	if (sources.length <= 1) return "";
 	return sources
-		.map((source) => source === active ? theme.fg("accent", `[${source}]`) : theme.fg("dim", ` ${source} `))
+		.map((source) => source === active ? activePill(theme, source) : inactivePill(theme, source))
 		.join(" ");
 }
 
@@ -330,7 +343,7 @@ function modeBar(theme: any, active: NavigatorMode): string {
 		{ value: "recall", label: "recall" },
 		{ value: "all", label: "all" },
 	];
-	return modes.map((mode) => mode.value === active ? theme.fg("accent", `[${mode.label}]`) : theme.fg("dim", ` ${mode.label} `)).join(" ");
+	return modes.map((mode) => mode.value === active ? activePill(theme, mode.label) : inactivePill(theme, mode.label)).join(" ");
 }
 
 function artifactMeta(artifact: Artifact): Record<string, unknown> {
@@ -448,12 +461,40 @@ function bucketCounts(artifacts: Artifact[]): Record<TrailBucket, number> {
 	return counts;
 }
 
-function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): { title: string; hint: string } {
-	if (!hasArtifacts) return { title: "no session activity captured yet", hint: "edit files, run tests, ask agent, or load worker output" };
-	if (state.mode === "work") return { title: "working set empty", hint: "/ recall answers · a all artifacts · changed files/errors will appear here" };
-	if (state.mode === "recall") return { title: "no assistant answers in recall", hint: "a all artifacts · tab/s switch filter/source" };
+type EmptyTrailMessage = {
+	title: string;
+	body: string;
+	actions: string[];
+};
+
+function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): EmptyTrailMessage {
+	if (!hasArtifacts) {
+		return {
+			title: "No session activity yet",
+			body: "Trail fills as you work: commands, file changes, errors, answers, and checkpoints become browsable here.",
+			actions: ["ask agent to inspect a file", "run a command", "load a checkpoint or worker"],
+		};
+	}
+	if (state.mode === "work") {
+		return {
+			title: "Nothing needs attention",
+			body: "Working set only shows likely next actions: changed files, failures, pinned items, and loaded worker answers.",
+			actions: ["press / for Recall", "press a for all artifacts", "pin useful items with p"],
+		};
+	}
+	if (state.mode === "recall") {
+		return {
+			title: "No answers in Recall",
+			body: "Recall stays quiet until assistant or worker answers exist for this source/filter.",
+			actions: ["press a for all artifacts", "press s to switch source", "cycle filters with tab"],
+		};
+	}
 	const filter = state.filter === "all" ? "" : `${kindLabel(state.filter)} `;
-	return { title: `no ${filter}artifacts in this filter`, hint: "tab/s switch filter/source · w working set" };
+	return {
+		title: `No ${filter}artifacts here`,
+		body: "This view is filtered. Your activity may still exist in another source, kind, or mode.",
+		actions: ["press tab to change kind", "press s to switch source", "press w for working set"],
+	};
 }
 
 class TrailView implements Component {
@@ -461,6 +502,7 @@ class TrailView implements Component {
 	private state: NavigatorState;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private showHelp = false;
 
 	constructor(
 		private tui: TUI,
@@ -506,6 +548,12 @@ class TrailView implements Component {
 			this.tui.requestRender();
 			return;
 		}
+		if (data === "?") {
+			this.showHelp = !this.showHelp;
+			this.invalidate();
+			this.tui.requestRender();
+			return;
+		}
 		const key: NavigatorKey = {
 			raw: data,
 			isDown: matchesKey(data, Key.down),
@@ -542,7 +590,7 @@ class TrailView implements Component {
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const outerBorder = (s: string) => this.theme.fg("border", s);
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
 		const sel = view.selectedArtifact;
@@ -553,22 +601,29 @@ class TrailView implements Component {
 		const stats = this.state.mode === "work"
 			? `next ${counts.needs} · pinned ${counts.pinned} · done ${counts.recent}`
 			: `${view.items.length}/${artifacts.length}`;
-		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`· ${modeLabel} · ${sourceLabel} · ${stats}`)} `;
-		const headerRight = sel
-			? ` ${dim(`@${sel.id}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} `
-			: "";
+		const headerLeft = ` ${accent(this.theme.bold("Trail — Session Activity"))} `;
+		const headerRight = ` ${dim("Esc close")} `;
 		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		this.container.addChild(new Text(`${modeBar(this.theme, this.state.mode)}  ${filterBar(this.theme, this.state.filter)}`, 1, 0));
+		const contextLine = `${muted("interactive overlay")} ${dim("·")} ${dim(`${modeLabel} · ${sourceLabel} · ${stats}`)} ${dim("· browse safely · chips expand only on send")}`;
+		this.container.addChild(new Text(truncateToWidth(contextLine, innerWidth - 2), 1, 0));
+		this.container.addChild(new DynamicBorder(dividerBorder));
+		this.container.addChild(new Text(`${muted("View")}   ${modeBar(this.theme, this.state.mode)}`, 1, 0));
+		this.container.addChild(new Text(`${muted("Kind")}   ${filterBar(this.theme, this.state.filter)}`, 1, 0));
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
-		if (sourceLine) this.container.addChild(new Text(sourceLine, 1, 0));
+		if (sourceLine) this.container.addChild(new Text(`${muted("Source")} ${sourceLine}`, 1, 0));
+		this.container.addChild(new DynamicBorder(dividerBorder));
+		this.container.addChild(new Text(`${muted(this.state.mode === "work" ? "Queue" : "Activity")} ${dim(view.items.length ? `${view.selected + 1}/${view.items.length}` : "0 items")}`, 1, 0));
 
 		const listWidth = Math.max(30, innerWidth);
 		if (view.visible.length === 0) {
 			const empty = emptyTrailMessage(this.state, artifacts.length > 0);
-			this.container.addChild(new Text("", 1, 0));
-			this.container.addChild(new Text(muted(empty.title), 2, 0));
-			this.container.addChild(new Text(dim(empty.hint), 2, 0));
-			this.container.addChild(new Text("", 1, 0));
+			const emptyWidth = Math.max(20, listWidth - 2);
+			this.container.addChild(new Spacer(1));
+			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold(empty.title))} `, "", emptyWidth, dividerBorder, TOP_CORNERS), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${muted(empty.body)}`, emptyWidth), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${dim(`Try: ${empty.actions.join(" · ")}`)}`, emptyWidth), 1, 0));
+			this.container.addChild(new Text(fitBorder("", "", emptyWidth, dividerBorder, BOTTOM_CORNERS), 1, 0));
+			this.container.addChild(new Spacer(1));
 		} else {
 			for (let i = 0; i < view.visible.length; i++) {
 				const artifact = view.visible[i];
@@ -584,19 +639,24 @@ class TrailView implements Component {
 						this.container.addChild(new Text(` ${colorBucket(this.theme, bucket, this.state.mode, label)} ${dim("─".repeat(8))}`, 1, 0));
 					}
 				}
-				const marker = selected ? accent("▸") : dim(" ");
-				const glyph = colorBucket(this.theme, bucket, this.state.mode, bucketGlyph(bucket, this.state.mode));
-				const bucketText = selected
-					? colorBucket(this.theme, bucket, this.state.mode, bucketName(bucket, this.state.mode).padEnd(6))
-					: muted(bucketName(bucket, this.state.mode).padEnd(6));
-				const kind = colorKind(this.theme, artifact.kind, `[${kindLabel(artifact.kind)}]`);
-				const title = selected
-					? this.theme.bold(this.theme.fg("text", artifact.title))
-					: muted(artifact.title);
+				const marker = selected ? "▸" : " ";
+				const glyphText = bucketGlyph(bucket, this.state.mode);
+				const bucketLabel = bucketName(bucket, this.state.mode).padEnd(6);
 				const reason = trailMetaString(artifact, "trailReason");
 				const meta = [reason || artifact.subtitle, artifact.source ? `[${artifact.source}]` : undefined, relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
-				const line = `${marker} ${glyph} ${bucketText} ${kind} ${title} ${dim(meta)}`;
-				this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+				if (selected) {
+					const plainLine = `${marker} ${glyphText} ${bucketLabel} [${kindLabel(artifact.kind)}] ${artifact.title} ${meta}`;
+					const row = padAnsi(truncateToWidth(plainLine, listWidth - 2), listWidth - 2);
+					this.container.addChild(new Text(this.theme.bg("selectedBg", this.theme.fg("text", row)), 1, 0));
+				} else {
+					const glyph = colorBucket(this.theme, bucket, this.state.mode, glyphText);
+					const bucketText = muted(bucketLabel);
+					const kind = colorKind(this.theme, artifact.kind, `[${kindLabel(artifact.kind)}]`);
+					const title = muted(artifact.title);
+					const line = `${dim(marker)} ${glyph} ${bucketText} ${kind} ${title} ${dim(meta)}`;
+					const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
+					this.container.addChild(new Text(row, 1, 0));
+				}
 			}
 		}
 
@@ -605,11 +665,11 @@ class TrailView implements Component {
 			const primary = trailMetaString(sel, "trailPrimaryAction") ?? trailPrimaryAction(sel);
 			const focusMeta = [trailMetaString(sel, "trailReason"), sel.subtitle, sel.source ? `source ${sel.source}` : undefined, relativeTime(sel.timestamp), sel.ref].filter(Boolean).join(" · ");
 			this.container.addChild(new DynamicBorder(dividerBorder));
-			this.container.addChild(new Text(`${colorBucket(this.theme, bucket, this.state.mode, `${bucketGlyph(bucket, this.state.mode)} ${bucketName(bucket, this.state.mode)}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} ${accent(primary)}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Selected")} ${dim("—")} ${colorBucket(this.theme, bucket, this.state.mode, `${bucketGlyph(bucket, this.state.mode)} ${bucketName(bucket, this.state.mode)}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} ${accent(primary)}`, 1, 0));
 			this.container.addChild(new Text(truncateToWidth(this.theme.bold(this.theme.fg("text", sel.title)), listWidth - 2), 1, 0));
-			if (focusMeta) this.container.addChild(new Text(truncateToWidth(dim(focusMeta), listWidth - 2), 1, 0));
+			if (focusMeta) this.container.addChild(new Text(truncateToWidth(`${muted("Meta")} ${dim(focusMeta)}`, listWidth - 2), 1, 0));
 			const hints = selectedActionHints(sel, this.pinnedRefs.has(sel.ref), this.completedRefs.has(sel.ref));
-			this.container.addChild(new Text(truncateToWidth(hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · "), listWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(`${muted("Actions")} ${hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · ")}`, listWidth - 2), 1, 0));
 		}
 
 		if (this.state.showDetail && view.selectedArtifact) {
@@ -620,7 +680,12 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · / recall · w work · a all · tab filter · s source · enter · r attach · I full · y copy · p pin · x done/restore · v preview · c checkpoint · q close"), 1, 0));
+		this.container.addChild(new Text(dim("↑↓ move · Enter primary · r attach · x done/restore · ? shortcuts · Esc close"), 1, 0));
+		if (this.showHelp) {
+			this.container.addChild(new Text(`${muted("Modes")} ${dim("w work · / recall · a all · tab kind · s source")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Actions")} ${dim("o open file · I full · y copy · p pin · c checkpoint · v preview")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Navigation")} ${dim("j/k or ↑↓ move · g/G top/bottom · q/Esc close")}`, 1, 0));
+		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;

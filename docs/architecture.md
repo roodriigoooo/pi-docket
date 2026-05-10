@@ -30,10 +30,11 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 ## UI principles
 
-- Progressive hierarchy: header shows mode and counts, list shows compact rows, selected item shows the next action and secondary actions, preview stays opt-in.
+- Progressive hierarchy: modal title explains place, header shows mode/counts, controls live in their own zone, list shows compact rows, selected item shows next action, preview stays opt-in.
 - Flow protection: attaching, copying, pinning, and marking done should be lightweight queue operations, not forced context injection or session switches.
 - Recall stays secondary: answer units are reachable on demand, but transcript-like responses do not flood the default working set.
-- Beauty serves orientation: color and glyphs encode queue state (`next`, `pinned`, `done`) before dense metadata appears.
+- Embedded theming: Trail uses Pi theme tokens (`selectedBg`, `customMessageBg`, `border`, `borderMuted`, `accent`, `muted`, `dim`) instead of custom palette values.
+- Beauty serves orientation: fill/background marks active selection, color and glyphs encode queue state (`next`, `pinned`, `done`), metadata stays secondary.
 
 ## Current modules
 
