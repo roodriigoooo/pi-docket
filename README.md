@@ -198,7 +198,7 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 
 ## navigator keys
 
-Default `/trail` view is a working set: changed files, errors, pinned items, recent actions, and loaded worker outputs. Preview is off by default.
+Default `/trail` view is a working set: next items, pinned items, and done items. It keeps changed files, errors, and loaded worker outputs actionable without dumping the transcript. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
@@ -213,6 +213,7 @@ Default `/trail` view is a working set: changed files, errors, pinned items, rec
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
 - `p` — pin/unpin item in working set
+- `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview
 - `q` or `esc` — close

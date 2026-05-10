@@ -391,13 +391,32 @@ function trailReason(artifact: Artifact): string {
 	return "";
 }
 
-function trailSecondaryActions(artifact: Artifact): string[] {
-	if (artifact.kind === "file" && artifactHasDiff(artifact)) return ["o open", "r attach"];
-	if (artifact.kind === "file") return ["r attach", "y copy"];
-	if (artifact.kind === "response") return ["r attach", "y copy"];
-	if (artifact.kind === "error") return ["r attach", "y copy"];
-	if (artifact.kind === "code") return ["r attach", "y copy"];
-	return ["r attach", "y copy"];
+function bucketName(bucket: TrailBucket | undefined, mode: NavigatorMode): string {
+	if (bucket === "needs") return "next";
+	if (bucket === "pinned") return "pinned";
+	if (bucket === "recent") return "done";
+	return mode === "recall" ? "answer" : "item";
+}
+
+function bucketGlyph(bucket: TrailBucket | undefined, mode: NavigatorMode): string {
+	if (bucket === "needs") return "◆";
+	if (bucket === "pinned") return "●";
+	if (bucket === "recent") return "✓";
+	return mode === "recall" ? "✦" : "·";
+}
+
+function colorBucket(theme: any, bucket: TrailBucket | undefined, mode: NavigatorMode, text: string): string {
+	if (bucket === "needs") return theme.fg("warning", text);
+	if (bucket === "pinned") return theme.fg("accent", text);
+	if (bucket === "recent") return theme.fg("success", text);
+	return mode === "recall" ? theme.fg("accent", text) : theme.fg("muted", text);
+}
+
+function selectedActionHints(artifact: Artifact, pinned: boolean, completed: boolean): string[] {
+	const hints = [`enter ${trailPrimaryAction(artifact).toLowerCase()}`];
+	if (artifact.kind === "file") hints.push("o open");
+	hints.push("r attach", "I full", "y copy", pinned ? "p unpin" : "p pin", completed ? "x restore" : "x done", "v preview");
+	return hints;
 }
 
 function decorateTrailArtifacts(artifacts: Artifact[], pinnedRefs: Set<string>, completedRefs: Set<string>): Artifact[] {
@@ -474,6 +493,19 @@ class TrailView implements Component {
 			this.tui.requestRender();
 			return;
 		}
+		if (data === "x") {
+			const artifact = selectedArtifact(this.state, artifacts);
+			if (artifact) {
+				if (this.completedRefs.has(artifact.ref)) this.completedRefs.delete(artifact.ref);
+				else {
+					this.pinnedRefs.delete(artifact.ref);
+					this.completedRefs.add(artifact.ref);
+				}
+			}
+			this.invalidate();
+			this.tui.requestRender();
+			return;
+		}
 		const key: NavigatorKey = {
 			raw: data,
 			isDown: matchesKey(data, Key.down),
@@ -506,7 +538,7 @@ class TrailView implements Component {
 		const artifacts = this.decoratedArtifacts();
 		this.container = new Box(2, 1, trailCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
-		const view = navigatorViewModel(this.state, artifacts, this.state.showDetail ? 10 : 18);
+		const view = navigatorViewModel(this.state, artifacts, this.state.showDetail ? 7 : 12);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
@@ -519,7 +551,7 @@ class TrailView implements Component {
 		const modeLabel = this.state.mode === "work" ? "working set" : this.state.mode === "recall" ? "recall" : "all artifacts";
 		const counts = bucketCounts(view.items);
 		const stats = this.state.mode === "work"
-			? `needs ${counts.needs} · pinned ${counts.pinned} · recent ${counts.recent}`
+			? `next ${counts.needs} · pinned ${counts.pinned} · done ${counts.recent}`
 			: `${view.items.length}/${artifacts.length}`;
 		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim(`· ${modeLabel} · ${sourceLabel} · ${stats}`)} `;
 		const headerRight = sel
@@ -530,7 +562,6 @@ class TrailView implements Component {
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
 		if (sourceLine) this.container.addChild(new Text(sourceLine, 1, 0));
 
-		const idWidth = Math.max(5, ...view.visible.map((a) => a?.id.length ?? 0));
 		const listWidth = Math.max(30, innerWidth);
 		if (view.visible.length === 0) {
 			const empty = emptyTrailMessage(this.state, artifacts.length > 0);
@@ -544,26 +575,41 @@ class TrailView implements Component {
 				if (!artifact) continue;
 				const absolute = view.visibleStart + i;
 				const selected = absolute === view.selected;
-				const marker = selected ? accent("▸") : dim(" ");
-				const idText = artifact.id.padEnd(idWidth);
-				const id = selected ? accent(this.theme.bold(idText)) : muted(idText);
-				const kind = colorKind(this.theme, artifact.kind, kindLabel(artifact.kind).padEnd(5));
 				const bucket = navigatorBucket(artifact);
-				const bucketLabel = bucket ? bucket.padEnd(6) : (this.state.mode === "recall" ? "answer" : "item").padEnd(6);
-				const bucketPill = bucket === "needs" ? this.theme.fg("warning", bucketLabel) : bucket === "pinned" ? accent(bucketLabel) : muted(bucketLabel);
-				const sourcePill = artifact.source ? muted(`[${artifact.source}]`) : "      ";
-				const age = relativeTime(artifact.timestamp);
-				const reason = trailMetaString(artifact, "trailReason");
-				const meta = [reason, artifact.subtitle, age].filter(Boolean).join(" · ");
+				if (this.state.mode === "work") {
+					const previousBucket = absolute > 0 ? navigatorBucket(view.items[absolute - 1]!) : undefined;
+					if (bucket && bucket !== previousBucket) {
+						const count = counts[bucket];
+						const label = `${bucketGlyph(bucket, this.state.mode)} ${bucketName(bucket, this.state.mode)} ${count}`;
+						this.container.addChild(new Text(` ${colorBucket(this.theme, bucket, this.state.mode, label)} ${dim("─".repeat(8))}`, 1, 0));
+					}
+				}
+				const marker = selected ? accent("▸") : dim(" ");
+				const glyph = colorBucket(this.theme, bucket, this.state.mode, bucketGlyph(bucket, this.state.mode));
+				const bucketText = selected
+					? colorBucket(this.theme, bucket, this.state.mode, bucketName(bucket, this.state.mode).padEnd(6))
+					: muted(bucketName(bucket, this.state.mode).padEnd(6));
+				const kind = colorKind(this.theme, artifact.kind, `[${kindLabel(artifact.kind)}]`);
 				const title = selected
 					? this.theme.bold(this.theme.fg("text", artifact.title))
 					: muted(artifact.title);
-				const primary = trailMetaString(artifact, "trailPrimaryAction") ?? trailPrimaryAction(artifact);
-				const secondary = selected ? trailSecondaryActions(artifact).map((action) => muted(action)).join(" ") : "";
-				const actionText = selected ? `${accent(`[${primary}]`)}${secondary ? ` ${secondary}` : ""}` : dim(primary);
-				const line = `${marker} ${bucketPill} ${sourcePill} ${id} ${kind} ${title} ${dim(meta)} ${actionText}`;
+				const reason = trailMetaString(artifact, "trailReason");
+				const meta = [reason || artifact.subtitle, artifact.source ? `[${artifact.source}]` : undefined, relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
+				const line = `${marker} ${glyph} ${bucketText} ${kind} ${title} ${dim(meta)}`;
 				this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 			}
+		}
+
+		if (sel) {
+			const bucket = navigatorBucket(sel);
+			const primary = trailMetaString(sel, "trailPrimaryAction") ?? trailPrimaryAction(sel);
+			const focusMeta = [trailMetaString(sel, "trailReason"), sel.subtitle, sel.source ? `source ${sel.source}` : undefined, relativeTime(sel.timestamp), sel.ref].filter(Boolean).join(" · ");
+			this.container.addChild(new DynamicBorder(dividerBorder));
+			this.container.addChild(new Text(`${colorBucket(this.theme, bucket, this.state.mode, `${bucketGlyph(bucket, this.state.mode)} ${bucketName(bucket, this.state.mode)}`)} ${colorKind(this.theme, sel.kind, kindLabel(sel.kind))} ${accent(primary)}`, 1, 0));
+			this.container.addChild(new Text(truncateToWidth(this.theme.bold(this.theme.fg("text", sel.title)), listWidth - 2), 1, 0));
+			if (focusMeta) this.container.addChild(new Text(truncateToWidth(dim(focusMeta), listWidth - 2), 1, 0));
+			const hints = selectedActionHints(sel, this.pinnedRefs.has(sel.ref), this.completedRefs.has(sel.ref));
+			this.container.addChild(new Text(truncateToWidth(hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · "), listWidth - 2), 1, 0));
 		}
 
 		if (this.state.showDetail && view.selectedArtifact) {
@@ -574,7 +620,7 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim("j/k move · / recall · w work · a all · tab filter · s source · enter primary · o file · r attach · y copy · p pin · v preview · q close"), 1, 0));
+		this.container.addChild(new Text(dim("j/k move · / recall · w work · a all · tab filter · s source · enter · r attach · I full · y copy · p pin · x done/restore · v preview · c checkpoint · q close"), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;

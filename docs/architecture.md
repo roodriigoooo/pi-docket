@@ -6,7 +6,7 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Artifact**: structured object derived from session activity, such as a command, file operation, prompt, response, code block, error, or checkpoint.
 
-**Work Item**: actionable Navigator row derived from an Artifact. It exists in the default view only when the user has a likely next action: review diff, inspect failure, view worker answer, pin, attach, copy, or reopen recent work.
+**Work Item**: actionable Navigator row derived from an Artifact. It exists in the default view only when the user has a likely next action. The working set is a small queue with three levels: `next` (needs attention), `pinned` (kept by user), and `done` (recently handled, restorable with `x`).
 
 **Recall**: secondary Navigator mode for curated answer units (assistant/worker responses). It keeps answers reachable without filling the default working set with transcript-like artifacts.
 
@@ -26,7 +26,14 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Worker Commands**: Module that owns `/trail` command flows for spawning, listing, loading, unloading, and deleting Trail workers.
 
-**Navigator**: interactive Trail view for working-set actions, Recall, all-artifact browsing, inspection, referencing, copying, pinning, and checkpointing.
+**Navigator**: interactive Trail view for working-set actions, Recall, all-artifact browsing, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
+
+## UI principles
+
+- Progressive hierarchy: header shows mode and counts, list shows compact rows, selected item shows the next action and secondary actions, preview stays opt-in.
+- Flow protection: attaching, copying, pinning, and marking done should be lightweight queue operations, not forced context injection or session switches.
+- Recall stays secondary: answer units are reachable on demand, but transcript-like responses do not flood the default working set.
+- Beauty serves orientation: color and glyphs encode queue state (`next`, `pinned`, `done`) before dense metadata appears.
 
 ## Current modules
 
