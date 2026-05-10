@@ -77,11 +77,13 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession });
 				const label = workerShortLabel(worker.index);
 				deps.announce(
-					`spawned ${label}`,
+					`spawned ${label} · starting`,
 					[
-						workerSummaryName(worker),
-						`attach: tmux attach -t ${worker.tmuxSession}`,
+						`◌ ${label} starting · ${workerSummaryName(worker)}`,
+						"Artifacts snapshot automatically while worker runs.",
+						`inbox:  /trail workers`,
 						`load:   /trail load ${label}`,
+						`attach: tmux attach -t ${worker.tmuxSession}`,
 					].join("\n"),
 				);
 			} catch (err) {

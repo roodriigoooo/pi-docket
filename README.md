@@ -140,6 +140,7 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
+- `/trail workers` — open artifact-first inbox for parallel worker outputs
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
@@ -153,12 +154,27 @@ Typical flow:
 
 ```bash
 /trail spawn investigate flaky test output
-/trail list --workers
+/trail workers
 /trail load w1
 /trail
 ```
 
+`/trail workers` is artifact-first: workers are filters, and the inbox shows the newest or most important answers, errors, files, commands, and checkpoints across parallel work. Loading a worker still costs zero model-context tokens until you choose a specific artifact reference or full injection.
+
 After loading a worker, press `s` in the Navigator until the worker source slot (`w1`, `w2`, etc.) is active. Then use `r`/`i` for compact References or `I` for full Artifact injection.
+
+## parallel work inbox keys
+
+- `j/k` or arrows — move
+- `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
+- `f` — cycle artifact kind filter
+- `enter` — peek selected artifact
+- `l` — load selected worker's artifacts
+- `a` — copy tmux attach command
+- `r` — open Recall for selected worker answers
+- `x` — dismiss selected inbox row locally
+- `?` — show full shortcut help
+- `q` or `esc` — close
 
 ## load picker keys
 

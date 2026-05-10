@@ -56,6 +56,14 @@ test("Trail grammar parses spawn", () => {
 	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
 });
 
+test("Trail grammar parses workers dashboard", () => {
+	assert.deepEqual(parseTrailCommand("workers"), { ok: true, intent: { kind: "workers" } });
+	assert.ok(TRAIL_COMMANDS.includes("workers"));
+	assert.match(trailUsage(), /\/trail workers/);
+	const invalid = parseTrailCommand("workers extra");
+	assert.equal(invalid.ok, false);
+});
+
 test("Trail grammar parses recall", () => {
 	assert.deepEqual(parseTrailCommand("recall"), { ok: true, intent: { kind: "recall", query: undefined } });
 	assert.deepEqual(parseTrailCommand("recall worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });

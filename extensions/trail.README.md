@@ -10,10 +10,12 @@ Session artifacts as first-class objects for Pi.
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last] [--include-consumed]` — load a prior checkpoint's artifacts into the navigator without spending any model-context tokens
-- `/trail unload <id|all>` — drop a loaded checkpoint from the session
-- `/trail delete [id|last]` — permanently delete a checkpoint (bypasses soft-consume)
+- `/trail load [id|last|w<N>] [--include-consumed]` — load checkpoint or worker artifacts into the navigator without spending any model-context tokens
+- `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
+- `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
 - `/trail list [--include-consumed]` — list checkpoints
+- `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
+- `/trail workers` — open artifact-first inbox for parallel worker outputs
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
@@ -26,6 +28,19 @@ Session artifacts as first-class objects for Pi.
 - `p` — preview checkpoint markdown
 - `e` — edit then continue (resume mode only)
 - `d` — delete selected checkpoint after confirmation (resume / delete modes)
+- `q` or `esc` — close
+
+## Parallel work inbox keys
+
+- `j/k` or arrows — move
+- `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
+- `f` — cycle artifact kind filter
+- `enter` — peek selected artifact
+- `l` — load selected worker's artifacts
+- `a` — copy tmux attach command
+- `r` — open Recall for selected worker answers
+- `x` — dismiss selected inbox row locally
+- `?` — show full shortcut help
 - `q` or `esc` — close
 
 ## Navigator keys

@@ -37,7 +37,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { artifactFilePath, createArtifactCatalog, type ArtifactCatalog } from "./artifact-catalog.js";
+import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
@@ -808,6 +808,330 @@ async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summar
 	});
 }
 
+type WorkerDerivedState = "starting" | "active" | "stale" | "ready" | "empty" | "error" | "idle";
+
+type ParallelKindFilter = ArtifactKind | "all";
+type ParallelSource = "all" | string;
+
+type ParallelWorkEntry = {
+	worker: WorkerStatus;
+	artifact: Artifact;
+};
+
+type ParallelWorkAction =
+	| { action: "peek"; entry: ParallelWorkEntry }
+	| { action: "load" | "attach" | "recall"; worker: WorkerStatus }
+	| null;
+
+const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
+
+function workerDerivedState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
+	if (worker.state === "error") return "error";
+	if (worker.state === "ended") return (worker.artifactCount ?? 0) > 0 ? "ready" : "empty";
+	const ageMs = now - Date.parse(worker.updatedAt);
+	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
+	if (worker.state === "active") return "active";
+	if (worker.state === "starting") return "starting";
+	if (worker.state === "idle") return "idle";
+	return "idle";
+}
+
+function workerStateGlyph(state: WorkerDerivedState): string {
+	if (state === "starting") return "◌";
+	if (state === "active") return "◐";
+	if (state === "stale") return "◯";
+	if (state === "ready") return "✓";
+	if (state === "error") return "!";
+	if (state === "empty") return "□";
+	return "○";
+}
+
+function workerStateColor(theme: any, state: WorkerDerivedState, text: string): string {
+	if (state === "active" || state === "ready") return theme.fg("success", text);
+	if (state === "error") return theme.fg("error", text);
+	if (state === "starting") return theme.fg("accent", text);
+	return theme.fg("muted", text);
+}
+
+function workerStateRank(worker: WorkerStatus): number {
+	const state = workerDerivedState(worker);
+	if (state === "error") return 0;
+	if (state === "active") return 1;
+	if (state === "ready") return 2;
+	if (state === "starting") return 3;
+	if (state === "stale") return 4;
+	return 5;
+}
+
+function artifactInboxRank(kind: ArtifactKind): number {
+	if (kind === "error") return 0;
+	if (kind === "response") return 1;
+	if (kind === "checkpoint") return 2;
+	if (kind === "file") return 3;
+	if (kind === "command") return 4;
+	if (kind === "code") return 5;
+	if (kind === "prompt") return 6;
+	return 7;
+}
+
+function parallelKindLabel(kind: ArtifactKind): string {
+	return kind === "response" ? "answer" : kindLabel(kind);
+}
+
+function parallelKindGlyph(kind: ArtifactKind): string {
+	if (kind === "error") return "!";
+	if (kind === "response") return "✦";
+	if (kind === "file") return "f";
+	if (kind === "command") return "$";
+	if (kind === "checkpoint") return "◆";
+	if (kind === "code") return "{}";
+	return "·";
+}
+
+function workerSourceLabel(worker: WorkerStatus): string {
+	return workerShortLabel(worker.index);
+}
+
+function workerDisplayName(worker: WorkerStatus, max = 34): string {
+	return workerSummaryName(worker, max);
+}
+
+function namespaceWorkerArtifacts(worker: WorkerStatus, artifacts: Artifact[]): Artifact[] {
+	const slot = workerSourceLabel(worker);
+	return artifacts.map((artifact) => ({ ...artifact, id: `${slot}.${artifact.displayId}`, displayId: `${slot}.${artifact.displayId}`, source: slot }));
+}
+
+function parallelEntries(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, source: ParallelSource, filter: ParallelKindFilter, dismissed: Set<string>): ParallelWorkEntry[] {
+	const entries: ParallelWorkEntry[] = [];
+	for (const worker of workers) {
+		if (source !== "all" && source !== worker.id) continue;
+		for (const artifact of namespaceWorkerArtifacts(worker, artifactsByWorker.get(worker.id) ?? [])) {
+			if (filter !== "all" && artifact.kind !== filter) continue;
+			if (dismissed.has(`${worker.id}:${artifact.ref}`)) continue;
+			entries.push({ worker, artifact });
+		}
+	}
+	return entries.sort((a, b) => {
+		const rank = artifactInboxRank(a.artifact.kind) - artifactInboxRank(b.artifact.kind);
+		if (rank !== 0) return rank;
+		return (b.artifact.timestamp ?? Date.parse(b.worker.updatedAt)) - (a.artifact.timestamp ?? Date.parse(a.worker.updatedAt));
+	});
+}
+
+async function readWorkersWithArtifacts(store = createWorkerStore()): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }> {
+	const workers = await store.list();
+	const artifactsByWorker = new Map<string, Artifact[]>();
+	await Promise.all(workers.map(async (worker) => {
+		artifactsByWorker.set(worker.id, await store.readArtifacts(worker.id));
+	}));
+	return { workers, artifactsByWorker };
+}
+
+function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): string {
+	const entries = parallelEntries(workers, artifactsByWorker, "all", "all", new Set());
+	if (workers.length === 0) return "No Trail workers";
+	const header = `${workers.length} workers · ${entries.length} artifacts`;
+	const lines = entries.slice(0, 20).map((entry) => `${workerSourceLabel(entry.worker)}\t${entry.artifact.kind}\t${entry.artifact.displayId}\t${entry.artifact.title}`);
+	return [header, ...lines].join("\n");
+}
+
+class TrailParallelWorkView implements Component {
+	private container: Container | Box = new Container();
+	private selected = 0;
+	private source: ParallelSource = "all";
+	private filter: ParallelKindFilter = "all";
+	private showHelp = false;
+	private dismissed = new Set<string>();
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private workers: WorkerStatus[],
+		private artifactsByWorker: Map<string, Artifact[]>,
+		private done: (result: ParallelWorkAction) => void,
+	) {}
+
+	private entries(): ParallelWorkEntry[] {
+		return parallelEntries(this.workers, this.artifactsByWorker, this.source, this.filter, this.dismissed);
+	}
+
+	private selectedEntry(): ParallelWorkEntry | undefined {
+		return this.entries()[this.selected];
+	}
+
+	private selectedWorker(): WorkerStatus | undefined {
+		return this.selectedEntry()?.worker ?? this.workers.find((worker) => worker.id === this.source);
+	}
+
+	private cycleSource(): void {
+		const sources: ParallelSource[] = ["all", ...this.workers.map((worker) => worker.id)];
+		const idx = sources.indexOf(this.source);
+		this.source = sources[(idx + 1) % sources.length] ?? "all";
+		this.selected = 0;
+	}
+
+	private cycleFilter(): void {
+		const idx = PARALLEL_KIND_FILTERS.indexOf(this.filter);
+		this.filter = PARALLEL_KIND_FILTERS[(idx + 1) % PARALLEL_KIND_FILTERS.length] ?? "all";
+		this.selected = 0;
+	}
+
+	handleInput(data: string): void {
+		const entries = this.entries();
+		const max = Math.max(0, entries.length - 1);
+		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+			this.done(null);
+			return;
+		}
+		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
+		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
+		else if (data === "g") this.selected = 0;
+		else if (data === "G") this.selected = max;
+		else if (matchesKey(data, Key.tab)) this.cycleSource();
+		else if (data === "f") this.cycleFilter();
+		else if (data === "?") this.showHelp = !this.showHelp;
+		else if (data === "x") {
+			const entry = this.selectedEntry();
+			if (entry) this.dismissed.add(`${entry.worker.id}:${entry.artifact.ref}`);
+			this.selected = Math.min(this.selected, Math.max(0, this.entries().length - 1));
+		}
+		else if (matchesKey(data, Key.enter)) {
+			const entry = this.selectedEntry();
+			if (entry) this.done({ action: "peek", entry });
+			return;
+		}
+		else if (data === "l") {
+			const worker = this.selectedWorker();
+			if (worker) this.done({ action: "load", worker });
+			return;
+		}
+		else if (data === "a") {
+			const worker = this.selectedWorker();
+			if (worker) this.done({ action: "attach", worker });
+			return;
+		}
+		else if (data === "r") {
+			const worker = this.selectedWorker();
+			if (worker) this.done({ action: "recall", worker });
+			return;
+		}
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.container.invalidate();
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		this.container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const listWidth = Math.max(30, innerWidth);
+		const entries = this.entries();
+		this.selected = Math.min(this.selected, Math.max(0, entries.length - 1));
+		const selected = entries[this.selected];
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const border = (s: string) => this.theme.fg("border", s);
+		const divider = (s: string) => this.theme.fg("borderMuted", s);
+		const workerCounts = this.workers.reduce((acc, worker) => {
+			const state = workerDerivedState(worker);
+			if (state === "active") acc.active++;
+			if (state === "ready") acc.ready++;
+			if (state === "error") acc.error++;
+			return acc;
+		}, { active: 0, ready: 0, error: 0 });
+		const artifactTotal = [...this.artifactsByWorker.values()].reduce((sum, artifacts) => sum + artifacts.length, 0);
+		const errorTotal = [...this.artifactsByWorker.values()].reduce((sum, artifacts) => sum + artifacts.filter((artifact) => artifact.kind === "error").length, 0);
+
+		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("Trail — Parallel Work"))} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
+		this.container.addChild(new Text(truncateToWidth(`${muted(`${this.workers.length} workers`)} ${dim("·")} ${workerStateColor(this.theme, "active", `${workerCounts.active} active`)} ${dim("·")} ${workerStateColor(this.theme, "ready", `${workerCounts.ready} ready`)} ${dim("·")} ${errorTotal ? this.theme.fg("error", `${errorTotal} error`) : dim("0 errors")} ${dim("·")} ${dim(`${artifactTotal} artifacts · safe browse`)}`, innerWidth - 2), 1, 0));
+		this.container.addChild(new DynamicBorder(divider));
+		this.container.addChild(new Text(`${muted("Workers")} ${this.renderWorkerPills(innerWidth - 10)}`, 1, 0));
+		this.container.addChild(new Text(`${muted("Filter")}  ${activePill(this.theme, this.filter === "response" ? "answer" : this.filter)} ${dim("f cycle kind · tab worker")}`, 1, 0));
+		this.container.addChild(new DynamicBorder(divider));
+		this.container.addChild(new Text(`${muted("Inbox")} ${dim(entries.length ? `${this.selected + 1}/${entries.length}` : "0 artifacts")}`, 1, 0));
+
+		if (entries.length === 0) {
+			const title = this.workers.length === 0 ? "No parallel work yet" : "No artifacts in this view";
+			const body = this.workers.length === 0
+				? "Spawn a side investigation when you want evidence without interrupting current flow."
+				: "Workers may still be starting, or this worker/kind filter has no matching artifacts yet.";
+			this.container.addChild(new Spacer(1));
+			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold(title))} `, "", listWidth - 2, divider, TOP_CORNERS), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${muted(body)}`, listWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${dim("Try: /trail spawn <task> · Tab switch worker · f cycle kind")}`, listWidth - 2), 1, 0));
+			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
+			this.container.addChild(new Spacer(1));
+		} else {
+			const visible = entries.slice(Math.max(0, this.selected - 5), Math.max(0, this.selected - 5) + 11);
+			const start = entries.indexOf(visible[0]!);
+			for (let i = 0; i < visible.length; i++) {
+				const entry = visible[i];
+				if (!entry) continue;
+				const absolute = start + i;
+				const isSelected = absolute === this.selected;
+				const workerLabel = workerSourceLabel(entry.worker).padEnd(4);
+				const kind = parallelKindLabel(entry.artifact.kind).padEnd(8);
+				const age = relativeTime(entry.artifact.timestamp ?? Date.parse(entry.worker.updatedAt));
+				const plain = `${isSelected ? "▸" : " "} ${parallelKindGlyph(entry.artifact.kind)} ${workerLabel} ${kind} ${entry.artifact.title} ${age}`;
+				if (isSelected) {
+					this.container.addChild(new Text(this.theme.bg("selectedBg", this.theme.fg("text", padAnsi(truncateToWidth(plain, listWidth - 2), listWidth - 2))), 1, 0));
+				} else {
+					const marker = dim(" ");
+					const glyph = entry.artifact.kind === "error" ? this.theme.fg("error", "!") : colorKind(this.theme, entry.artifact.kind, parallelKindGlyph(entry.artifact.kind));
+					const line = `${marker} ${glyph} ${muted(workerLabel)} ${colorKind(this.theme, entry.artifact.kind, kind)} ${muted(entry.artifact.title)} ${dim(age)}`;
+					this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+				}
+			}
+		}
+
+		if (selected) {
+			this.container.addChild(new DynamicBorder(divider));
+			this.container.addChild(new Text(`${muted("Selected artifact")} ${dim("—")} ${workerSourceLabel(selected.worker)} ${dim("·")} ${colorKind(this.theme, selected.artifact.kind, parallelKindLabel(selected.artifact.kind))}`, 1, 0));
+			this.container.addChild(new Text(truncateToWidth(this.theme.bold(this.theme.fg("text", selected.artifact.title)), listWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(`${muted("Worker")} ${dim(`${workerSourceLabel(selected.worker)} · ${workerDisplayName(selected.worker)} · ${workerAge(selected.worker.updatedAt)}`)}`, listWidth - 2), 1, 0));
+			const actions = `${accent("[Enter peek]")} ${dim("· l load worker artifacts · a copy tmux attach · r recall worker · x dismiss")}`;
+			this.container.addChild(new Text(truncateToWidth(`${muted("Actions")} ${actions}`, listWidth - 2), 1, 0));
+		}
+
+		this.container.addChild(new DynamicBorder(divider));
+		this.container.addChild(new Text(dim("↑↓ move · Tab worker · f kind · Enter peek · l load · a attach · ? help · Esc close"), 1, 0));
+		if (this.showHelp) {
+			this.container.addChild(new Text(`${muted("Actions")} ${dim("r recall worker · x dismiss local row · g/G top/bottom")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Safety")} ${dim("loading mounts artifacts only; no context added until you attach/full")}`, 1, 0));
+		}
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = this.container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+
+	private renderWorkerPills(maxWidth: number): string {
+		const parts = [this.source === "all" ? activePill(this.theme, "all") : inactivePill(this.theme, "all")];
+		const sorted = [...this.workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+		for (const worker of sorted) {
+			const state = workerDerivedState(worker);
+			const label = `${workerStateGlyph(state)} ${workerSourceLabel(worker)} ${(this.artifactsByWorker.get(worker.id)?.length ?? worker.artifactCount ?? 0)} art`;
+			parts.push(this.source === worker.id ? activePill(this.theme, label) : workerStateColor(this.theme, state, ` ${label} `));
+		}
+		return truncateToWidth(parts.join(" "), maxWidth);
+	}
+}
+
+async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): Promise<ParallelWorkAction> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new TrailParallelWorkView(tui, theme, workers, artifactsByWorker, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+	});
+}
+
 type LoadPickerMode = "checkpoint" | "worker";
 type LoadPickerSelection =
 	| { kind: "checkpoint"; action: "load" | "preview"; summary: CheckpointSummary }
@@ -1201,6 +1525,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let activeCtx: ExtensionContext | undefined;
 	let sweptOnce = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
+	let workerDockTimer: NodeJS.Timeout | undefined;
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
@@ -1266,6 +1591,40 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	const workerId = process.env[TRAIL_WORKER_ENV];
 
+	const refreshWorkerDockWidget = async (): Promise<void> => {
+		const ctx = activeCtx;
+		if (!ctx?.hasUI || workerId) return;
+		try {
+			const store = createWorkerStore();
+			const workers = await store.list();
+			if (workers.length === 0) {
+				ctx.ui.setWidget("trail-workers", undefined);
+				return;
+			}
+			const sorted = [...workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 4);
+			ctx.ui.setWidget(
+				"trail-workers",
+				(_tui, theme) => {
+					const container = new Container();
+					const accent = (s: string) => theme.fg("accent", s);
+					const dim = (s: string) => theme.fg("dim", s);
+					const muted = (s: string) => theme.fg("muted", s);
+					const parts = sorted.map((worker) => {
+						const state = workerDerivedState(worker);
+						const label = `${workerStateGlyph(state)} ${workerSourceLabel(worker)} ${worker.artifactCount ?? "?"} art ${workerAge(worker.updatedAt)}`;
+						return workerStateColor(theme, state, label);
+					});
+					const more = workers.length > sorted.length ? dim(` +${workers.length - sorted.length}`) : "";
+					container.addChild(new Text(`${accent(theme.bold("trail workers"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${dim("/trail workers")}`, 0, 0));
+					return container;
+				},
+				{ placement: "aboveEditor" },
+			);
+		} catch {
+			// best-effort dock; never disturb the session
+		}
+	};
+
 	const writeWorkerHeartbeat = async (ctx: ExtensionContext): Promise<void> => {
 		if (!workerId) return;
 		try {
@@ -1298,6 +1657,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			void writeWorkerHeartbeat(ctx);
 			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
 			heartbeatTimer.unref?.();
+		} else if (ctx.hasUI) {
+			void refreshWorkerDockWidget();
+			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 15000);
+			workerDockTimer.unref?.();
 		}
 	});
 
@@ -1305,6 +1668,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 		if (heartbeatTimer) {
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = undefined;
+		}
+		if (workerDockTimer) {
+			clearInterval(workerDockTimer);
+			workerDockTimer = undefined;
 		}
 		if (workerId) {
 			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
@@ -1315,7 +1682,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 		completedRefs = new Set();
 		loadedArtifacts.reset();
 		loadedCheckpoint = undefined;
-		if (ctx.hasUI) ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
+		if (ctx.hasUI) {
+			ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
+			ctx.ui.setWidget("trail-workers", undefined);
+		}
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -1410,8 +1780,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			if (intent.kind === "delete") {
-				if (intent.targetKind === "worker") await workerCommands.delete(intent.target);
-				else await checkpointCommands.delete(intent.target);
+				if (intent.targetKind === "worker") {
+					await workerCommands.delete(intent.target);
+					await refreshWorkerDockWidget();
+				} else await checkpointCommands.delete(intent.target);
 				return;
 			}
 
@@ -1423,12 +1795,56 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 			if (intent.kind === "spawn") {
 				await workerCommands.spawn(intent.task);
+				await refreshWorkerDockWidget();
 				return;
+			}
+
+			if (intent.kind === "workers") {
+				const store = createWorkerStore();
+				const { workers, artifactsByWorker } = await readWorkersWithArtifacts(store);
+				if (!ctx.hasUI) {
+					emitText(pi, ctx, renderParallelWorkList(workers, artifactsByWorker), "list", "trail · parallel work");
+					return;
+				}
+				while (true) {
+					const result = await showParallelWorkDashboard(ctx, workers, artifactsByWorker);
+					if (!result) return;
+					if (result.action === "peek") {
+						await showTextViewer(ctx, `${workerSourceLabel(result.entry.worker)} · ${parallelKindLabel(result.entry.artifact.kind)}`, formatArtifact(result.entry.artifact));
+						continue;
+					}
+					if (result.action === "load") {
+						const slot = await loadedArtifacts.loadWorker(result.worker);
+						announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerDisplayName(result.worker)}\nrefs: @${slot.slot}.<id>`, "success");
+						await refreshWorkerDockWidget();
+						return;
+					}
+					if (result.action === "attach") {
+						const command = `tmux attach -t ${result.worker.tmuxSession}`;
+						const copied = await copyToClipboard(command);
+						notifyTrail(pi, ctx, copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
+						return;
+					}
+					if (result.action === "recall") {
+						const slot = await loadedArtifacts.loadWorker(result.worker);
+						await refreshWorkerDockWidget();
+						const answers = slot.artifacts.filter((artifact) => artifact.kind === "response");
+						if (answers.length === 0) {
+							notifyTrail(pi, ctx, `No answers yet for ${workerSourceLabel(result.worker)}`, "info");
+							return;
+						}
+						const config = await loadConfig(ctx.cwd);
+						const catalog = createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
+						await showTrailBrowser(ctx, catalog, answers, pinnedRefs, completedRefs, "recall");
+						return;
+					}
+				}
 			}
 
 			if (intent.kind === "load") {
 				if (intent.refKind === "worker") {
 					await workerCommands.load(intent.ref);
+					await refreshWorkerDockWidget();
 					return;
 				}
 
@@ -1456,6 +1872,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 							const worker = workers[workers.length - 1]!;
 							const slot = await loadedArtifacts.loadWorker(worker);
 							announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(worker)}\nrefs: @${slot.slot}.<id>`, "success");
+							await refreshWorkerDockWidget();
 							return;
 						}
 					} else {
@@ -1470,6 +1887,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 								try {
 									const slot = await loadedArtifacts.loadWorker(selected.worker);
 									announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(selected.worker)}\nrefs: @${slot.slot}.<id>`, "success");
+									await refreshWorkerDockWidget();
 								} catch (err) {
 									notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
 								}
@@ -1513,6 +1931,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				}
 				if (intent.targetKind === "worker") {
 					await workerCommands.unload(intent.target);
+					await refreshWorkerDockWidget();
 					return;
 				}
 				const store = createCheckpointStore();

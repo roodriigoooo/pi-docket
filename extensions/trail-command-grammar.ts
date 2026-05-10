@@ -20,6 +20,7 @@ export type TrailIntent =
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
 	| { kind: "spawn"; task: string }
+	| { kind: "workers" }
 	| { kind: "recall"; query?: string }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
@@ -28,7 +29,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["recall", "search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "spawn", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["recall", "search", "checkpoint", "continue", "resume", "load", "unload", "delete", "list", "spawn", "workers", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -59,6 +60,7 @@ export function trailUsage(): string {
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
 		"/trail spawn <task>            spawn a tmux pi worker to investigate <task>",
+		"/trail workers                 open parallel-work artifact inbox",
 		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (no context bytes)",
 		"/trail unload <id|w<N>|all>   drop a loaded slot from session",
 		"/trail delete [id|last|w<N>]",
@@ -223,6 +225,10 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "spawn") {
 		if (rest.length === 0) return parseError("Usage: /trail spawn <task>");
 		return { ok: true, intent: { kind: "spawn", task: rest.join(" ") } };
+	}
+	if (command === "workers") {
+		if (rest.length > 0) return parseError("Usage: /trail workers");
+		return { ok: true, intent: { kind: "workers" } };
 	}
 	if (command === "recall") {
 		return { ok: true, intent: { kind: "recall", query: rest.length ? rest.join(" ") : undefined } };

@@ -72,7 +72,8 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	await commands.spawn("inspect bug");
 
 	assert.deepEqual(spawned, [{ task: "inspect bug", cwd: "/repo", parentSession: "/session.json" }]);
-	assert.equal(announcements[0]?.subject, "spawned w2");
+	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
+	assert.match(announcements[0]?.detail ?? "", /\/trail workers/);
 	assert.match(announcements[0]?.detail ?? "", /tmux attach/);
 });
 

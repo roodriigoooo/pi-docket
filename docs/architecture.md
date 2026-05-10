@@ -26,6 +26,8 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Worker Commands**: Module that owns `/trail` command flows for spawning, listing, loading, unloading, and deleting Trail workers.
 
+**Parallel Work**: artifact-first inbox for Trail workers. Workers are a source/filter dimension; the primary objects are answers, files, commands, errors, checkpoints, and summaries produced by side investigations.
+
 **Navigator**: interactive Trail view for working-set actions, Recall, all-artifact browsing, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
 
 ## UI principles
@@ -34,7 +36,7 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 - Flow protection: attaching, copying, pinning, and marking done should be lightweight queue operations, not forced context injection or session switches.
 - Recall stays secondary: answer units are reachable on demand, but transcript-like responses do not flood the default working set.
 - Embedded theming: Trail uses Pi theme tokens (`selectedBg`, `customMessageBg`, `border`, `borderMuted`, `accent`, `muted`, `dim`) instead of custom palette values.
-- Beauty serves orientation: fill/background marks active selection, color and glyphs encode queue state (`next`, `pinned`, `done`), metadata stays secondary.
+- Beauty serves orientation: fill/background marks active selection, color and glyphs encode queue state (`next`, `pinned`, `done`) and worker state (`starting`, `active`, `ready`, `error`), metadata stays secondary.
 
 ## Current modules
 
@@ -154,6 +156,11 @@ Interface:
 - `load(ref)`
 - `unload(ref)`
 - `completionCandidates()`
+
+Parallel Work UI:
+- `/trail workers` opens an artifact-first inbox across workers.
+- Worker labels (`w1`, `w2`) are filters and provenance, not the main object of navigation.
+- Destructive worker operations stay out of the primary dashboard; loading mounts artifacts only and does not add model context.
 
 Leverage:
 - Trail command registration does not own worker lookup, spawn announcement formatting, list formatting, or explicit load/unload/delete behavior.
