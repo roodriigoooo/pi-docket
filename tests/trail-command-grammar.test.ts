@@ -74,11 +74,16 @@ test("Trail grammar parses worker attention commands", () => {
 	assert.match(trailUsage(), /\/trail ask w<N> <reply>/);
 });
 
-test("Trail grammar parses review, memory, and catalog", () => {
+test("Trail grammar parses review, memory, catalog, and short aliases", () => {
 	assert.deepEqual(parseTrailCommand("review"), { ok: true, intent: { kind: "browse", mode: "work" } });
+	assert.deepEqual(parseTrailCommand("w"), { ok: true, intent: { kind: "browse", mode: "work" } });
 	assert.deepEqual(parseTrailCommand("catalog"), { ok: true, intent: { kind: "browse", mode: "all" } });
+	assert.deepEqual(parseTrailCommand("cat"), { ok: true, intent: { kind: "browse", mode: "all" } });
 	assert.deepEqual(parseTrailCommand("memory"), { ok: true, intent: { kind: "recall", query: undefined } });
-	assert.deepEqual(parseTrailCommand("memory worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
+	assert.deepEqual(parseTrailCommand("m worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
+	assert.deepEqual(parseTrailCommand("s worker auth plan"), { ok: true, intent: { kind: "search", query: "worker auth plan" } });
+	assert.deepEqual(parseTrailCommand("ckpt --raw note"), { ok: true, intent: { kind: "checkpoint", options: { mode: "handoff", note: "note", consumeOnUse: false, raw: true, model: undefined, maxOutputTokens: undefined } } });
+	assert.deepEqual(parseTrailCommand("r last"), { ok: true, intent: { kind: "continue", idOrLast: "last" } });
 	assert.deepEqual(parseTrailCommand("recall"), { ok: true, intent: { kind: "recall", query: undefined } });
 	assert.ok(TRAIL_COMMANDS.includes("memory"));
 	assert.match(trailUsage(), /\/trail memory \[query\]/);

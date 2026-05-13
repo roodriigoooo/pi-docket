@@ -80,12 +80,19 @@ export function navigatorBucket(artifact: Artifact): NavigatorBucket | undefined
 	return bucket === "needs" || bucket === "pinned" || bucket === "recent" ? bucket : undefined;
 }
 
+function attentionRank(artifact: Artifact): number {
+	const rank = artifact.meta?.trailAttentionRank;
+	return typeof rank === "number" ? rank : 100;
+}
+
 function sortWorkingArtifacts(artifacts: Artifact[]): Artifact[] {
 	return [...artifacts].sort((a, b) => {
 		const bucketA = navigatorBucket(a) ?? "recent";
 		const bucketB = navigatorBucket(b) ?? "recent";
 		const rank = BUCKET_RANK[bucketA] - BUCKET_RANK[bucketB];
 		if (rank !== 0) return rank;
+		const attention = attentionRank(a) - attentionRank(b);
+		if (attention !== 0) return attention;
 		return (b.timestamp ?? 0) - (a.timestamp ?? 0);
 	});
 }

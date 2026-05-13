@@ -26,6 +26,8 @@ Session artifacts as first-class objects for Pi.
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id>` — copy artifact to clipboard
 
+Short aliases: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
+
 ## Checkpoint resume keys
 
 - `j/k` or arrows — move
@@ -61,9 +63,9 @@ Default `/trail` view is Review: unresolved items first, recent items only when 
 - `A` — Catalog
 - `f` — cycle artifact kind filter
 - `s` — cycle source when needed (`current`, loaded checkpoints, workers)
-- `enter` — primary action (review diff, inspect failure, view answer, open file)
+- `enter` — primary action (reply to waiting worker, review diff, inspect failure, view answer, open file)
 - `o` — open current file for file artifacts
-- `a`, `i`, or `r` — attach compact artifact reference chip
+- `a`, `i`, or `r` — attach compact artifact reference chip (`r` replies when the selected row is a worker question)
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
 - `p` — pin/unpin item in Review

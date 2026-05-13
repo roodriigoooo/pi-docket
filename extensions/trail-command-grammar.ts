@@ -192,11 +192,11 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (!tokenized.ok) return parseError(tokenized.message);
 	const [command = "browse", ...rest] = tokenized.tokens;
 
-	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "work" } };
-	if (command === "catalog") return { ok: true, intent: { kind: "browse", mode: "all" } };
+	if (command === "browse" || command === "review" || command === "w") return { ok: true, intent: { kind: "browse", mode: "work" } };
+	if (command === "catalog" || command === "cat") return { ok: true, intent: { kind: "browse", mode: "all" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
-	if (command === "checkpoint") return parseCheckpoint(rest);
-	if (command === "continue" || command === "resume") return parseContinueCommand(rest);
+	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
+	if (command === "continue" || command === "resume" || command === "r") return parseContinueCommand(rest);
 	if (command === "delete") return parseDeleteCommand(rest);
 	if (command === "list") {
 		let includeConsumed = false;
@@ -253,15 +253,15 @@ export function parseTrailCommand(args: string): ParseResult {
 		if (rest.length === 0) return parseError("Usage: /trail fail <reason>");
 		return { ok: true, intent: { kind: "worker-state", state: "failed", text: rest.join(" ") } };
 	}
-	if (command === "recall" || command === "memory") {
+	if (command === "recall" || command === "memory" || command === "m") {
 		return { ok: true, intent: { kind: "recall", query: rest.length ? rest.join(" ") : undefined } };
 	}
 	if (command === "clear") {
 		if (rest.length > 0) return parseError("Usage: /trail clear");
 		return { ok: true, intent: { kind: "clear" } };
 	}
-	if (command === "search") {
-		if (rest.length === 0) return parseError("Usage: /trail search <query>");
+	if (command === "search" || command === "s") {
+		if (rest.length === 0) return parseError(`Usage: /trail ${command} <query>`);
 		return { ok: true, intent: { kind: "search", query: rest.join(" ") } };
 	}
 	if (command === "ref" || command === "inject" || command === "inject-full" || command === "copy") return requireArtifactArg(command, rest);

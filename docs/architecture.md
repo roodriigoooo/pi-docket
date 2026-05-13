@@ -26,7 +26,7 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Worker Commands**: Module that owns `/trail` command flows for spawning, asking, listing, loading, unloading, and deleting Trail workers.
 
-**Background Work**: worker-produced attention and artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view.
+**Background Work**: worker-produced attention and artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view. Waiting, ready, and failed worker states are represented as synthetic status Artifacts so Review can rank them with ordinary errors/files.
 
 **Navigator**: interactive Trail view for Review, Memory, Catalog, search, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
 

@@ -153,6 +153,8 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id-or-ref>` — copy artifact to clipboard
 
+Short aliases exist for common flows: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, and `/trail ckpt`.
+
 ## worker flow
 
 Workers are regular Pi sessions launched in tmux. They get their own session directory and periodically write their Artifact snapshot to `~/.pi/agent/trail/workers/<id>/artifacts.json`.
@@ -166,7 +168,7 @@ Typical flow:
 
 `/trail` is the unified review inbox: worker output appears beside current-session errors, changed files, pinned items, and recent review items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
 
-Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. Reply from the parent session with `/trail ask w<N> <reply>`.
+Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. These appear as first-class Review rows ahead of ordinary artifacts. Reply from the parent session with `/trail ask w<N> <reply>` or by opening the waiting row and pressing `r`.
 
 Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a`, `r`, or `i`) or full text (`I`).
 
@@ -232,9 +234,9 @@ Default `/trail` view is Review: unresolved items first, recent items only when 
 - `A` — Catalog
 - `f` — cycle artifact kind filter
 - `s` — cycle source when needed (`current`, loaded checkpoints, workers)
-- `enter` — primary action (review diff, inspect failure, view answer, open file)
+- `enter` — primary action (reply to waiting worker, review diff, inspect failure, view answer, open file)
 - `o` — open current file for file artifacts
-- `a`, `i`, or `r` — attach compact artifact reference chip
+- `a`, `i`, or `r` — attach compact artifact reference chip (`r` replies when the selected row is a worker question)
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
 - `p` — pin/unpin item in Review

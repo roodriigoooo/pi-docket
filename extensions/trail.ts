@@ -333,7 +333,7 @@ function sourceBar(theme: any, sources: string[], active: string): string {
 		.join(" ");
 }
 
-type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint" | "search"; artifact?: Artifact };
+type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "replyWorker"; artifact?: Artifact };
 
 type TrailBucket = "needs" | "pinned" | "recent";
 
@@ -360,6 +360,22 @@ function artifactHasDiff(artifact: Artifact): boolean {
 	return typeof diff === "string" && diff.length > 0;
 }
 
+function artifactWorkerStatus(artifact: Artifact): WorkerDerivedState | undefined {
+	const status = artifactMeta(artifact).workerStatus;
+	if (status === "needs_input" || status === "ready" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
+	return undefined;
+}
+
+function artifactWorkerRef(artifact: Artifact): string | undefined {
+	const label = artifactMeta(artifact).workerLabel;
+	if (typeof label === "string" && label.length > 0) return label;
+	return artifact.source;
+}
+
+function isWorkerQuestionArtifact(artifact: Artifact | undefined): artifact is Artifact {
+	return !!artifact && artifactWorkerStatus(artifact) === "needs_input";
+}
+
 function isChangedFileArtifact(artifact: Artifact): boolean {
 	return artifact.kind === "file" && ["edit", "write"].includes(artifactTool(artifact) ?? "");
 }
@@ -373,6 +389,7 @@ function isFailedCommandArtifact(artifact: Artifact): boolean {
 function trailBucketForArtifact(artifact: Artifact, pinnedRefs: Set<string>, completedRefs: Set<string>): TrailBucket | undefined {
 	if (pinnedRefs.has(artifact.ref)) return "pinned";
 	if (completedRefs.has(artifact.ref)) return "recent";
+	if (artifactWorkerStatus(artifact) === "needs_input" || artifactWorkerStatus(artifact) === "ready" || artifactWorkerStatus(artifact) === "failed") return "needs";
 	if (artifact.kind === "error") return "needs";
 	if (isChangedFileArtifact(artifact)) return "needs";
 	if (isFailedCommandArtifact(artifact)) return "needs";
@@ -380,7 +397,22 @@ function trailBucketForArtifact(artifact: Artifact, pinnedRefs: Set<string>, com
 	return undefined;
 }
 
+function trailAttentionRankForArtifact(artifact: Artifact): number | undefined {
+	const status = artifactWorkerStatus(artifact);
+	if (status === "needs_input") return 0;
+	if (status === "failed") return 1;
+	if (artifact.kind === "error" || isFailedCommandArtifact(artifact)) return 2;
+	if (isChangedFileArtifact(artifact)) return 3;
+	if (status === "ready") return 4;
+	if (artifact.source && artifact.kind === "response") return 5;
+	if (artifact.source && artifact.kind === "code") return 6;
+	return undefined;
+}
+
 function trailPrimaryAction(artifact: Artifact): string {
+	if (artifactWorkerStatus(artifact) === "needs_input") return "Reply";
+	if (artifactWorkerStatus(artifact) === "failed") return "Inspect failure";
+	if (artifactWorkerStatus(artifact) === "ready") return "View answer";
 	if (artifact.kind === "file" && artifactHasDiff(artifact)) return "Review diff";
 	if (artifact.kind === "file") return "Open file";
 	if (artifact.kind === "error") return "Inspect failure";
@@ -393,8 +425,12 @@ function trailPrimaryAction(artifact: Artifact): string {
 
 function trailReason(artifact: Artifact): string {
 	const bucket = navigatorBucket(artifact);
+	const status = artifactWorkerStatus(artifact);
 	if (bucket === "pinned") return "pinned";
 	if (bucket === "recent") return "recently reviewed";
+	if (status === "needs_input") return "worker waiting";
+	if (status === "failed") return "worker failed";
+	if (status === "ready") return "worker ready";
 	if (artifact.kind === "error") return "needs attention";
 	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changed file" : "created file";
 	if (isFailedCommandArtifact(artifact)) return "failed command";
@@ -427,6 +463,7 @@ function colorBucket(theme: any, bucket: TrailBucket | undefined, mode: Navigato
 
 function selectedActionHints(artifact: Artifact, pinned: boolean, completed: boolean): string[] {
 	const hints = [`enter ${trailPrimaryAction(artifact).toLowerCase()}`];
+	if (isWorkerQuestionArtifact(artifact)) hints.push("r reply");
 	if (artifact.kind === "file") hints.push("o open");
 	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", completed ? "x restore" : "x done", "v preview");
 	return hints;
@@ -435,11 +472,13 @@ function selectedActionHints(artifact: Artifact, pinned: boolean, completed: boo
 function decorateTrailArtifacts(artifacts: Artifact[], pinnedRefs: Set<string>, completedRefs: Set<string>): Artifact[] {
 	return artifacts.map((artifact) => {
 		const bucket = trailBucketForArtifact(artifact, pinnedRefs, completedRefs);
+		const attentionRank = trailAttentionRankForArtifact(artifact);
 		return {
 			...artifact,
 			meta: {
 				...(artifact.meta ?? {}),
 				...(bucket ? { trailBucket: bucket } : {}),
+				...(attentionRank !== undefined ? { trailAttentionRank: attentionRank } : {}),
 				trailPrimaryAction: trailPrimaryAction(artifact),
 				trailReason: trailReason({ ...artifact, meta: { ...(artifact.meta ?? {}), ...(bucket ? { trailBucket: bucket } : {}) } }),
 			},
@@ -575,6 +614,11 @@ class TrailView implements Component {
 			this.showHelp = !this.showHelp;
 			this.invalidate();
 			this.tui.requestRender();
+			return;
+		}
+		const current = selectedArtifact(this.state, artifacts);
+		if ((data === "r" || matchesKey(data, Key.enter)) && isWorkerQuestionArtifact(current)) {
+			this.done({ action: "replyWorker", artifact: current });
 			return;
 		}
 		const key: NavigatorKey = {
@@ -927,6 +971,35 @@ function workerAttentionLabel(worker: WorkerStatus): string {
 	return `${workerStateGlyph(state)} ${label} ${workerDisplayName(worker, 28)}`;
 }
 
+function workerStatusArtifact(worker: WorkerStatus): Artifact | undefined {
+	const state = workerDerivedState(worker);
+	if (state !== "needs_input" && state !== "ready" && state !== "failed") return undefined;
+	const label = workerSourceLabel(worker);
+	const text = state === "needs_input" ? worker.question : state === "ready" ? worker.summary : worker.lastError;
+	const title = state === "needs_input"
+		? `${label} needs input${text ? `: ${text}` : ""}`
+		: state === "ready"
+			? `${label} ready${text ? `: ${text}` : ""}`
+			: `${label} failed${text ? `: ${text}` : ""}`;
+	return {
+		id: "status",
+		displayId: "status",
+		ref: `worker-status:${worker.id}:0`,
+		kind: state === "failed" ? "error" : "response",
+		title,
+		subtitle: workerDisplayName(worker),
+		body: [`worker: ${label}`, `state: ${state}`, `task: ${worker.task}`, text ? `message: ${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
+		timestamp: Date.parse(worker.updatedAt),
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: worker.question, summary: worker.summary, lastError: worker.lastError },
+	};
+}
+
+async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
+	const artifacts = await createWorkerStore().readArtifacts(worker.id);
+	const status = workerStatusArtifact(worker);
+	return status ? [status, ...artifacts.filter((artifact) => artifact.ref !== status.ref)] : artifacts;
+}
+
 function namespaceWorkerArtifacts(worker: WorkerStatus, artifacts: Artifact[]): Artifact[] {
 	const slot = workerSourceLabel(worker);
 	return artifacts.map((artifact) => ({ ...artifact, id: `${slot}.${artifact.displayId}`, displayId: `${slot}.${artifact.displayId}`, source: slot }));
@@ -953,7 +1026,7 @@ async function readWorkersWithArtifacts(store = createWorkerStore()): Promise<{ 
 	const workers = await store.list();
 	const artifactsByWorker = new Map<string, Artifact[]>();
 	await Promise.all(workers.map(async (worker) => {
-		artifactsByWorker.set(worker.id, await store.readArtifacts(worker.id));
+		artifactsByWorker.set(worker.id, await readWorkerArtifactsForReview(worker));
 	}));
 	return { workers, artifactsByWorker };
 }
@@ -1564,7 +1637,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
 		readCheckpointArtifacts: async (checkpoint) => createCheckpointStore().readArtifacts(checkpoint),
-		readWorkerArtifacts: async (worker) => createWorkerStore().readArtifacts(worker.id),
+		readWorkerArtifacts: readWorkerArtifactsForReview,
 	});
 
 	const queueShutdownConsume: QueueConsume = (checkpoint) => loadedArtifacts.queueCheckpointConsume(checkpoint);
@@ -2112,6 +2185,19 @@ export default function trailExtension(pi: ExtensionAPI) {
 					artifacts = matches;
 					initialMode = "all";
 					continue;
+				}
+				if (result.action === "replyWorker" && result.artifact) {
+					const workerRef = artifactWorkerRef(result.artifact);
+					if (!workerRef) {
+						notifyTrail(pi, ctx, "Trail worker not found for this item", "error");
+						continue;
+					}
+					const question = trailMetaString(result.artifact, "question") ?? result.artifact.title;
+					const reply = (await ctx.ui.input(`Reply to ${workerRef}`, question))?.trim();
+					if (!reply) continue;
+					await workerCommands.ask(workerRef, reply);
+					await refreshWorkerDockWidget();
+					return;
 				}
 				if (!result.artifact) return;
 				completedRefs.add(result.artifact.ref);

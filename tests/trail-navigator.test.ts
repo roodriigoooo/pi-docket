@@ -70,6 +70,15 @@ test("Navigator review queue shows recent items when all clear", () => {
 	assert.deepEqual(view.items.map((a) => a.id), ["recent", "older"]);
 });
 
+test("Navigator review queue ranks attention before timestamp", () => {
+	const artifacts = [
+		artifact("error", "error", 30, { trailBucket: "needs", trailAttentionRank: 2 }),
+		artifact("question", "response", 10, { trailBucket: "needs", trailAttentionRank: 0 }),
+	];
+	const view = navigatorViewModel(initialNavigatorState(), artifacts);
+	assert.deepEqual(view.items.map((a) => a.id), ["question", "error"]);
+});
+
 test("Navigator all mode restores access to non-working artifacts", () => {
 	const artifacts = [
 		artifact("r1", "response", 1),
