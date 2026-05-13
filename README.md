@@ -10,7 +10,7 @@ my goal is to make session context less magical and less lossy. when i am workin
 
 Trail turns commands, errors, file operations, code blocks, prompts, responses, and checkpoints into things you can browse, inspect, copy, reference, and package into a handoff for a fresh session.
 
-it is not meant to be history search. it is more like a small working-set navigator and checkpoint tool for agent work.
+it is not meant to be history search. it is more like a quiet review inbox, memory shelf, and checkpoint tool for agent work.
 
 ## why i made this
 
@@ -51,6 +51,8 @@ pi install git:github.com/roodriigoooo/trail
 pinned GitHub release:
 
 ```bash
+pi install git:github.com/roodriigoooo/trail#v0.1.4
+```
 
 from npm:
 
@@ -60,7 +62,7 @@ pi install npm:@roodriigoooo/trail
 
 ## example usage
 
-open the working set:
+open the review inbox:
 
 ```bash
 /trail
@@ -98,10 +100,10 @@ spawn a tmux-backed worker session to investigate in parallel:
 /trail spawn inspect package scripts and suggest one risk
 ```
 
-load worker artifacts back into the current session without spending model-context tokens:
+review worker output in the parent session:
 
 ```bash
-/trail load w1
+/trail
 ```
 
 ## examples to get the idea across
@@ -119,7 +121,7 @@ load worker artifacts back into the current session without spending model-conte
 
 ### Trail workers with tmux
 
-Trail can spawn tmux-backed Pi worker sessions. A worker investigates in its own session, snapshots its artifacts to disk, and the parent session can mount those artifacts later with `/trail load w<N>`. Loading costs zero model-context tokens until you choose a specific artifact reference or full injection.
+Trail can spawn tmux-backed Pi worker sessions. A worker investigates in its own session and snapshots artifacts to disk. The parent session surfaces worker output in `/trail` automatically; nothing enters model context until you attach a specific artifact reference or full injection.
 
 <p align="center">
   <img src="./assets/trail_workers_tmux.gif" alt="Trail tmux worker spawn and load workflow" width="100%" />
@@ -129,18 +131,23 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 
 ## commands
 
-- `/trail` — open working set
-- `/trail recall [query]` — recall assistant and worker answers without showing every artifact
+- `/trail` — open review inbox
+- `/trail memory [query]` — browse assistant and worker answers without showing every artifact
+- `/trail catalog` — browse everything captured
 - `/trail search <query>` — search ranked artifact docs, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last|w<N>] [--include-consumed]` — load checkpoint or worker artifacts into the navigator without spending model-context tokens
+- `/trail load [id|last|w<N>] [--include-consumed]` — advanced: mount checkpoint or worker artifacts without spending model-context tokens
 - `/trail unload <id|w<N>|all>` — drop loaded checkpoint or worker artifacts from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
-- `/trail workers` — open artifact-first inbox for parallel worker outputs
+- `/trail ask w<N> <reply>` — reply to a waiting worker from the parent session
+- `/trail wait <question>` — worker-side: ask the parent session for input
+- `/trail done [summary]` — worker-side: mark worker output ready
+- `/trail fail <reason>` — worker-side: mark worker failed
+- `/trail workers` — open worker inbox power/debug view
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
@@ -154,14 +161,14 @@ Typical flow:
 
 ```bash
 /trail spawn investigate flaky test output
-/trail workers
-/trail load w1
 /trail
 ```
 
-`/trail workers` is artifact-first: workers are filters, and the inbox shows the newest or most important answers, errors, files, commands, and checkpoints across parallel work. Loading a worker still costs zero model-context tokens until you choose a specific artifact reference or full injection.
+`/trail` is the unified review inbox: worker output appears beside current-session errors, changed files, pinned items, and recent review items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
 
-After loading a worker, press `s` in the Navigator until the worker source slot (`w1`, `w2`, etc.) is active. Then use `r`/`i` for compact References or `I` for full Artifact injection.
+Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. Reply from the parent session with `/trail ask w<N> <reply>`.
+
+Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a`, `r`, or `i`) or full text (`I`).
 
 ## parallel work inbox keys
 
@@ -169,9 +176,9 @@ After loading a worker, press `s` in the Navigator until the worker source slot 
 - `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
 - `f` — cycle artifact kind filter
 - `enter` — peek selected artifact
-- `l` — load selected worker's artifacts
+- `l` — review selected worker's artifacts in Trail
 - `a` — copy tmux attach command
-- `r` — open Recall for selected worker answers
+- `r` — open Memory for selected worker answers
 - `x` — dismiss selected inbox row locally
 - `?` — show full shortcut help
 - `q` or `esc` — close
@@ -214,21 +221,23 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 
 ## navigator keys
 
-Default `/trail` view is a working set: next items, pinned items, and done items. It keeps changed files, errors, and loaded worker outputs actionable without dumping the transcript. Preview is off by default.
+Default `/trail` view is Review: unresolved items first, recent items only when all clear. It keeps changed files, errors, pinned items, and worker output actionable without dumping the transcript. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
-- `/` — toggle Recall (assistant/worker answers)
-- `w` — working set
-- `a` — all artifacts
-- `tab` — cycle artifact kind filter
-- `s` — cycle source (current / all / loaded slots like `c1`, `c2`, `w1`, `w2`)
+- `/` — search Trail
+- `tab` — cycle Review → Memory → Catalog
+- `w` — Review
+- `m` — Memory
+- `A` — Catalog
+- `f` — cycle artifact kind filter
+- `s` — cycle source when needed (`current`, loaded checkpoints, workers)
 - `enter` — primary action (review diff, inspect failure, view answer, open file)
 - `o` — open current file for file artifacts
-- `i` or `r` — attach compact artifact reference chip
+- `a`, `i`, or `r` — attach compact artifact reference chip
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
-- `p` — pin/unpin item in working set
+- `p` — pin/unpin item in Review
 - `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview

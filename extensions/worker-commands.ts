@@ -18,6 +18,7 @@ type WorkerCommandsDeps = {
 
 export type WorkerCommands = {
 	spawn(task: string): Promise<void>;
+	ask(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
 	load(ref: string | undefined): Promise<void>;
@@ -79,16 +80,25 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				deps.announce(
 					`spawned ${label} · starting`,
 					[
-						`◌ ${label} starting · ${workerSummaryName(worker)}`,
-						"Artifacts snapshot automatically while worker runs.",
-						`inbox:  /trail workers`,
-						`load:   /trail load ${label}`,
-						`attach: tmux attach -t ${worker.tmuxSession}`,
+						`◌ ${label} ${workerSummaryName(worker)}`,
+						"Trail will surface worker output in /trail.",
+						`review: /trail`,
+						`debug:  /trail workers`,
 					].join("\n"),
 				);
 			} catch (err) {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
 			}
+		},
+		async ask(ref: string, text: string): Promise<void> {
+			const worker = await deps.store.find(ref);
+			if (!worker) {
+				deps.notify("Trail worker not found", "error");
+				return;
+			}
+			const sent = await deps.store.sendInput(worker.id, `Parent reply: ${text}`);
+			if (sent) deps.announce(`sent reply to ${workerShortLabel(worker.index)}`, text, "success");
+			else deps.notify(`Trail could not send reply to ${workerShortLabel(worker.index)}`, "error");
 		},
 		async list(): Promise<void> {
 			deps.emitText(formatWorkerList(await deps.store.list()), "list", "trail · workers");

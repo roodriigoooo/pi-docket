@@ -64,9 +64,22 @@ test("Trail grammar parses workers dashboard", () => {
 	assert.equal(invalid.ok, false);
 });
 
-test("Trail grammar parses recall", () => {
+test("Trail grammar parses worker attention commands", () => {
+	assert.deepEqual(parseTrailCommand("ask w1 please include prompt chips"), { ok: true, intent: { kind: "ask", worker: "w1", text: "please include prompt chips" } });
+	assert.deepEqual(parseTrailCommand("wait should I include checkpoints?"), { ok: true, intent: { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" } });
+	assert.deepEqual(parseTrailCommand("done summary ready"), { ok: true, intent: { kind: "worker-state", state: "ready", text: "summary ready" } });
+	assert.deepEqual(parseTrailCommand("done"), { ok: true, intent: { kind: "worker-state", state: "ready", text: undefined } });
+	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
+	assert.ok(TRAIL_COMMANDS.includes("ask"));
+	assert.match(trailUsage(), /\/trail ask w<N> <reply>/);
+});
+
+test("Trail grammar parses review, memory, and catalog", () => {
+	assert.deepEqual(parseTrailCommand("review"), { ok: true, intent: { kind: "browse", mode: "work" } });
+	assert.deepEqual(parseTrailCommand("catalog"), { ok: true, intent: { kind: "browse", mode: "all" } });
+	assert.deepEqual(parseTrailCommand("memory"), { ok: true, intent: { kind: "recall", query: undefined } });
+	assert.deepEqual(parseTrailCommand("memory worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
 	assert.deepEqual(parseTrailCommand("recall"), { ok: true, intent: { kind: "recall", query: undefined } });
-	assert.deepEqual(parseTrailCommand("recall worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
-	assert.ok(TRAIL_COMMANDS.includes("recall"));
-	assert.match(trailUsage(), /\/trail recall \[query\]/);
+	assert.ok(TRAIL_COMMANDS.includes("memory"));
+	assert.match(trailUsage(), /\/trail memory \[query\]/);
 });

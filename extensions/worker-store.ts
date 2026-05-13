@@ -9,7 +9,7 @@ export const WORKER_TMUX_PREFIX = "trail-worker-";
 export const TRAIL_WORKER_ENV = "TRAIL_WORKER_ID";
 export const WORKER_DASHBOARD_TMUX = "trail-workers";
 
-export type WorkerState = "starting" | "active" | "idle" | "error" | "ended";
+export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 
 export type WorkerStatus = {
 	id: string;
@@ -25,6 +25,8 @@ export type WorkerStatus = {
 	model?: string;
 	contextPercent?: number;
 	artifactCount?: number;
+	question?: string;
+	summary?: string;
 	lastError?: string;
 };
 
@@ -49,6 +51,7 @@ export type WorkerStore = {
 	writeStatus(snapshot: WorkerStatus): Promise<void>;
 	patchStatus(id: string, patch: Partial<WorkerStatus>): Promise<WorkerStatus | undefined>;
 	writeArtifacts(id: string, artifacts: Artifact[]): Promise<void>;
+	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
 	purge(id: string): Promise<void>;
@@ -205,6 +208,17 @@ export function createWorkerStore(): WorkerStore {
 
 		async writeArtifacts(id: string, artifacts: Artifact[]): Promise<void> {
 			await writeJsonAtomic(this.artifactsFile(id), artifacts);
+		},
+
+		async sendInput(id: string, text: string): Promise<boolean> {
+			const status = await this.find(id);
+			if (!status) return false;
+			const safeText = text.replace(/\s+/g, " ").trim();
+			if (!safeText) return false;
+			const result = spawnSync("tmux", ["send-keys", "-t", status.tmuxSession, safeText, "Enter"], { stdio: "ignore" });
+			if (result.status !== 0) return false;
+			await this.patchStatus(status.id, { state: "active", question: undefined });
+			return true;
 		},
 
 		async spawn(input: SpawnInput): Promise<WorkerStatus> {

@@ -30,6 +30,7 @@ export type NavigatorAction =
 	| { action: "injectFull"; artifact: Artifact }
 	| { action: "copy"; artifact: Artifact }
 	| { action: "checkpoint" }
+	| { action: "search" }
 	| { action: "close" };
 
 export type NavigatorTransition = {
@@ -79,18 +80,22 @@ export function navigatorBucket(artifact: Artifact): NavigatorBucket | undefined
 	return bucket === "needs" || bucket === "pinned" || bucket === "recent" ? bucket : undefined;
 }
 
+function sortWorkingArtifacts(artifacts: Artifact[]): Artifact[] {
+	return [...artifacts].sort((a, b) => {
+		const bucketA = navigatorBucket(a) ?? "recent";
+		const bucketB = navigatorBucket(b) ?? "recent";
+		const rank = BUCKET_RANK[bucketA] - BUCKET_RANK[bucketB];
+		if (rank !== 0) return rank;
+		return (b.timestamp ?? 0) - (a.timestamp ?? 0);
+	});
+}
+
 function applyModeFilter(artifacts: Artifact[], mode: NavigatorMode): Artifact[] {
 	if (mode === "all") return artifacts;
 	if (mode === "recall") return artifacts.filter((artifact) => artifact.kind === "response");
-	return artifacts
-		.filter((artifact) => navigatorBucket(artifact) !== undefined)
-		.sort((a, b) => {
-			const bucketA = navigatorBucket(a) ?? "recent";
-			const bucketB = navigatorBucket(b) ?? "recent";
-			const rank = BUCKET_RANK[bucketA] - BUCKET_RANK[bucketB];
-			if (rank !== 0) return rank;
-			return (b.timestamp ?? 0) - (a.timestamp ?? 0);
-		});
+	const queued = artifacts.filter((artifact) => navigatorBucket(artifact) !== undefined);
+	const active = queued.filter((artifact) => navigatorBucket(artifact) !== "recent");
+	return sortWorkingArtifacts(active.length > 0 ? active : queued);
 }
 
 export function filteredArtifacts(state: NavigatorState, artifacts: Artifact[]): Artifact[] {
@@ -117,6 +122,12 @@ function clampSelected(selected: number, items: Artifact[]): number {
 
 function cycleFilter(filter: NavigatorFilter): NavigatorFilter {
 	return FILTERS[(FILTERS.indexOf(filter) + 1) % FILTERS.length] ?? "all";
+}
+
+function cycleMode(mode: NavigatorMode): NavigatorMode {
+	if (mode === "work") return "recall";
+	if (mode === "recall") return "all";
+	return "work";
 }
 
 function cycleSource(current: NavigatorSource, artifacts: Artifact[]): NavigatorSource {
@@ -146,14 +157,16 @@ export function handleNavigatorKey(state: NavigatorState, artifacts: Artifact[],
 	if (key.raw === "g") return { state: { ...normalizedState, selected: 0 } };
 	if (key.raw === "G") return { state: { ...normalizedState, selected: Math.max(0, items.length - 1) } };
 	if (key.raw === "v") return { state: { ...normalizedState, showDetail: !normalizedState.showDetail } };
-	if (key.raw === "/") return { state: switchMode(normalizedState, normalizedState.mode === "recall" ? "work" : "recall") };
+	if (key.raw === "/") return { state: normalizedState, action: { action: "search" } };
 	if (key.raw === "w") return { state: switchMode(normalizedState, "work") };
-	if (key.raw === "a") return { state: switchMode(normalizedState, "all") };
-	if (key.raw === "\t" || key.isTab) return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
+	if (key.raw === "m") return { state: switchMode(normalizedState, "recall") };
+	if (key.raw === "A") return { state: switchMode(normalizedState, "all") };
+	if (key.raw === "\t" || key.isTab) return { state: switchMode(normalizedState, cycleMode(normalizedState.mode)) };
+	if (key.raw === "f") return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
 	if (key.raw === "s") return { state: { ...normalizedState, source: cycleSource(normalizedState.source, artifacts), selected: 0 } };
 	if (key.isEnter) return withSelectedArtifact(normalizedState, artifacts, "inspect");
 	if (key.raw === "o") return withSelectedArtifact(normalizedState, artifacts, "openFile");
-	if (key.raw === "r" || key.raw === "i") return withSelectedArtifact(normalizedState, artifacts, "reference");
+	if (key.raw === "a" || key.raw === "r" || key.raw === "i") return withSelectedArtifact(normalizedState, artifacts, "reference");
 	if (key.raw === "I") return withSelectedArtifact(normalizedState, artifacts, "injectFull");
 	if (key.raw === "y") return withSelectedArtifact(normalizedState, artifacts, "copy");
 	if (key.raw === "c") return { state: normalizedState, action: { action: "checkpoint" } };

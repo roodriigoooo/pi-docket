@@ -4,18 +4,23 @@ Session artifacts as first-class objects for Pi.
 
 ## Commands
 
-- `/trail` — open working set
-- `/trail recall [query]` — recall assistant and worker answers
+- `/trail` — open review inbox
+- `/trail memory [query]` — browse assistant and worker answers
+- `/trail catalog` — browse everything captured
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last|w<N>] [--include-consumed]` — load checkpoint or worker artifacts into the navigator without spending any model-context tokens
+- `/trail load [id|last|w<N>] [--include-consumed]` — advanced: mount checkpoint or worker artifacts without spending model-context tokens
 - `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
 - `/trail list [--include-consumed]` — list checkpoints
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
-- `/trail workers` — open artifact-first inbox for parallel worker outputs
+- `/trail ask w<N> <reply>` — reply to a waiting worker from the parent session
+- `/trail wait <question>` — worker-side: ask the parent session for input
+- `/trail done [summary]` — worker-side: mark worker output ready
+- `/trail fail <reason>` — worker-side: mark worker failed
+- `/trail workers` — open worker inbox power/debug view
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
@@ -36,30 +41,32 @@ Session artifacts as first-class objects for Pi.
 - `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
 - `f` — cycle artifact kind filter
 - `enter` — peek selected artifact
-- `l` — load selected worker's artifacts
+- `l` — review selected worker's artifacts in Trail
 - `a` — copy tmux attach command
-- `r` — open Recall for selected worker answers
+- `r` — open Memory for selected worker answers
 - `x` — dismiss selected inbox row locally
 - `?` — show full shortcut help
 - `q` or `esc` — close
 
 ## Navigator keys
 
-Default `/trail` view is a working set: next items, pinned items, and done items. Preview is off by default.
+Default `/trail` view is Review: unresolved items first, recent items only when all clear. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
-- `/` — toggle Recall (assistant/worker answers)
-- `w` — working set
-- `a` — all artifacts
-- `tab` — cycle artifact kind filter
-- `s` — cycle source (current / all / loaded slots like `c1`, `c2`, `w1`, `w2`)
+- `/` — search Trail
+- `tab` — cycle Review → Memory → Catalog
+- `w` — Review
+- `m` — Memory
+- `A` — Catalog
+- `f` — cycle artifact kind filter
+- `s` — cycle source when needed (`current`, loaded checkpoints, workers)
 - `enter` — primary action (review diff, inspect failure, view answer, open file)
 - `o` — open current file for file artifacts
-- `i` or `r` — attach compact artifact reference chip
+- `a`, `i`, or `r` — attach compact artifact reference chip
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
-- `p` — pin/unpin item in working set
+- `p` — pin/unpin item in Review
 - `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview
