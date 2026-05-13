@@ -143,7 +143,7 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
-- `/trail ask w<N> <reply>` — reply to a waiting worker from the parent session
+- `/trail reply w<N> <text>` — reply to a waiting worker from the parent session
 - `/trail wait <question>` — worker-side: ask the parent session for input
 - `/trail done [summary]` — worker-side: mark worker output ready
 - `/trail fail <reason>` — worker-side: mark worker failed
@@ -153,7 +153,7 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id-or-ref>` — copy artifact to clipboard
 
-Short aliases exist for common flows: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, and `/trail ckpt`.
+Short aliases exist for common flows: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, and `/trail ckpt`. `/trail ask` remains an alias for `/trail reply`.
 
 ## worker flow
 
@@ -168,7 +168,7 @@ Typical flow:
 
 `/trail` is the unified review inbox: worker output appears beside current-session errors, changed files, pinned items, and recent review items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
 
-Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. These appear as first-class Review rows ahead of ordinary artifacts. Reply from the parent session with `/trail ask w<N> <reply>` or by opening the waiting row and pressing `r`.
+Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. These appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Reply from the parent session with `/trail reply w<N> <text>` or by opening the waiting row and pressing `r`.
 
 Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a`, `r`, or `i`) or full text (`I`).
 

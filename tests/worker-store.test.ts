@@ -73,3 +73,19 @@ test("worker store list sorts by createdAt", async () => {
 		assert.deepEqual(list.map((w) => w.id), ["older-a", "newer-b"]);
 	});
 });
+
+test("worker store appends active questions", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		await mkdir(root, { recursive: true });
+		await seedWorker(root, { id: "question-worker", index: 1 });
+
+		await store.addQuestion("w1", "Include checkpoint flow?");
+		const updated = await store.addQuestion("w1", "Inspect prompt chips too?");
+
+		assert.equal(updated?.state, "needs_input");
+		assert.equal(updated?.question, "2 questions");
+		assert.deepEqual(updated?.questions?.map((q) => q.text), ["Include checkpoint flow?", "Inspect prompt chips too?"]);
+	});
+});

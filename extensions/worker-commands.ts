@@ -1,5 +1,6 @@
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
-import { workerShortLabel, workerSummaryName, type WorkerStore, type WorkerStatus } from "./worker-store.js";
+import type { ArtifactKind } from "./types.js";
+import { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStore, type WorkerStatus } from "./worker-store.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
@@ -12,13 +13,13 @@ type WorkerCommandsDeps = {
 	cwd: string;
 	parentSession?: string;
 	notify(text: string, level: NotifyLevel): void;
-	announce(subject: string, detail?: string, kind?: TrailMessageKind): void;
+	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
 export type WorkerCommands = {
 	spawn(task: string): Promise<void>;
-	ask(ref: string, text: string): Promise<void>;
+	reply(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
 	load(ref: string | undefined): Promise<void>;
@@ -47,6 +48,19 @@ export async function workerCompletionCandidates(store: WorkerStore): Promise<Wo
 	} catch {
 		return [];
 	}
+}
+
+function pendingQuestions(worker: WorkerStatus): WorkerQuestion[] {
+	if (worker.questions?.length) return worker.questions;
+	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
+	return [];
+}
+
+function formatWorkerReply(worker: WorkerStatus, text: string): string {
+	const questions = pendingQuestions(worker);
+	if (questions.length === 0) return `Parent reply: ${text}`;
+	const questionList = questions.map((question, index) => `${index + 1}) ${question.text}`).join(" ");
+	return `Parent reply to ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Reply: ${text}`;
 }
 
 function formatWorkerList(workers: WorkerStatus[]): string {
@@ -90,14 +104,19 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
 			}
 		},
-		async ask(ref: string, text: string): Promise<void> {
+		async reply(ref: string, text: string): Promise<void> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
 				deps.notify("Trail worker not found", "error");
 				return;
 			}
-			const sent = await deps.store.sendInput(worker.id, `Parent reply: ${text}`);
-			if (sent) deps.announce(`sent reply to ${workerShortLabel(worker.index)}`, text, "success");
+			const sent = await deps.store.sendInput(worker.id, formatWorkerReply(worker, text));
+			if (sent) deps.announce(
+				`replied to ${workerShortLabel(worker.index)}`,
+				text,
+				"success",
+				{ kind: "prompt", title: `reply to ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
+			);
 			else deps.notify(`Trail could not send reply to ${workerShortLabel(worker.index)}`, "error");
 		},
 		async list(): Promise<void> {

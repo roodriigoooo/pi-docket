@@ -16,7 +16,7 @@ Session artifacts as first-class objects for Pi.
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
 - `/trail list [--include-consumed]` — list checkpoints
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
-- `/trail ask w<N> <reply>` — reply to a waiting worker from the parent session
+- `/trail reply w<N> <text>` — reply to a waiting worker from the parent session
 - `/trail wait <question>` — worker-side: ask the parent session for input
 - `/trail done [summary]` — worker-side: mark worker output ready
 - `/trail fail <reason>` — worker-side: mark worker failed
@@ -26,7 +26,7 @@ Session artifacts as first-class objects for Pi.
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id>` — copy artifact to clipboard
 
-Short aliases: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
+Short aliases: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`. `/trail ask` remains an alias for `/trail reply`.
 
 ## Checkpoint resume keys
 

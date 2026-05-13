@@ -65,13 +65,14 @@ test("Trail grammar parses workers dashboard", () => {
 });
 
 test("Trail grammar parses worker attention commands", () => {
-	assert.deepEqual(parseTrailCommand("ask w1 please include prompt chips"), { ok: true, intent: { kind: "ask", worker: "w1", text: "please include prompt chips" } });
+	assert.deepEqual(parseTrailCommand("reply w1 please include prompt chips"), { ok: true, intent: { kind: "reply", worker: "w1", text: "please include prompt chips" } });
+	assert.deepEqual(parseTrailCommand("ask w1 please include prompt chips"), { ok: true, intent: { kind: "reply", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseTrailCommand("wait should I include checkpoints?"), { ok: true, intent: { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" } });
 	assert.deepEqual(parseTrailCommand("done summary ready"), { ok: true, intent: { kind: "worker-state", state: "ready", text: "summary ready" } });
 	assert.deepEqual(parseTrailCommand("done"), { ok: true, intent: { kind: "worker-state", state: "ready", text: undefined } });
 	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
-	assert.ok(TRAIL_COMMANDS.includes("ask"));
-	assert.match(trailUsage(), /\/trail ask w<N> <reply>/);
+	assert.ok(TRAIL_COMMANDS.includes("reply"));
+	assert.match(trailUsage(), /\/trail reply w<N> <text>/);
 });
 
 test("Trail grammar parses review, memory, catalog, and short aliases", () => {

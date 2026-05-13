@@ -47,7 +47,7 @@ import { parseTrailCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-g
 import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorBucket, navigatorViewModel, selectedArtifact, type NavigatorAction, type NavigatorKey, type NavigatorMode, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerStatus } from "./worker-store.js";
+import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStatus } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -960,10 +960,19 @@ function workerDisplayName(worker: WorkerStatus, max = 34): string {
 	return workerSummaryName(worker, max);
 }
 
+function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
+	if (worker.questions?.length) return worker.questions;
+	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
+	return [];
+}
+
 function workerAttentionLabel(worker: WorkerStatus): string {
 	const state = workerDerivedState(worker);
 	const label = workerSourceLabel(worker);
-	if (state === "needs_input") return `? ${label} needs input`;
+	if (state === "needs_input") {
+		const count = workerQuestions(worker).length;
+		return count > 1 ? `? ${label} needs input · ${count} questions` : `? ${label} needs input`;
+	}
 	if (state === "failed") return `! ${label} failed`;
 	if (state === "ready") return `✓ ${label} ready`;
 	if (state === "stale") return `◯ ${label} stale`;
@@ -971,13 +980,31 @@ function workerAttentionLabel(worker: WorkerStatus): string {
 	return `${workerStateGlyph(state)} ${label} ${workerDisplayName(worker, 28)}`;
 }
 
+function workerAttentionChip(worker: WorkerStatus, verbose: boolean): string {
+	const state = workerDerivedState(worker);
+	const label = workerSourceLabel(worker);
+	const count = workerQuestions(worker).length;
+	if (verbose) return workerAttentionLabel(worker);
+	if (state === "needs_input") return count > 1 ? `? ${label}×${count}` : `? ${label}`;
+	if (state === "failed") return `! ${label}`;
+	if (state === "ready") return `✓ ${label}`;
+	return `${workerStateGlyph(state)} ${label}`;
+}
+
+function isPromptAttentionWorker(worker: WorkerStatus): boolean {
+	const state = workerDerivedState(worker);
+	return state === "needs_input" || state === "failed" || state === "ready";
+}
+
 function workerStatusArtifact(worker: WorkerStatus): Artifact | undefined {
 	const state = workerDerivedState(worker);
 	if (state !== "needs_input" && state !== "ready" && state !== "failed") return undefined;
 	const label = workerSourceLabel(worker);
-	const text = state === "needs_input" ? worker.question : state === "ready" ? worker.summary : worker.lastError;
+	const questions = workerQuestions(worker);
+	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
+	const text = state === "needs_input" ? questionText : state === "ready" ? worker.summary : worker.lastError;
 	const title = state === "needs_input"
-		? `${label} needs input${text ? `: ${text}` : ""}`
+		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
 		: state === "ready"
 			? `${label} ready${text ? `: ${text}` : ""}`
 			: `${label} failed${text ? `: ${text}` : ""}`;
@@ -988,9 +1015,9 @@ function workerStatusArtifact(worker: WorkerStatus): Artifact | undefined {
 		kind: state === "failed" ? "error" : "response",
 		title,
 		subtitle: workerDisplayName(worker),
-		body: [`worker: ${label}`, `state: ${state}`, `task: ${worker.task}`, text ? `message: ${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
+		body: [`worker: ${label}`, `state: ${state}`, `task: ${worker.task}`, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: worker.question, summary: worker.summary, lastError: worker.lastError },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length },
 	};
 }
 
@@ -1515,8 +1542,8 @@ type QueueConsume = (checkpoint: CheckpointIndexEntry) => void;
 type CompletionCandidate = { value: string; label: string };
 
 async function checkpointAndWorkerCandidates(subcommand: string): Promise<CompletionCandidate[]> {
-	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete";
-	const wantCheckpoints = subcommand !== "unload"; // unload also accepts checkpoints, but keep both for everyone
+	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "reply" || subcommand === "ask";
+	const wantCheckpoints = subcommand !== "unload" && subcommand !== "reply" && subcommand !== "ask";
 	const out: CompletionCandidate[] = [];
 
 	if (wantCheckpoints) {
@@ -1541,7 +1568,7 @@ async function checkpointAndWorkerCandidates(subcommand: string): Promise<Comple
 
 type TrailMessageKind = "help" | "list" | "notice" | "action" | "success" | "warning" | "error" | "usage";
 
-type TrailMessageDetails = { kind: TrailMessageKind; heading?: string; subject?: string };
+type TrailMessageDetails = { kind: TrailMessageKind; heading?: string; subject?: string; trail?: { kind: ArtifactKind; title: string; subtitle?: string } };
 
 const KIND_GLYPH: Record<TrailMessageKind, string> = {
 	help: "?",
@@ -1577,13 +1604,13 @@ function notifyTrail(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: strin
 	else pi.sendMessage({ customType: "trail", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } satisfies TrailMessageDetails }, { triggerTurn: false });
 }
 
-function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: TrailMessageKind = "action"): void {
+function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: TrailMessageKind = "action", trail?: TrailMessageDetails["trail"]): void {
 	pi.sendMessage(
 		{
 			customType: "trail",
 			content: detail ?? "",
 			display: true,
-			details: { kind, subject, heading: `trail · ${kind}` } satisfies TrailMessageDetails,
+			details: { kind, subject, heading: `trail · ${kind}`, ...(trail ? { trail } : {}) } satisfies TrailMessageDetails,
 		},
 		{ triggerTurn: false },
 	);
@@ -1703,12 +1730,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 		if (!ctx?.hasUI || workerId) return;
 		try {
 			const store = createWorkerStore();
-			const workers = await store.list();
+			const workers = (await store.list()).filter(isPromptAttentionWorker);
 			if (workers.length === 0) {
 				ctx.ui.setWidget("trail-workers", undefined);
 				return;
 			}
-			const sorted = [...workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 4);
+			const sorted = [...workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 			ctx.ui.setWidget(
 				"trail-workers",
 				(_tui, theme) => {
@@ -1716,11 +1743,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 					const accent = (s: string) => theme.fg("accent", s);
 					const dim = (s: string) => theme.fg("dim", s);
 					const muted = (s: string) => theme.fg("muted", s);
-					const parts = sorted.map((worker) => {
-						const state = workerDerivedState(worker);
-						return workerStateColor(theme, state, workerAttentionLabel(worker));
-					});
-					const more = workers.length > sorted.length ? dim(` +${workers.length - sorted.length}`) : "";
+					const shown = sorted.slice(0, 3);
+					const verbose = sorted.length === 1;
+					const parts = shown.map((worker) => workerStateColor(theme, workerDerivedState(worker), workerAttentionChip(worker, verbose)));
+					const more = sorted.length > shown.length ? dim(` +${sorted.length - shown.length}`) : "";
 					container.addChild(new Text(`${accent(theme.bold("trail"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${dim("/trail")}`, 0, 0));
 					return container;
 				},
@@ -1858,7 +1884,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 			const subcommand = trimmed.slice(0, firstSpace);
 			const rest = trimmed.slice(firstSpace + 1);
-			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "ask") {
+			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "reply" || subcommand === "ask") {
 				const lastSpace = rest.lastIndexOf(" ");
 				const partial = lastSpace === -1 ? rest : rest.slice(lastSpace + 1);
 				const completed = lastSpace === -1 ? "" : `${rest.slice(0, lastSpace + 1)}`;
@@ -1883,7 +1909,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				parentSession: ctx.sessionManager.getSessionFile?.(),
 				notify: (text, level) => notifyTrail(pi, ctx, text, level),
-				announce: (subject, detail, kind) => announceAction(pi, ctx, subject, detail, kind),
+				announce: (subject, detail, kind, trail) => announceAction(pi, ctx, subject, detail, kind, trail),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 			});
 			const checkpointCommands = createCheckpointCommands({
@@ -1909,8 +1935,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (intent.kind === "ask") {
-				await workerCommands.ask(intent.worker, intent.text);
+			if (intent.kind === "reply") {
+				await workerCommands.reply(intent.worker, intent.text);
 				await refreshWorkerDockWidget();
 				return;
 			}
@@ -1920,9 +1946,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 					notifyTrail(pi, ctx, "Worker state commands only run inside a Trail worker", "warning");
 					return;
 				}
-				await createWorkerStore().patchStatus(workerId, {
+				const store = createWorkerStore();
+				if (intent.state === "needs_input") await store.addQuestion(workerId, intent.text ?? "");
+				else await store.patchStatus(workerId, {
 					state: intent.state,
-					question: intent.state === "needs_input" ? intent.text : undefined,
+					question: undefined,
+					questions: [],
 					summary: intent.state === "ready" ? intent.text : undefined,
 					lastError: intent.state === "failed" ? intent.text : undefined,
 				});
@@ -2195,7 +2224,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 					const question = trailMetaString(result.artifact, "question") ?? result.artifact.title;
 					const reply = (await ctx.ui.input(`Reply to ${workerRef}`, question))?.trim();
 					if (!reply) continue;
-					await workerCommands.ask(workerRef, reply);
+					await workerCommands.reply(workerRef, reply);
 					await refreshWorkerDockWidget();
 					return;
 				}

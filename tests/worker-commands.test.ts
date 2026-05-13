@@ -32,6 +32,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		writeStatus: async () => {},
 		patchStatus: async () => undefined,
 		writeArtifacts: async () => {},
+		addQuestion: async () => undefined,
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
 		spawn: async (input) => { spawned.push(input); return worker; },
 		kill: async () => true,
@@ -80,12 +81,16 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 });
 
 test("Worker Commands sends parent replies to workers", async () => {
-	const { commands, sent, announcements } = deps();
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", questions: [
+		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },
+		{ id: "q2", text: "Inspect prompt chips too?", createdAt: "2026-01-01T00:01:00.000Z" },
+	] };
+	const { commands, sent, announcements } = deps([waiting]);
 
-	await commands.ask("w2", "include prompt chips");
+	await commands.reply("w2", "include checkpoint flow only");
 
-	assert.deepEqual(sent, [{ id: "worker-1", text: "Parent reply: include prompt chips" }]);
-	assert.equal(announcements[0]?.subject, "sent reply to w2");
+	assert.deepEqual(sent, [{ id: "worker-1", text: "Parent reply to 2 questions: 1) Include checkpoint flow? 2) Inspect prompt chips too? Reply: include checkpoint flow only" }]);
+	assert.equal(announcements[0]?.subject, "replied to w2");
 });
 
 test("Worker Commands lists workers", async () => {

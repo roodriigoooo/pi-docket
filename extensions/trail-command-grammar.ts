@@ -21,7 +21,7 @@ export type TrailIntent =
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
 	| { kind: "spawn"; task: string }
 	| { kind: "workers" }
-	| { kind: "ask"; worker: string; text: string }
+	| { kind: "reply"; worker: string; text: string }
 	| { kind: "worker-state"; state: "needs_input" | "ready" | "failed"; text?: string }
 	| { kind: "recall"; query?: string }
 	| { kind: "search"; query: string }
@@ -31,7 +31,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["review", "memory", "catalog", "search", "checkpoint", "continue", "resume", "spawn", "ask", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["review", "memory", "catalog", "search", "checkpoint", "continue", "resume", "spawn", "reply", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -63,7 +63,7 @@ export function trailUsage(): string {
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
 		"/trail spawn <task>            start background work",
-		"/trail ask w<N> <reply>        reply to a waiting worker",
+		"/trail reply w<N> <text>       reply to a waiting worker",
 		"/trail wait <question>         worker: ask parent for input",
 		"/trail done [summary]          worker: mark output ready",
 		"/trail fail <reason>           worker: mark work failed",
@@ -238,9 +238,9 @@ export function parseTrailCommand(args: string): ParseResult {
 		if (rest.length > 0) return parseError("Usage: /trail workers");
 		return { ok: true, intent: { kind: "workers" } };
 	}
-	if (command === "ask") {
-		if (rest.length < 2) return parseError("Usage: /trail ask w<N> <reply>");
-		return { ok: true, intent: { kind: "ask", worker: rest[0]!, text: rest.slice(1).join(" ") } };
+	if (command === "reply" || command === "ask") {
+		if (rest.length < 2) return parseError(`Usage: /trail ${command} w<N> <text>`);
+		return { ok: true, intent: { kind: "reply", worker: rest[0]!, text: rest.slice(1).join(" ") } };
 	}
 	if (command === "wait") {
 		if (rest.length === 0) return parseError("Usage: /trail wait <question>");

@@ -160,7 +160,7 @@ Interface:
 
 Background Work UI:
 - `/trail` refreshes worker artifact slots and surfaces worker output in Review without adding model-context bytes.
-- Worker-side `/trail wait`, `/trail done`, and `/trail fail` publish attention state; parent-side `/trail ask w<N> <reply>` sends input without attaching to tmux.
+- Worker-side `/trail wait`, `/trail done`, and `/trail fail` publish attention state; parent-side `/trail reply w<N> <text>` sends input without attaching to tmux. Multiple waits from one worker are queued in worker status and collapsed into one Review row.
 - `/trail workers` remains an artifact-first power/debug inbox across workers.
 - Worker labels (`w1`, `w2`) are provenance first; source filtering is progressive disclosure.
 - Destructive worker operations stay out of Review; mounting artifacts only enables browsing/attaching and does not add model context.

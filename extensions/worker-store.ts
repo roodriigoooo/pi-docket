@@ -11,6 +11,13 @@ export const WORKER_DASHBOARD_TMUX = "trail-workers";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 
+export type WorkerQuestion = {
+	id: string;
+	text: string;
+	createdAt: string;
+	answeredAt?: string;
+};
+
 export type WorkerStatus = {
 	id: string;
 	index: number;
@@ -26,6 +33,7 @@ export type WorkerStatus = {
 	contextPercent?: number;
 	artifactCount?: number;
 	question?: string;
+	questions?: WorkerQuestion[];
 	summary?: string;
 	lastError?: string;
 };
@@ -51,6 +59,7 @@ export type WorkerStore = {
 	writeStatus(snapshot: WorkerStatus): Promise<void>;
 	patchStatus(id: string, patch: Partial<WorkerStatus>): Promise<WorkerStatus | undefined>;
 	writeArtifacts(id: string, artifacts: Artifact[]): Promise<void>;
+	addQuestion(id: string, text: string): Promise<WorkerStatus | undefined>;
 	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
@@ -210,6 +219,18 @@ export function createWorkerStore(): WorkerStore {
 			await writeJsonAtomic(this.artifactsFile(id), artifacts);
 		},
 
+		async addQuestion(id: string, text: string): Promise<WorkerStatus | undefined> {
+			const current = await this.find(id);
+			const trimmed = text.trim();
+			if (!current || !trimmed) return current;
+			const legacy = current.question && !current.questions?.length
+				? [{ id: "legacy", text: current.question, createdAt: current.updatedAt }]
+				: [];
+			const question: WorkerQuestion = { id: `${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`, text: trimmed, createdAt: new Date().toISOString() };
+			const questions = [...legacy, ...(current.questions ?? []), question];
+			return this.patchStatus(current.id, { state: "needs_input", question: questions.length === 1 ? trimmed : `${questions.length} questions`, questions });
+		},
+
 		async sendInput(id: string, text: string): Promise<boolean> {
 			const status = await this.find(id);
 			if (!status) return false;
@@ -217,7 +238,7 @@ export function createWorkerStore(): WorkerStore {
 			if (!safeText) return false;
 			const result = spawnSync("tmux", ["send-keys", "-t", status.tmuxSession, safeText, "Enter"], { stdio: "ignore" });
 			if (result.status !== 0) return false;
-			await this.patchStatus(status.id, { state: "active", question: undefined });
+			await this.patchStatus(status.id, { state: "active", question: undefined, questions: [] });
 			return true;
 		},
 
@@ -243,7 +264,11 @@ export function createWorkerStore(): WorkerStore {
 				`  ${path.join(dir, "task.md")}`,
 				"",
 				`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(dir, "artifacts.json")}.`,
-				"Use /trail to inspect what you have collected. The parent session can pull anything via /trail load.",
+				"Use the Trail worker protocol:",
+				"- If blocked or needing clarification, run `/trail wait <question>`, then stop and wait for a parent reply.",
+				"- When finished with useful output, run `/trail done <summary>`.",
+				"- If unable to continue, run `/trail fail <reason>`.",
+				"The parent reviews worker attention in `/trail` and replies with `/trail reply w<N> <answer>`.",
 			].join("\n");
 
 			const extensionArgs = input.extensionArgs ?? explicitExtensionArgs();
