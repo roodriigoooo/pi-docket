@@ -138,6 +138,22 @@ function makeWorkerId(task: string, hint?: string): string {
 	return `${slug}-${suffix}`.slice(0, 80);
 }
 
+export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string }): string {
+	return [
+		`You are Trail worker ${workerShortLabel(input.index)} (${input.id}).`,
+		"Your task is recorded in:",
+		`  ${path.join(input.dir, "task.md")}`,
+		"",
+		`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(input.dir, "artifacts.json")}.`,
+		"Use Trail worker protocol tools for parent coordination:",
+		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
+		"- When finished with useful output, call `trail_done` with a concise summary.",
+		"- If unable to continue, call `trail_fail` with the reason.",
+		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
+		"The parent reviews worker attention in `/trail` and replies with `/trail reply w<N> <answer>`.",
+	].join("\n");
+}
+
 export function explicitExtensionArgs(): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < process.argv.length; i++) {
@@ -258,18 +274,7 @@ export function createWorkerStore(): WorkerStore {
 			const existing = await this.list();
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 
-			const initialPrompt = [
-				`You are Trail worker ${workerShortLabel(index)} (${id}).`,
-				"Your task is recorded in:",
-				`  ${path.join(dir, "task.md")}`,
-				"",
-				`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(dir, "artifacts.json")}.`,
-				"Use the Trail worker protocol:",
-				"- If blocked or needing clarification, run `/trail wait <question>`, then stop and wait for a parent reply.",
-				"- When finished with useful output, run `/trail done <summary>`.",
-				"- If unable to continue, run `/trail fail <reason>`.",
-				"The parent reviews worker attention in `/trail` and replies with `/trail reply w<N> <answer>`.",
-			].join("\n");
+			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir });
 
 			const extensionArgs = input.extensionArgs ?? explicitExtensionArgs();
 			const piParts = ["exec env", `${TRAIL_WORKER_ENV}=${shellQuote(id)}`, "pi", "--session-dir", shellQuote(sessionDir)];

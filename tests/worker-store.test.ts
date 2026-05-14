@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createWorkerStore, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
+import { buildWorkerInitialPrompt, createWorkerStore, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
 
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
@@ -41,6 +41,14 @@ test("workerShortLabel + workerSummaryName format consistently", () => {
 	const trimmed = workerSummaryName({ task: "investigate the auth middleware token expiry edge case here" } as WorkerStatus, 24);
 	assert.equal(trimmed.length <= 24, true);
 	assert.match(trimmed, /investigate/);
+});
+
+test("worker initial prompt prefers protocol tools over bash slash commands", () => {
+	const prompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo" });
+	assert.match(prompt, /call `trail_wait`/);
+	assert.match(prompt, /call `trail_done`/);
+	assert.match(prompt, /call `trail_fail`/);
+	assert.match(prompt, /Do not run `\/trail wait`/);
 });
 
 test("worker store find resolves by short label, bare digits, and partial id", async () => {

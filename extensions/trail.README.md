@@ -14,12 +14,12 @@ Session artifacts as first-class objects for Pi.
 - `/trail load [id|last|w<N>] [--include-consumed]` — advanced: mount checkpoint or worker artifacts without spending model-context tokens
 - `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
-- `/trail list [--include-consumed]` — list checkpoints
+- `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
 - `/trail reply w<N> <text>` — reply to a waiting worker from the parent session
-- `/trail wait <question>` — worker-side: ask the parent session for input
-- `/trail done [summary]` — worker-side: mark worker output ready
-- `/trail fail <reason>` — worker-side: mark worker failed
+- `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
+- `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
+- `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
 - `/trail workers` — open worker inbox power/debug view
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
@@ -27,6 +27,8 @@ Session artifacts as first-class objects for Pi.
 - `/trail copy <artifact-id>` — copy artifact to clipboard
 
 Short aliases: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`. `/trail ask` remains an alias for `/trail reply`.
+
+Worker status appears in a compact dock above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, `trail_fail`) for parent coordination; worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions.
 
 ## Checkpoint resume keys
 

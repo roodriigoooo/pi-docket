@@ -64,9 +64,9 @@ export function trailUsage(): string {
 		"/trail resume [id|last]",
 		"/trail spawn <task>            start background work",
 		"/trail reply w<N> <text>       reply to a waiting worker",
-		"/trail wait <question>         worker: ask parent for input",
-		"/trail done [summary]          worker: mark output ready",
-		"/trail fail <reason>           worker: mark work failed",
+		"/trail wait <question>         worker prompt fallback: ask parent for input",
+		"/trail done [summary]          worker prompt fallback: mark output ready",
+		"/trail fail <reason>           worker prompt fallback: mark work failed",
 		"/trail workers                 open worker inbox (power/debug view)",
 		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (advanced)",
 		"/trail unload <id|w<N>|all>   drop a loaded slot from session",
@@ -185,6 +185,17 @@ function parseCheckpoint(tokens: string[]): ParseResult {
 	}
 
 	return { ok: true, intent: { kind: "checkpoint", options: { mode, note: noteParts.join(" "), consumeOnUse, raw, model, maxOutputTokens } } };
+}
+
+export function parseTrailWorkerShellCommand(command: string): Extract<TrailIntent, { kind: "worker-state" }> | undefined {
+	const lines = command.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
+	if (lines.length !== 1) return undefined;
+	const line = lines[0]!.trim();
+	const match = line.match(/^\/?trail(?:\s+([\s\S]*))?$/);
+	if (!match) return undefined;
+	const parsed = parseTrailCommand(match[1] ?? "");
+	if (!parsed.ok || parsed.intent.kind !== "worker-state") return undefined;
+	return parsed.intent;
 }
 
 export function parseTrailCommand(args: string): ParseResult {

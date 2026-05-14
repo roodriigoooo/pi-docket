@@ -127,7 +127,7 @@ Trail can spawn tmux-backed Pi worker sessions. A worker investigates in its own
   <img src="./assets/trail_workers_tmux.gif" alt="Trail tmux worker spawn and load workflow" width="100%" />
 </p>
 
-If `/trail spawn` is unknown, you are running an older installed Trail. Install/pin `v0.1.4` or run this repo locally with `pi --no-extensions -e ./extensions/trail.ts`.
+If `/trail spawn` or `/trail workers` is unknown, you are running an older installed Trail. Install/pin current Trail or run this repo locally with `pi --no-extensions -e ./extensions/trail.ts`.
 
 ## commands
 
@@ -144,9 +144,9 @@ If `/trail spawn` is unknown, you are running an older installed Trail. Install/
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
 - `/trail reply w<N> <text>` — reply to a waiting worker from the parent session
-- `/trail wait <question>` — worker-side: ask the parent session for input
-- `/trail done [summary]` — worker-side: mark worker output ready
-- `/trail fail <reason>` — worker-side: mark worker failed
+- `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
+- `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
+- `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
 - `/trail workers` — open worker inbox power/debug view
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
@@ -166,9 +166,13 @@ Typical flow:
 /trail
 ```
 
+A compact worker dock stays above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. It shows at-a-glance chips (`◐ w1`, `? w2`, `✓ w3`) without adding context bytes.
+
 `/trail` is the unified review inbox: worker output appears beside current-session errors, changed files, pinned items, and recent review items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
 
-Workers can surface attention states with `/trail wait <question>`, `/trail done [summary]`, and `/trail fail <reason>`. These appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Reply from the parent session with `/trail reply w<N> <text>` or by opening the waiting row and pressing `r`.
+Workers surface attention states with protocol tools: `trail_wait`, `trail_done`, and `trail_fail`. The worker-side `/trail wait`, `/trail done`, and `/trail fail` commands remain Pi prompt fallbacks, but workers are told not to run them through bash. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions and recorded instead of failing as missing shell commands.
+
+Waiting, ready, and failed states appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Reply from the parent session with `/trail reply w<N> <text>` or by opening the waiting row and pressing `r`.
 
 Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a`, `r`, or `i`) or full text (`I`).
 

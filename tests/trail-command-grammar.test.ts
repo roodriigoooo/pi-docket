@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTrailCommand, TRAIL_COMMANDS, trailUsage } from "../extensions/trail-command-grammar.js";
+import { parseTrailCommand, parseTrailWorkerShellCommand, TRAIL_COMMANDS, trailUsage } from "../extensions/trail-command-grammar.js";
 
 test("Trail grammar parses checkpoint delete commands", () => {
 	assert.deepEqual(parseTrailCommand("delete"), { ok: true, intent: { kind: "delete", target: undefined, targetKind: "checkpoint" } });
@@ -73,6 +73,14 @@ test("Trail grammar parses worker attention commands", () => {
 	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
 	assert.ok(TRAIL_COMMANDS.includes("reply"));
 	assert.match(trailUsage(), /\/trail reply w<N> <text>/);
+});
+
+test("Trail grammar recognizes accidental worker protocol in bash", () => {
+	assert.deepEqual(parseTrailWorkerShellCommand("/trail wait should I include checkpoints?"), { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" });
+	assert.deepEqual(parseTrailWorkerShellCommand("trail done summary ready"), { kind: "worker-state", state: "ready", text: "summary ready" });
+	assert.deepEqual(parseTrailWorkerShellCommand("/trail fail model timed out"), { kind: "worker-state", state: "failed", text: "model timed out" });
+	assert.equal(parseTrailWorkerShellCommand("/trail workers"), undefined);
+	assert.equal(parseTrailWorkerShellCommand("echo before\n/trail wait hidden"), undefined);
 });
 
 test("Trail grammar parses review, memory, catalog, and short aliases", () => {

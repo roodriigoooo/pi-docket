@@ -22,8 +22,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, getLanguageFromPath, highlightCode } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, getLanguageFromPath, highlightCode, isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import {
 	Box,
@@ -43,7 +44,7 @@ import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
-import { parseTrailCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
+import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
 import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorBucket, navigatorViewModel, selectedArtifact, type NavigatorAction, type NavigatorKey, type NavigatorMode, type NavigatorState } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
@@ -73,6 +74,10 @@ async function copyToClipboard(text: string): Promise<boolean> {
 		}
 	}
 	return false;
+}
+
+function shellSingleQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 class TrailTextViewer implements Component {
@@ -991,9 +996,9 @@ function workerAttentionChip(worker: WorkerStatus, verbose: boolean): string {
 	return `${workerStateGlyph(state)} ${label}`;
 }
 
-function isPromptAttentionWorker(worker: WorkerStatus): boolean {
+function isPromptDockWorker(worker: WorkerStatus): boolean {
 	const state = workerDerivedState(worker);
-	return state === "needs_input" || state === "failed" || state === "ready";
+	return state !== "empty";
 }
 
 function workerStatusArtifact(worker: WorkerStatus): Artifact | undefined {
@@ -1730,7 +1735,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		if (!ctx?.hasUI || workerId) return;
 		try {
 			const store = createWorkerStore();
-			const workers = (await store.list()).filter(isPromptAttentionWorker);
+			const workers = (await store.list()).filter(isPromptDockWorker);
 			if (workers.length === 0) {
 				ctx.ui.setWidget("trail-workers", undefined);
 				return;
@@ -1738,18 +1743,21 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const sorted = [...workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 			ctx.ui.setWidget(
 				"trail-workers",
-				(_tui, theme) => {
-					const container = new Container();
-					const accent = (s: string) => theme.fg("accent", s);
-					const dim = (s: string) => theme.fg("dim", s);
-					const muted = (s: string) => theme.fg("muted", s);
-					const shown = sorted.slice(0, 3);
-					const verbose = sorted.length === 1;
-					const parts = shown.map((worker) => workerStateColor(theme, workerDerivedState(worker), workerAttentionChip(worker, verbose)));
-					const more = sorted.length > shown.length ? dim(` +${sorted.length - shown.length}`) : "";
-					container.addChild(new Text(`${accent(theme.bold("trail"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${dim("/trail")}`, 0, 0));
-					return container;
-				},
+				(_tui, theme) => ({
+					render(width: number): string[] {
+						const accent = (s: string) => theme.fg("accent", s);
+						const dim = (s: string) => theme.fg("dim", s);
+						const muted = (s: string) => theme.fg("muted", s);
+						const maxWorkers = width < 72 ? 2 : width < 110 ? 3 : 4;
+						const shown = sorted.slice(0, maxWorkers);
+						const verbose = sorted.length === 1 && width >= 72;
+						const parts = shown.map((worker) => workerStateColor(theme, workerDerivedState(worker), workerAttentionChip(worker, verbose)));
+						const more = sorted.length > shown.length ? dim(` +${sorted.length - shown.length}`) : "";
+						const command = width >= 88 ? `${dim("/trail w")} ${dim("·")} ${dim("/trail workers")}` : dim("/trail");
+						return [truncateToWidth(`${accent(theme.bold("trail"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${command}`, width)];
+					},
+					invalidate() {},
+				}),
 				{ placement: "aboveEditor" },
 			);
 		} catch {
@@ -1757,7 +1765,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const emitWorkerStateArtifact = (ctx: ExtensionCommandContext, state: "needs_input" | "ready" | "failed", text?: string): void => {
+	const emitWorkerStateArtifact = (_ctx: ExtensionContext, state: "needs_input" | "ready" | "failed", text?: string): void => {
 		const subject = state === "needs_input" ? "needs input" : state === "ready" ? "ready" : "failed";
 		const title = state === "needs_input"
 			? `Needs input: ${text ?? "clarification requested"}`
@@ -1811,6 +1819,76 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	const applyWorkerState = async (ctx: ExtensionContext, state: "needs_input" | "ready" | "failed", text?: string): Promise<void> => {
+		if (!workerId) return;
+		const store = createWorkerStore();
+		if (state === "needs_input") await store.addQuestion(workerId, text ?? "");
+		else await store.patchStatus(workerId, {
+			state,
+			question: undefined,
+			questions: [],
+			summary: state === "ready" ? text : undefined,
+			lastError: state === "failed" ? text : undefined,
+		});
+		emitWorkerStateArtifact(ctx, state, text);
+		await writeWorkerHeartbeat(ctx);
+	};
+
+	const workerProtocolResultText = (state: "needs_input" | "ready" | "failed"): string => {
+		if (state === "needs_input") return "Trail wait recorded. Stop now and wait for parent reply.";
+		if (state === "ready") return "Trail done recorded. Parent can review the worker output.";
+		return "Trail failure recorded. Parent can review the failure.";
+	};
+
+	if (workerId) {
+		pi.registerTool({
+			name: "trail_wait",
+			label: "Trail Wait",
+			description: "Trail worker only: ask the parent session for input and mark this worker waiting.",
+			promptSnippet: "Ask parent for input when a Trail worker is blocked.",
+			promptGuidelines: ["Use trail_wait when you are a Trail worker and need parent clarification or a decision; do not run /trail wait via bash."],
+			parameters: Type.Object({ question: Type.String({ description: "Concise question for the parent session" }) }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				await applyWorkerState(ctx, "needs_input", params.question);
+				return { content: [{ type: "text", text: workerProtocolResultText("needs_input") }], details: { state: "needs_input", question: params.question } };
+			},
+		});
+
+		pi.registerTool({
+			name: "trail_done",
+			label: "Trail Done",
+			description: "Trail worker only: mark this worker's useful output ready for parent review.",
+			promptSnippet: "Mark Trail worker output ready for parent review.",
+			promptGuidelines: ["Use trail_done when you are a Trail worker and have useful output ready; do not run /trail done via bash."],
+			parameters: Type.Object({ summary: Type.Optional(Type.String({ description: "Concise summary of completed worker output" })) }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				await applyWorkerState(ctx, "ready", params.summary);
+				return { content: [{ type: "text", text: workerProtocolResultText("ready") }], details: { state: "ready", summary: params.summary } };
+			},
+		});
+
+		pi.registerTool({
+			name: "trail_fail",
+			label: "Trail Fail",
+			description: "Trail worker only: mark this worker failed with a reason.",
+			promptSnippet: "Mark a Trail worker failed when it cannot continue.",
+			promptGuidelines: ["Use trail_fail when you are a Trail worker and cannot continue; do not run /trail fail via bash."],
+			parameters: Type.Object({ reason: Type.String({ description: "Reason this worker cannot continue" }) }),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				await applyWorkerState(ctx, "failed", params.reason);
+				return { content: [{ type: "text", text: workerProtocolResultText("failed") }], details: { state: "failed", reason: params.reason } };
+			},
+		});
+
+		pi.on("tool_call", async (event, ctx) => {
+			if (!isToolCallEventType("bash", event)) return;
+			const intent = parseTrailWorkerShellCommand(event.input.command);
+			if (!intent) return;
+			await applyWorkerState(ctx, intent.state, intent.text);
+			event.input.command = `printf '%s\n' ${shellSingleQuote(workerProtocolResultText(intent.state))}`;
+		});
+	}
+
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		pinnedRefs = new Set();
@@ -1826,7 +1904,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			heartbeatTimer.unref?.();
 		} else if (ctx.hasUI) {
 			void refreshWorkerDockWidget();
-			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 15000);
+			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 5000);
 			workerDockTimer.unref?.();
 		}
 	});
@@ -1946,17 +2024,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 					notifyTrail(pi, ctx, "Worker state commands only run inside a Trail worker", "warning");
 					return;
 				}
-				const store = createWorkerStore();
-				if (intent.state === "needs_input") await store.addQuestion(workerId, intent.text ?? "");
-				else await store.patchStatus(workerId, {
-					state: intent.state,
-					question: undefined,
-					questions: [],
-					summary: intent.state === "ready" ? intent.text : undefined,
-					lastError: intent.state === "failed" ? intent.text : undefined,
-				});
-				emitWorkerStateArtifact(ctx, intent.state, intent.text);
-				await writeWorkerHeartbeat(ctx);
+				await applyWorkerState(ctx, intent.state, intent.text);
 				return;
 			}
 
