@@ -150,7 +150,7 @@ export function buildWorkerInitialPrompt(input: { index: number; id: string; dir
 		"- When finished with useful output, call `trail_done` with a concise summary.",
 		"- If unable to continue, call `trail_fail` with the reason.",
 		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
-		"The parent reviews worker attention in `/trail` and replies with `/trail reply w<N> <answer>`.",
+		"The parent reviews worker attention in `/trail` and sends follow-up with `/trail tell w<N> <message>`.",
 	].join("\n");
 }
 

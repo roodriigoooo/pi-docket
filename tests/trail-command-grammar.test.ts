@@ -64,15 +64,17 @@ test("Trail grammar parses workers dashboard", () => {
 	assert.equal(invalid.ok, false);
 });
 
-test("Trail grammar parses worker attention commands", () => {
-	assert.deepEqual(parseTrailCommand("reply w1 please include prompt chips"), { ok: true, intent: { kind: "reply", worker: "w1", text: "please include prompt chips" } });
-	assert.deepEqual(parseTrailCommand("ask w1 please include prompt chips"), { ok: true, intent: { kind: "reply", worker: "w1", text: "please include prompt chips" } });
+test("Trail grammar parses worker tell and attention commands", () => {
+	assert.deepEqual(parseTrailCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
+	assert.deepEqual(parseTrailCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });
 	assert.deepEqual(parseTrailCommand("wait should I include checkpoints?"), { ok: true, intent: { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" } });
 	assert.deepEqual(parseTrailCommand("done summary ready"), { ok: true, intent: { kind: "worker-state", state: "ready", text: "summary ready" } });
 	assert.deepEqual(parseTrailCommand("done"), { ok: true, intent: { kind: "worker-state", state: "ready", text: undefined } });
 	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
-	assert.ok(TRAIL_COMMANDS.includes("reply"));
-	assert.match(trailUsage(), /\/trail reply w<N> <text>/);
+	assert.ok(TRAIL_COMMANDS.includes("tell"));
+	assert.match(trailUsage(), /\/trail tell w<N> \[text\]/);
+	assert.equal(parseTrailCommand("reply w1 nope").ok, false);
+	assert.equal(parseTrailCommand("ask w1 nope").ok, false);
 });
 
 test("Trail grammar recognizes accidental worker protocol in bash", () => {
@@ -83,17 +85,18 @@ test("Trail grammar recognizes accidental worker protocol in bash", () => {
 	assert.equal(parseTrailWorkerShellCommand("echo before\n/trail wait hidden"), undefined);
 });
 
-test("Trail grammar parses review, memory, catalog, and short aliases", () => {
+test("Trail grammar parses answers, all, and remaining short aliases", () => {
 	assert.deepEqual(parseTrailCommand("review"), { ok: true, intent: { kind: "browse", mode: "work" } });
-	assert.deepEqual(parseTrailCommand("w"), { ok: true, intent: { kind: "browse", mode: "work" } });
-	assert.deepEqual(parseTrailCommand("catalog"), { ok: true, intent: { kind: "browse", mode: "all" } });
-	assert.deepEqual(parseTrailCommand("cat"), { ok: true, intent: { kind: "browse", mode: "all" } });
-	assert.deepEqual(parseTrailCommand("memory"), { ok: true, intent: { kind: "recall", query: undefined } });
-	assert.deepEqual(parseTrailCommand("m worker auth plan"), { ok: true, intent: { kind: "recall", query: "worker auth plan" } });
+	assert.deepEqual(parseTrailCommand("all"), { ok: true, intent: { kind: "browse", mode: "all" } });
+	assert.deepEqual(parseTrailCommand("answers"), { ok: true, intent: { kind: "answers", query: undefined } });
+	assert.deepEqual(parseTrailCommand("answers worker auth plan"), { ok: true, intent: { kind: "answers", query: "worker auth plan" } });
 	assert.deepEqual(parseTrailCommand("s worker auth plan"), { ok: true, intent: { kind: "search", query: "worker auth plan" } });
 	assert.deepEqual(parseTrailCommand("ckpt --raw note"), { ok: true, intent: { kind: "checkpoint", options: { mode: "handoff", note: "note", consumeOnUse: false, raw: true, model: undefined, maxOutputTokens: undefined } } });
 	assert.deepEqual(parseTrailCommand("r last"), { ok: true, intent: { kind: "continue", idOrLast: "last" } });
-	assert.deepEqual(parseTrailCommand("recall"), { ok: true, intent: { kind: "recall", query: undefined } });
-	assert.ok(TRAIL_COMMANDS.includes("memory"));
-	assert.match(trailUsage(), /\/trail memory \[query\]/);
+	assert.equal(parseTrailCommand("memory").ok, false);
+	assert.equal(parseTrailCommand("m worker auth plan").ok, false);
+	assert.equal(parseTrailCommand("catalog").ok, false);
+	assert.equal(parseTrailCommand("cat").ok, false);
+	assert.ok(TRAIL_COMMANDS.includes("answers"));
+	assert.match(trailUsage(), /\/trail answers \[query\]/);
 });

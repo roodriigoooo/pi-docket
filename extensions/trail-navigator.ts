@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactKind } from "./types.js";
 
 export type NavigatorFilter = ArtifactKind | "all";
-export type NavigatorMode = "work" | "recall" | "all";
+export type NavigatorMode = "work" | "answers" | "all";
 export type NavigatorSource = "current" | "all" | string;
 export type NavigatorBucket = "needs" | "pinned" | "recent";
 
@@ -99,7 +99,7 @@ function sortWorkingArtifacts(artifacts: Artifact[]): Artifact[] {
 
 function applyModeFilter(artifacts: Artifact[], mode: NavigatorMode): Artifact[] {
 	if (mode === "all") return artifacts;
-	if (mode === "recall") return artifacts.filter((artifact) => artifact.kind === "response");
+	if (mode === "answers") return artifacts.filter((artifact) => artifact.kind === "response");
 	const queued = artifacts.filter((artifact) => navigatorBucket(artifact) !== undefined);
 	const active = queued.filter((artifact) => navigatorBucket(artifact) !== "recent");
 	return sortWorkingArtifacts(active.length > 0 ? active : queued);
@@ -132,8 +132,8 @@ function cycleFilter(filter: NavigatorFilter): NavigatorFilter {
 }
 
 function cycleMode(mode: NavigatorMode): NavigatorMode {
-	if (mode === "work") return "recall";
-	if (mode === "recall") return "all";
+	if (mode === "work") return "answers";
+	if (mode === "answers") return "all";
 	return "work";
 }
 
@@ -165,9 +165,9 @@ export function handleNavigatorKey(state: NavigatorState, artifacts: Artifact[],
 	if (key.raw === "G") return { state: { ...normalizedState, selected: Math.max(0, items.length - 1) } };
 	if (key.raw === "v") return { state: { ...normalizedState, showDetail: !normalizedState.showDetail } };
 	if (key.raw === "/") return { state: normalizedState, action: { action: "search" } };
-	if (key.raw === "w") return { state: switchMode(normalizedState, "work") };
-	if (key.raw === "m") return { state: switchMode(normalizedState, "recall") };
-	if (key.raw === "A") return { state: switchMode(normalizedState, "all") };
+	if (key.raw === "1") return { state: switchMode(normalizedState, "work") };
+	if (key.raw === "2") return { state: switchMode(normalizedState, "answers") };
+	if (key.raw === "3") return { state: switchMode(normalizedState, "all") };
 	if (key.raw === "\t" || key.isTab) return { state: switchMode(normalizedState, cycleMode(normalizedState.mode)) };
 	if (key.raw === "f") return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
 	if (key.raw === "s") return { state: { ...normalizedState, source: cycleSource(normalizedState.source, artifacts), selected: 0 } };

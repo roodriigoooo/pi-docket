@@ -80,17 +80,17 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/trail workers/);
 });
 
-test("Worker Commands sends parent replies to workers", async () => {
+test("Worker Commands sends parent messages to workers", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", questions: [
 		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },
 		{ id: "q2", text: "Inspect prompt chips too?", createdAt: "2026-01-01T00:01:00.000Z" },
 	] };
 	const { commands, sent, announcements } = deps([waiting]);
 
-	await commands.reply("w2", "include checkpoint flow only");
+	await commands.tell("w2", "include checkpoint flow only");
 
-	assert.deepEqual(sent, [{ id: "worker-1", text: "Parent reply to 2 questions: 1) Include checkpoint flow? 2) Inspect prompt chips too? Reply: include checkpoint flow only" }]);
-	assert.equal(announcements[0]?.subject, "replied to w2");
+	assert.deepEqual(sent, [{ id: "worker-1", text: "Parent message for 2 questions: 1) Include checkpoint flow? 2) Inspect prompt chips too? Message: include checkpoint flow only" }]);
+	assert.equal(announcements[0]?.subject, "told w2");
 });
 
 test("Worker Commands lists workers", async () => {

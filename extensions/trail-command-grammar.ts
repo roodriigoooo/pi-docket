@@ -11,7 +11,7 @@ export type CheckpointCreateOptions = {
 
 export type TrailIntent =
 	| { kind: "help" }
-	| { kind: "browse"; mode?: "work" | "recall" | "all" }
+	| { kind: "browse"; mode?: "work" | "answers" | "all" }
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
@@ -21,9 +21,9 @@ export type TrailIntent =
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
 	| { kind: "spawn"; task: string }
 	| { kind: "workers" }
-	| { kind: "reply"; worker: string; text: string }
+	| { kind: "tell"; worker: string; text?: string }
 	| { kind: "worker-state"; state: "needs_input" | "ready" | "failed"; text?: string }
-	| { kind: "recall"; query?: string }
+	| { kind: "answers"; query?: string }
 	| { kind: "search"; query: string }
 	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
 
@@ -31,7 +31,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["review", "memory", "catalog", "search", "checkpoint", "continue", "resume", "spawn", "reply", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["answers", "all", "search", "checkpoint", "continue", "resume", "spawn", "tell", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -56,14 +56,14 @@ export function trailUsage(): string {
 	return [
 		"Trail commands:",
 		"/trail                         open review inbox",
-		"/trail memory [query]          browse assistant/worker answers",
-		"/trail catalog                 browse everything captured",
+		"/trail answers [query]         browse assistant/worker answers",
+		"/trail all                     browse everything captured",
 		"/trail search <query>          search ranked artifacts, then browse matches",
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
 		"/trail spawn <task>            start background work",
-		"/trail reply w<N> <text>       reply to a waiting worker",
+		"/trail tell w<N> [text]        send input/follow-up to a worker",
 		"/trail wait <question>         worker prompt fallback: ask parent for input",
 		"/trail done [summary]          worker prompt fallback: mark output ready",
 		"/trail fail <reason>           worker prompt fallback: mark work failed",
@@ -203,8 +203,8 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (!tokenized.ok) return parseError(tokenized.message);
 	const [command = "browse", ...rest] = tokenized.tokens;
 
-	if (command === "browse" || command === "review" || command === "w") return { ok: true, intent: { kind: "browse", mode: "work" } };
-	if (command === "catalog" || command === "cat") return { ok: true, intent: { kind: "browse", mode: "all" } };
+	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "work" } };
+	if (command === "all") return { ok: true, intent: { kind: "browse", mode: "all" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
 	if (command === "continue" || command === "resume" || command === "r") return parseContinueCommand(rest);
@@ -249,9 +249,9 @@ export function parseTrailCommand(args: string): ParseResult {
 		if (rest.length > 0) return parseError("Usage: /trail workers");
 		return { ok: true, intent: { kind: "workers" } };
 	}
-	if (command === "reply" || command === "ask") {
-		if (rest.length < 2) return parseError(`Usage: /trail ${command} w<N> <text>`);
-		return { ok: true, intent: { kind: "reply", worker: rest[0]!, text: rest.slice(1).join(" ") } };
+	if (command === "tell") {
+		if (rest.length < 1) return parseError("Usage: /trail tell w<N> [text]");
+		return { ok: true, intent: { kind: "tell", worker: rest[0]!, text: rest.length > 1 ? rest.slice(1).join(" ") : undefined } };
 	}
 	if (command === "wait") {
 		if (rest.length === 0) return parseError("Usage: /trail wait <question>");
@@ -264,8 +264,8 @@ export function parseTrailCommand(args: string): ParseResult {
 		if (rest.length === 0) return parseError("Usage: /trail fail <reason>");
 		return { ok: true, intent: { kind: "worker-state", state: "failed", text: rest.join(" ") } };
 	}
-	if (command === "recall" || command === "memory" || command === "m") {
-		return { ok: true, intent: { kind: "recall", query: rest.length ? rest.join(" ") : undefined } };
+	if (command === "answers") {
+		return { ok: true, intent: { kind: "answers", query: rest.length ? rest.join(" ") : undefined } };
 	}
 	if (command === "clear") {
 		if (rest.length > 0) return parseError("Usage: /trail clear");

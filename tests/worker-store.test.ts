@@ -49,6 +49,7 @@ test("worker initial prompt prefers protocol tools over bash slash commands", ()
 	assert.match(prompt, /call `trail_done`/);
 	assert.match(prompt, /call `trail_fail`/);
 	assert.match(prompt, /Do not run `\/trail wait`/);
+	assert.match(prompt, /\/trail tell w<N>/);
 });
 
 test("worker store find resolves by short label, bare digits, and partial id", async () => {

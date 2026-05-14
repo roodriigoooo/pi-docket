@@ -10,7 +10,7 @@ my goal is to make session context less magical and less lossy. when i am workin
 
 Trail turns commands, errors, file operations, code blocks, prompts, responses, and checkpoints into things you can browse, inspect, copy, reference, and package into a handoff for a fresh session.
 
-it is not meant to be history search. it is more like a quiet review inbox, memory shelf, and checkpoint tool for agent work.
+it is not meant to be history search. it is more like a quiet review inbox, answer shelf, and checkpoint tool for agent work.
 
 ## why i made this
 
@@ -132,8 +132,8 @@ If `/trail spawn` or `/trail workers` is unknown, you are running an older insta
 ## commands
 
 - `/trail` — open review inbox
-- `/trail memory [query]` — browse assistant and worker answers without showing every artifact
-- `/trail catalog` — browse everything captured
+- `/trail answers [query]` — browse assistant and worker answers without showing every artifact
+- `/trail all` — browse everything captured
 - `/trail search <query>` — search ranked artifact docs, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]` — review selected artifacts, then create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
@@ -143,7 +143,7 @@ If `/trail spawn` or `/trail workers` is unknown, you are running an older insta
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
 - `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
-- `/trail reply w<N> <text>` — reply to a waiting worker from the parent session
+- `/trail tell w<N> [text]` — send input or follow-up to a worker; no text opens a prompt
 - `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
 - `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
 - `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
@@ -153,7 +153,7 @@ If `/trail spawn` or `/trail workers` is unknown, you are running an older insta
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id-or-ref>` — copy artifact to clipboard
 
-Short aliases exist for common flows: `/trail w`, `/trail m`, `/trail cat`, `/trail s <query>`, `/trail r [id|last]`, and `/trail ckpt`. `/trail ask` remains an alias for `/trail reply`.
+Short aliases remain for a few command-line flows: `/trail s <query>`, `/trail r [id|last]`, and `/trail ckpt`.
 
 ## worker flow
 
@@ -172,9 +172,9 @@ A compact worker dock stays above the prompt while workers are starting, active,
 
 Workers surface attention states with protocol tools: `trail_wait`, `trail_done`, and `trail_fail`. The worker-side `/trail wait`, `/trail done`, and `/trail fail` commands remain Pi prompt fallbacks, but workers are told not to run them through bash. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions and recorded instead of failing as missing shell commands.
 
-Waiting, ready, and failed states appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Reply from the parent session with `/trail reply w<N> <text>` or by opening the waiting row and pressing `r`.
+Waiting, ready, and failed states appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Send input from the parent session with `/trail tell w<N> [text]` or by selecting the worker row in Review and pressing `t`. If you omit text, Trail opens a small input prompt instead of polluting the parent prompt box.
 
-Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a`, `r`, or `i`) or full text (`I`).
+Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a` or `i`) or full text (`I`).
 
 ## parallel work inbox keys
 
@@ -182,9 +182,10 @@ Worker artifacts cost zero model-context tokens until you attach a specific arti
 - `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
 - `f` — cycle artifact kind filter
 - `enter` — peek selected artifact
-- `l` — review selected worker's artifacts in Trail
-- `a` — copy tmux attach command
-- `r` — open Memory for selected worker answers
+- `t` — tell selected worker
+- `a` — open Answers for selected worker
+- `c` — copy tmux attach command
+- `l` — load selected worker refs (debug)
 - `x` — dismiss selected inbox row locally
 - `?` — show full shortcut help
 - `q` or `esc` — close
@@ -232,15 +233,16 @@ Default `/trail` view is Review: unresolved items first, recent items only when 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
 - `/` — search Trail
-- `tab` — cycle Review → Memory → Catalog
-- `w` — Review
-- `m` — Memory
-- `A` — Catalog
+- `tab` — cycle Review → Answers → All
+- `1` — Review
+- `2` — Answers
+- `3` — All
 - `f` — cycle artifact kind filter
 - `s` — cycle source when needed (`current`, loaded checkpoints, workers)
-- `enter` — primary action (reply to waiting worker, review diff, inspect failure, view answer, open file)
+- `enter` — primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
 - `o` — open current file for file artifacts
-- `a`, `i`, or `r` — attach compact artifact reference chip (`r` replies when the selected row is a worker question)
+- `t` — tell selected worker
+- `a` or `i` — attach compact artifact reference chip
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
 - `p` — pin/unpin item in Review

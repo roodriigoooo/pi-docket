@@ -31,14 +31,14 @@ test("Navigator defaults to sparse working set with preview off", () => {
 	assert.deepEqual(filteredArtifacts(state, artifacts).map((a) => a.id), ["f1"]);
 });
 
-test("Navigator memory mode shows answer units, not full artifact dump", () => {
+test("Navigator answers mode shows answer units, not full artifact dump", () => {
 	const artifacts = [
 		artifact("r1", "response", 1),
 		artifact("e1", "error", 2, { trailBucket: "needs" }),
 		artifact("c1", "command", 3),
 	];
 	const recalled = handleNavigatorKey(initialNavigatorState(), artifacts, {
-		raw: "m",
+		raw: "2",
 		isDown: false,
 		isUp: false,
 		isEnter: false,
@@ -47,7 +47,7 @@ test("Navigator memory mode shows answer units, not full artifact dump", () => {
 		isCtrlC: false,
 	}).state;
 
-	assert.equal(recalled.mode, "recall");
+	assert.equal(recalled.mode, "answers");
 	assert.deepEqual(filteredArtifacts(recalled, artifacts).map((a) => a.id), ["r1"]);
 });
 
@@ -85,7 +85,7 @@ test("Navigator all mode restores access to non-working artifacts", () => {
 		artifact("f1", "file", 2, { trailBucket: "needs" }),
 	];
 	const all = handleNavigatorKey(initialNavigatorState(), artifacts, {
-		raw: "A",
+		raw: "3",
 		isDown: false,
 		isUp: false,
 		isEnter: false,

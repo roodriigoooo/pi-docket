@@ -19,7 +19,7 @@ type WorkerCommandsDeps = {
 
 export type WorkerCommands = {
 	spawn(task: string): Promise<void>;
-	reply(ref: string, text: string): Promise<void>;
+	tell(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
 	load(ref: string | undefined): Promise<void>;
@@ -56,11 +56,11 @@ function pendingQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	return [];
 }
 
-function formatWorkerReply(worker: WorkerStatus, text: string): string {
+function formatWorkerTell(worker: WorkerStatus, text: string): string {
 	const questions = pendingQuestions(worker);
-	if (questions.length === 0) return `Parent reply: ${text}`;
+	if (questions.length === 0) return `Parent message: ${text}`;
 	const questionList = questions.map((question, index) => `${index + 1}) ${question.text}`).join(" ");
-	return `Parent reply to ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Reply: ${text}`;
+	return `Parent message for ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Message: ${text}`;
 }
 
 function formatWorkerList(workers: WorkerStatus[]): string {
@@ -104,20 +104,20 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
 			}
 		},
-		async reply(ref: string, text: string): Promise<void> {
+		async tell(ref: string, text: string): Promise<void> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
 				deps.notify("Trail worker not found", "error");
 				return;
 			}
-			const sent = await deps.store.sendInput(worker.id, formatWorkerReply(worker, text));
+			const sent = await deps.store.sendInput(worker.id, formatWorkerTell(worker, text));
 			if (sent) deps.announce(
-				`replied to ${workerShortLabel(worker.index)}`,
+				`told ${workerShortLabel(worker.index)}`,
 				text,
 				"success",
-				{ kind: "prompt", title: `reply to ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
+				{ kind: "prompt", title: `tell ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
 			);
-			else deps.notify(`Trail could not send reply to ${workerShortLabel(worker.index)}`, "error");
+			else deps.notify(`Trail could not send message to ${workerShortLabel(worker.index)}`, "error");
 		},
 		async list(): Promise<void> {
 			deps.emitText(formatWorkerList(await deps.store.list()), "list", "trail · workers");
