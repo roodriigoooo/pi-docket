@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+Included:
+- compact worker dock above the prompt for live worker state without context injection
+- worker protocol tools (`trail_wait`, `trail_done`, `trail_fail`) plus bash fallback interception for accidental `/trail wait|done|fail` calls
+- `/trail tell w<N> [text]` for explicit worker input/follow-up, with modal input when text is omitted
+- simplified Navigator modes: Review, Answers, All
+- hard rename from Memory to Answers and Catalog to All
+- numeric mode keys (`1` Review, `2` Answers, `3` All) and `t` for telling workers
+- `/trail workers` positioned as a debug/power view with clearer labels
+- docs and tests for updated worker/mode UX
+
 ## 0.1.4
 
 Included:
