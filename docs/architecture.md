@@ -6,6 +6,10 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Artifact**: structured object derived from session activity, such as a command, file operation, prompt, response, code block, error, or checkpoint.
 
+**Review Item**: actionable Navigator row derived from an Artifact. It exists in the default view only when the user has a likely next action. Review is a small attention queue: unresolved items first, pinned items next, and recent items only when everything is clear.
+
+**Answers**: secondary Navigator mode for curated answer units (assistant/worker responses). It keeps conclusions reachable without filling Review with transcript-like artifacts.
+
 **Artifact Catalog**: Module that owns artifact extraction, identity, lookup, references, full text, inspection, and checkpoint payloads.
 
 **Reference**: compact prompt-safe pointer to an artifact that preserves intent without injecting full artifact text.
@@ -20,13 +24,35 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Loaded Artifact Context**: session-local module that owns mounted Artifact slots, pending Reference chips, Reference/full expansion, stale chip handling, and consume-on-use checkpoint queueing.
 
-**Worker Commands**: Module that owns `/trail` command flows for spawning, listing, loading, unloading, and deleting Trail workers.
+**Worker Commands**: Module that owns `/trail` command flows for spawning, telling, listing, loading, unloading, and deleting Trail workers.
 
-**Navigator**: interactive Trail view for browsing, inspecting, referencing, copying, and checkpointing artifacts.
+**Background Work**: worker-produced attention and artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view. Waiting, ready, and failed worker states are represented as synthetic status Artifacts so Review can rank them with ordinary errors/files.
+
+**Navigator**: interactive Trail view for Review, Answers, All, search, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
+
+## UI principles
+
+- Progressive hierarchy: modal title explains place, header shows mode/counts, controls live in their own zone, list shows compact rows, selected item shows next action, preview stays opt-in.
+- Flow protection: attaching, copying, pinning, and marking done should be lightweight queue operations, not forced context injection or session switches.
+- Answers stay secondary: answer units are reachable on demand, but transcript-like responses do not flood Review.
+- Embedded theming: Trail uses Pi theme tokens (`selectedBg`, `customMessageBg`, `border`, `borderMuted`, `accent`, `muted`, `dim`) instead of custom palette values.
+- Beauty serves orientation: fill/background marks active selection, color and glyphs encode attention state (`next`, `pinned`, `recent`) and worker state (`starting`, `thinking`, `needs input`, `ready`, `failed`, `stale`), metadata stays secondary.
 
 ## Current modules
 
 ### Artifact Catalog
+
+Optional producer metadata contract:
+
+```ts
+message.details.trail = {
+  title?: string,
+  subtitle?: string,
+  kind?: ArtifactKind // defaults to "response"
+}
+```
+
+This lets worker/subagent extensions publish curated answer units without Trail inferring titles from raw text. Trail still works without this metadata.
 
 Interface:
 
@@ -126,10 +152,20 @@ Interface:
 
 - `spawn(task)`
 - `list()`
+- `tell(ref, text)`
 - `delete(ref)`
 - `load(ref)`
 - `unload(ref)`
 - `completionCandidates()`
+
+Background Work UI:
+- A compact above-editor dock shows live worker status chips until workers are empty/deleted; it never injects model-context bytes.
+- `/trail` refreshes worker artifact slots and surfaces worker output in Review without adding model-context bytes.
+- Worker protocol tools (`trail_wait`, `trail_done`, `trail_fail`) publish attention state. Worker-side `/trail wait`, `/trail done`, and `/trail fail` remain Pi prompt fallbacks, and accidental direct bash calls are intercepted inside worker sessions.
+- Parent-side `/trail tell w<N> [text]` sends input without attaching to tmux or polluting the parent prompt. Multiple waits from one worker are queued in worker status and collapsed into one Review row.
+- `/trail workers` remains an artifact-first power/debug inbox across workers.
+- Worker labels (`w1`, `w2`) are provenance first; source filtering is progressive disclosure.
+- Destructive worker operations stay out of Review; mounting artifacts only enables browsing/attaching and does not add model context.
 
 Leverage:
 - Trail command registration does not own worker lookup, spawn announcement formatting, list formatting, or explicit load/unload/delete behavior.

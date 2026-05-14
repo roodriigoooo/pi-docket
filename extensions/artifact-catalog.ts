@@ -70,8 +70,30 @@ function firstLine(text: string, fallback: string): string {
 	return text.trim().split("\n").find((line) => line.trim())?.trim() || fallback;
 }
 
+function firstHeading(text: string): string | undefined {
+	return text.split("\n").map((line) => line.trim()).find((line) => /^#{1,6}\s+\S/.test(line))?.replace(/^#{1,6}\s+/, "");
+}
+
 function asString(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function isArtifactKind(value: unknown): value is ArtifactKind {
+	return value === "command" || value === "error" || value === "file" || value === "code" || value === "prompt" || value === "response" || value === "checkpoint";
+}
+
+function diffStats(diff: string): string | undefined {
+	let additions = 0;
+	let removals = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+		if (line.startsWith("-") && !line.startsWith("---")) removals++;
+	}
+	return additions || removals ? `+${additions}/-${removals}` : undefined;
 }
 
 export function formatArtifact(artifact: Artifact): string {
@@ -118,27 +140,36 @@ function fileArtifactFromTool(call: ToolCallInfo, entry: any, cwd: string): Omit
 
 	const op = call.name;
 	const target = pathArg ?? cwd;
+	const details = asRecord(entry.message?.details);
+	const diff = asString(details?.diff);
+	const firstChangedLine = typeof details?.firstChangedLine === "number" ? details.firstChangedLine : undefined;
 	const meta: string[] = [];
 	if (typeof args.offset === "number") meta.push(`offset ${args.offset}`);
 	if (typeof args.limit === "number") meta.push(`limit ${args.limit}`);
 	if (Array.isArray(args.edits)) meta.push(`${args.edits.length} edit(s)`);
+	if (diff) meta.push(diffStats(diff) ?? "diff");
 	if (asString(args.pattern)) meta.push(`pattern ${asString(args.pattern)}`);
+	const output = textFromContent(entry.message?.content);
+	const body = [
+		`operation: ${op}`,
+		`path: ${target}`,
+		`cwd: ${cwd}`,
+		`status: ${entry.message?.isError ? "error" : "ok"}`,
+		firstChangedLine ? `firstChangedLine: ${firstChangedLine}` : undefined,
+		"",
+		output,
+		diff ? "\n--- diff ---" : undefined,
+		diff,
+	].filter((line): line is string => line !== undefined).join("\n");
 
 	return {
 		kind: "file",
 		title: `${op} ${target}`,
 		subtitle: meta.join(" · "),
-		body: [
-			`operation: ${op}`,
-			`path: ${target}`,
-			`cwd: ${cwd}`,
-			`status: ${entry.message?.isError ? "error" : "ok"}`,
-			"",
-			textFromContent(entry.message?.content),
-		].join("\n"),
+		body,
 		entryId: entry.id,
 		timestamp: Date.parse(entry.timestamp),
-		meta: { tool: op, args },
+		meta: { tool: op, args, ...(diff ? { diff } : {}), ...(firstChangedLine ? { firstChangedLine } : {}) },
 	};
 }
 
@@ -174,6 +205,26 @@ function buildArtifacts(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig)
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
 		const timestamp = Date.parse(entry.timestamp);
+
+		if (msg?.role === "custom") {
+			const trailMeta = asRecord(asRecord(msg.details)?.trail);
+			const text = textFromContent(msg.content).trim();
+			if (trailMeta && text) {
+				const kind = isArtifactKind(trailMeta.kind) ? trailMeta.kind : "response";
+				const title = asString(trailMeta.title) ?? firstHeading(text) ?? firstLine(text, "extension output");
+				const subtitle = asString(trailMeta.subtitle) ?? asString(msg.customType) ?? "extension output";
+				push({
+					kind,
+					title,
+					subtitle,
+					body: text,
+					entryId: entry.id,
+					timestamp,
+					meta: { customType: msg.customType, trail: trailMeta },
+				});
+			}
+			continue;
+		}
 
 		if (msg?.role === "assistant") {
 			for (const call of toolCallsFromContent(msg.content)) {
@@ -336,6 +387,15 @@ export function artifactFilePath(artifact: Artifact, cwd: string): string | unde
 
 async function inspectTextForArtifact(artifact: Artifact, cwd: string): Promise<{ title: string; text: string }> {
 	const file = artifactFilePath(artifact, cwd);
+	const diff = asString(artifact.meta?.diff);
+	if (diff) {
+		return {
+			title: file ? `${file} diff` : `${artifact.title} diff`,
+			text: [`# Trail diff view`, file ? `path: ${file}` : undefined, `artifact: ${artifact.ref} (${artifact.displayId}) ${artifact.title}`, `viewing: edit diff`, "", diff]
+				.filter((line): line is string => line !== undefined)
+				.join("\n"),
+		};
+	}
 	if (!file) return { title: artifact.title, text: formatArtifact(artifact) };
 	try {
 		const stat = await fs.stat(file);

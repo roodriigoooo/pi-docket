@@ -4,19 +4,31 @@ Session artifacts as first-class objects for Pi.
 
 ## Commands
 
-- `/trail` — open Vim-like artifact navigator
+- `/trail` — open review inbox
+- `/trail answers [query]` — browse assistant and worker answers
+- `/trail all` — browse everything captured
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
 - `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last] [--include-consumed]` — load a prior checkpoint's artifacts into the navigator without spending any model-context tokens
-- `/trail unload <id|all>` — drop a loaded checkpoint from the session
-- `/trail delete [id|last]` — permanently delete a checkpoint (bypasses soft-consume)
-- `/trail list [--include-consumed]` — list checkpoints
+- `/trail load [id|last|w<N>] [--include-consumed]` — advanced: mount checkpoint or worker artifacts without spending model-context tokens
+- `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
+- `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
+- `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
+- `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
+- `/trail tell w<N> [text]` — send input or follow-up to a worker; no text opens a prompt
+- `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
+- `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
+- `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
+- `/trail workers` — open worker inbox power/debug view
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id>` — copy artifact to clipboard
+
+Short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
+
+Worker status appears in a compact dock above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. Tell workers with `/trail tell w<N> [text]` or `t` from Review; omitting text opens a small input prompt. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, `trail_fail`) for parent coordination; worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions.
 
 ## Checkpoint resume keys
 
@@ -27,18 +39,44 @@ Session artifacts as first-class objects for Pi.
 - `d` — delete selected checkpoint after confirmation (resume / delete modes)
 - `q` or `esc` — close
 
+## Parallel work inbox keys
+
+- `j/k` or arrows — move
+- `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
+- `f` — cycle artifact kind filter
+- `enter` — peek selected artifact
+- `t` — tell selected worker
+- `a` — open Answers for selected worker
+- `c` — copy tmux attach command
+- `l` — load selected worker refs (debug)
+- `x` — dismiss selected inbox row locally
+- `?` — show full shortcut help
+- `q` or `esc` — close
+
 ## Navigator keys
+
+Default `/trail` view is Review: unresolved items first, recent items only when all clear. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
-- `tab` — cycle artifact kind filter
-- `s` — cycle source (current / all / loaded slots like `c1`, `c2`)
-- `enter` — inspect selected artifact; file artifacts open current full file contents
-- `i` or `r` — inject compact artifact reference
-- `I` — inject full artifact text
+- `/` — search Trail
+- `tab` — cycle Review → Answers → All
+- `1` — Review
+- `2` — Answers
+- `3` — All
+- `f` — cycle artifact kind filter
+- `s` — cycle source when needed (`current`, loaded checkpoints, workers)
+- `enter` — primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
+- `o` — open current file for file artifacts
+- `t` — tell selected worker
+- `a` or `i` — attach compact artifact reference chip
+- `I` — attach full artifact text chip
 - `y` — copy selected artifact
+- `p` — pin/unpin item in Review
+- `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
-- `v` — toggle detail
+- `v` — toggle preview
+- `?` — show full shortcut help
 - `q` or `esc` — close
 
 ## Inspect view keys

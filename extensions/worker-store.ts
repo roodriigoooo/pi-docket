@@ -9,7 +9,14 @@ export const WORKER_TMUX_PREFIX = "trail-worker-";
 export const TRAIL_WORKER_ENV = "TRAIL_WORKER_ID";
 export const WORKER_DASHBOARD_TMUX = "trail-workers";
 
-export type WorkerState = "starting" | "active" | "idle" | "error" | "ended";
+export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
+
+export type WorkerQuestion = {
+	id: string;
+	text: string;
+	createdAt: string;
+	answeredAt?: string;
+};
 
 export type WorkerStatus = {
 	id: string;
@@ -25,6 +32,9 @@ export type WorkerStatus = {
 	model?: string;
 	contextPercent?: number;
 	artifactCount?: number;
+	question?: string;
+	questions?: WorkerQuestion[];
+	summary?: string;
 	lastError?: string;
 };
 
@@ -49,6 +59,8 @@ export type WorkerStore = {
 	writeStatus(snapshot: WorkerStatus): Promise<void>;
 	patchStatus(id: string, patch: Partial<WorkerStatus>): Promise<WorkerStatus | undefined>;
 	writeArtifacts(id: string, artifacts: Artifact[]): Promise<void>;
+	addQuestion(id: string, text: string): Promise<WorkerStatus | undefined>;
+	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
 	purge(id: string): Promise<void>;
@@ -124,6 +136,22 @@ function makeWorkerId(task: string, hint?: string): string {
 	const slug = tmuxSafeId(base);
 	const suffix = randomBytes(2).toString("hex");
 	return `${slug}-${suffix}`.slice(0, 80);
+}
+
+export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string }): string {
+	return [
+		`You are Trail worker ${workerShortLabel(input.index)} (${input.id}).`,
+		"Your task is recorded in:",
+		`  ${path.join(input.dir, "task.md")}`,
+		"",
+		`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(input.dir, "artifacts.json")}.`,
+		"Use Trail worker protocol tools for parent coordination:",
+		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
+		"- When finished with useful output, call `trail_done` with a concise summary.",
+		"- If unable to continue, call `trail_fail` with the reason.",
+		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
+		"The parent reviews worker attention in `/trail` and sends follow-up with `/trail tell w<N> <message>`.",
+	].join("\n");
 }
 
 export function explicitExtensionArgs(): string[] {
@@ -207,6 +235,29 @@ export function createWorkerStore(): WorkerStore {
 			await writeJsonAtomic(this.artifactsFile(id), artifacts);
 		},
 
+		async addQuestion(id: string, text: string): Promise<WorkerStatus | undefined> {
+			const current = await this.find(id);
+			const trimmed = text.trim();
+			if (!current || !trimmed) return current;
+			const legacy = current.question && !current.questions?.length
+				? [{ id: "legacy", text: current.question, createdAt: current.updatedAt }]
+				: [];
+			const question: WorkerQuestion = { id: `${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`, text: trimmed, createdAt: new Date().toISOString() };
+			const questions = [...legacy, ...(current.questions ?? []), question];
+			return this.patchStatus(current.id, { state: "needs_input", question: questions.length === 1 ? trimmed : `${questions.length} questions`, questions });
+		},
+
+		async sendInput(id: string, text: string): Promise<boolean> {
+			const status = await this.find(id);
+			if (!status) return false;
+			const safeText = text.replace(/\s+/g, " ").trim();
+			if (!safeText) return false;
+			const result = spawnSync("tmux", ["send-keys", "-t", status.tmuxSession, safeText, "Enter"], { stdio: "ignore" });
+			if (result.status !== 0) return false;
+			await this.patchStatus(status.id, { state: "active", question: undefined, questions: [] });
+			return true;
+		},
+
 		async spawn(input: SpawnInput): Promise<WorkerStatus> {
 			ensureTmux();
 			const id = makeWorkerId(input.task, input.idHint);
@@ -223,14 +274,7 @@ export function createWorkerStore(): WorkerStore {
 			const existing = await this.list();
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 
-			const initialPrompt = [
-				`You are Trail worker ${workerShortLabel(index)} (${id}).`,
-				"Your task is recorded in:",
-				`  ${path.join(dir, "task.md")}`,
-				"",
-				`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(dir, "artifacts.json")}.`,
-				"Use /trail to inspect what you have collected. The parent session can pull anything via /trail load.",
-			].join("\n");
+			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir });
 
 			const extensionArgs = input.extensionArgs ?? explicitExtensionArgs();
 			const piParts = ["exec env", `${TRAIL_WORKER_ENV}=${shellQuote(id)}`, "pi", "--session-dir", shellQuote(sessionDir)];

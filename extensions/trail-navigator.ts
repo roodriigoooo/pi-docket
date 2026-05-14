@@ -1,12 +1,15 @@
 import type { Artifact, ArtifactKind } from "./types.js";
 
 export type NavigatorFilter = ArtifactKind | "all";
+export type NavigatorMode = "work" | "answers" | "all";
 export type NavigatorSource = "current" | "all" | string;
+export type NavigatorBucket = "needs" | "pinned" | "recent";
 
 export type NavigatorState = {
 	selected: number;
 	filter: NavigatorFilter;
 	source: NavigatorSource;
+	mode: NavigatorMode;
 	showDetail: boolean;
 };
 
@@ -22,10 +25,12 @@ export type NavigatorKey = {
 
 export type NavigatorAction =
 	| { action: "inspect"; artifact: Artifact }
+	| { action: "openFile"; artifact: Artifact }
 	| { action: "reference"; artifact: Artifact }
 	| { action: "injectFull"; artifact: Artifact }
 	| { action: "copy"; artifact: Artifact }
 	| { action: "checkpoint" }
+	| { action: "search" }
 	| { action: "close" };
 
 export type NavigatorTransition = {
@@ -42,9 +47,10 @@ export type NavigatorViewModel = {
 };
 
 const FILTERS: NavigatorFilter[] = ["all", "error", "command", "file", "code", "prompt", "response", "checkpoint"];
+const BUCKET_RANK: Record<NavigatorBucket, number> = { needs: 0, pinned: 1, recent: 2 };
 
 export function initialNavigatorState(): NavigatorState {
-	return { selected: 0, filter: "all", source: "current", showDetail: true };
+	return { selected: 0, filter: "all", source: "current", mode: "work", showDetail: false };
 }
 
 export function availableSources(artifacts: Artifact[]): NavigatorSource[] {
@@ -69,9 +75,40 @@ function applySourceFilter(artifacts: Artifact[], source: NavigatorSource): Arti
 	return artifacts.filter((artifact) => artifact.source === source);
 }
 
+export function navigatorBucket(artifact: Artifact): NavigatorBucket | undefined {
+	const bucket = artifact.meta?.trailBucket;
+	return bucket === "needs" || bucket === "pinned" || bucket === "recent" ? bucket : undefined;
+}
+
+function attentionRank(artifact: Artifact): number {
+	const rank = artifact.meta?.trailAttentionRank;
+	return typeof rank === "number" ? rank : 100;
+}
+
+function sortWorkingArtifacts(artifacts: Artifact[]): Artifact[] {
+	return [...artifacts].sort((a, b) => {
+		const bucketA = navigatorBucket(a) ?? "recent";
+		const bucketB = navigatorBucket(b) ?? "recent";
+		const rank = BUCKET_RANK[bucketA] - BUCKET_RANK[bucketB];
+		if (rank !== 0) return rank;
+		const attention = attentionRank(a) - attentionRank(b);
+		if (attention !== 0) return attention;
+		return (b.timestamp ?? 0) - (a.timestamp ?? 0);
+	});
+}
+
+function applyModeFilter(artifacts: Artifact[], mode: NavigatorMode): Artifact[] {
+	if (mode === "all") return artifacts;
+	if (mode === "answers") return artifacts.filter((artifact) => artifact.kind === "response");
+	const queued = artifacts.filter((artifact) => navigatorBucket(artifact) !== undefined);
+	const active = queued.filter((artifact) => navigatorBucket(artifact) !== "recent");
+	return sortWorkingArtifacts(active.length > 0 ? active : queued);
+}
+
 export function filteredArtifacts(state: NavigatorState, artifacts: Artifact[]): Artifact[] {
 	const sourced = applySourceFilter(artifacts, state.source);
-	return state.filter === "all" ? sourced : sourced.filter((artifact) => artifact.kind === state.filter);
+	const moded = applyModeFilter(sourced, state.mode);
+	return state.filter === "all" ? moded : moded.filter((artifact) => artifact.kind === state.filter);
 }
 
 export function selectedArtifact(state: NavigatorState, artifacts: Artifact[]): Artifact | undefined {
@@ -94,6 +131,12 @@ function cycleFilter(filter: NavigatorFilter): NavigatorFilter {
 	return FILTERS[(FILTERS.indexOf(filter) + 1) % FILTERS.length] ?? "all";
 }
 
+function cycleMode(mode: NavigatorMode): NavigatorMode {
+	if (mode === "work") return "answers";
+	if (mode === "answers") return "all";
+	return "work";
+}
+
 function cycleSource(current: NavigatorSource, artifacts: Artifact[]): NavigatorSource {
 	const sources = availableSources(artifacts);
 	const idx = sources.indexOf(current);
@@ -101,7 +144,11 @@ function cycleSource(current: NavigatorSource, artifacts: Artifact[]): Navigator
 	return sources[(idx + 1) % sources.length] ?? sources[0]!;
 }
 
-function withSelectedArtifact(state: NavigatorState, artifacts: Artifact[], action: "inspect" | "reference" | "injectFull" | "copy"): NavigatorTransition {
+function switchMode(state: NavigatorState, mode: NavigatorMode): NavigatorState {
+	return { ...state, mode, selected: 0, filter: "all" };
+}
+
+function withSelectedArtifact(state: NavigatorState, artifacts: Artifact[], action: "inspect" | "openFile" | "reference" | "injectFull" | "copy"): NavigatorTransition {
 	const artifact = selectedArtifact(state, artifacts);
 	return artifact ? { state, action: { action, artifact } } : { state };
 }
@@ -117,10 +164,16 @@ export function handleNavigatorKey(state: NavigatorState, artifacts: Artifact[],
 	if (key.raw === "g") return { state: { ...normalizedState, selected: 0 } };
 	if (key.raw === "G") return { state: { ...normalizedState, selected: Math.max(0, items.length - 1) } };
 	if (key.raw === "v") return { state: { ...normalizedState, showDetail: !normalizedState.showDetail } };
-	if (key.raw === "\t" || key.isTab) return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
+	if (key.raw === "/") return { state: normalizedState, action: { action: "search" } };
+	if (key.raw === "1") return { state: switchMode(normalizedState, "work") };
+	if (key.raw === "2") return { state: switchMode(normalizedState, "answers") };
+	if (key.raw === "3") return { state: switchMode(normalizedState, "all") };
+	if (key.raw === "\t" || key.isTab) return { state: switchMode(normalizedState, cycleMode(normalizedState.mode)) };
+	if (key.raw === "f") return { state: { ...normalizedState, filter: cycleFilter(normalizedState.filter), selected: 0 } };
 	if (key.raw === "s") return { state: { ...normalizedState, source: cycleSource(normalizedState.source, artifacts), selected: 0 } };
 	if (key.isEnter) return withSelectedArtifact(normalizedState, artifacts, "inspect");
-	if (key.raw === "r" || key.raw === "i") return withSelectedArtifact(normalizedState, artifacts, "reference");
+	if (key.raw === "o") return withSelectedArtifact(normalizedState, artifacts, "openFile");
+	if (key.raw === "a" || key.raw === "r" || key.raw === "i") return withSelectedArtifact(normalizedState, artifacts, "reference");
 	if (key.raw === "I") return withSelectedArtifact(normalizedState, artifacts, "injectFull");
 	if (key.raw === "y") return withSelectedArtifact(normalizedState, artifacts, "copy");
 	if (key.raw === "c") return { state: normalizedState, action: { action: "checkpoint" } };

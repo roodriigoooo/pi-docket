@@ -48,6 +48,18 @@ async function fixtureCatalog() {
 			isError: false,
 			content: text("export const old = false;")
 		}),
+		entry("a5", "2026-01-01T00:05:30.000Z", {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "call-edit", name: "edit", arguments: { path: "src/a.ts", edits: [{ oldText: "old", newText: "current" }] } }]
+		}),
+		entry("t4", "2026-01-01T00:05:45.000Z", {
+			role: "toolResult",
+			toolCallId: "call-edit",
+			toolName: "edit",
+			isError: false,
+			content: text("Applied edit"),
+			details: { diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@\n-export const old = false;\n+export const current = true;", firstChangedLine: 1 }
+		}),
 		entry("a4", "2026-01-01T00:06:00.000Z", {
 			role: "assistant",
 			content: [{ type: "toolCall", id: "call-bash-fail", name: "bash", arguments: { command: "npm test" } }]
@@ -88,9 +100,9 @@ test("Artifact Catalog extracts artifacts and supports stable lookup/reference/s
 	assert.ok(matches.some((artifact) => artifact.ref === error.ref));
 });
 
-test("Artifact Catalog inspects file artifacts from current disk contents", async () => {
+test("Artifact Catalog inspects read file artifacts from current disk contents", async () => {
 	const { cwd, catalog } = await fixtureCatalog();
-	const file = catalog.list().find((artifact) => artifact.kind === "file");
+	const file = catalog.list().find((artifact) => artifact.kind === "file" && artifact.meta?.tool === "read");
 	assert.ok(file);
 	assert.match(catalog.reference(file), /src\/a\.ts/);
 
@@ -98,6 +110,18 @@ test("Artifact Catalog inspects file artifacts from current disk contents", asyn
 	assert.equal(inspected.title, path.join(cwd, "src/a.ts"));
 	assert.match(inspected.text, /viewing: current file contents/);
 	assert.match(inspected.text, /export const current = true/);
+});
+
+test("Artifact Catalog inspects edit file artifacts as diffs", async () => {
+	const { catalog } = await fixtureCatalog();
+	const file = catalog.list().find((artifact) => artifact.kind === "file" && artifact.meta?.tool === "edit");
+	assert.ok(file);
+	assert.match(file.subtitle, /\+1\/-1/);
+
+	const inspected = await catalog.inspect(file);
+	assert.match(inspected.title, /diff/);
+	assert.match(inspected.text, /Trail diff view/);
+	assert.match(inspected.text, /\+export const current = true/);
 });
 
 test("Artifact Catalog selects and truncates checkpoint payloads by mode", async () => {
@@ -110,9 +134,26 @@ test("Artifact Catalog selects and truncates checkpoint payloads by mode", async
 	assert.match(String(payload[0]?.body), /Trail truncated/);
 });
 
+test("Artifact Catalog accepts explicit Trail producer metadata on custom messages", () => {
+	const branch = [
+		entry("m1", "2026-01-01T00:00:00.000Z", {
+			role: "custom",
+			customType: "pi-subagents",
+			content: text("# fallback heading\nworker answer body"),
+			details: { trail: { title: "Worker: auth plan", subtitle: "pi-subagents worker", kind: "response" } }
+		}),
+	];
+	const catalog = createArtifactCatalog({ cwd: "/tmp/project", sessionManager: { getBranch: () => branch } }, { maxArtifacts: 10, maxBodyChars: 2000 });
+	const artifact = catalog.list()[0];
+	assert.ok(artifact);
+	assert.equal(artifact.kind, "response");
+	assert.equal(artifact.title, "Worker: auth plan");
+	assert.equal(artifact.subtitle, "pi-subagents worker");
+});
+
 test("Reference lists keep file guidance once", async () => {
 	const { cwd, catalog } = await fixtureCatalog();
-	const files = catalog.list().filter((artifact) => artifact.kind === "file");
+	const files = catalog.list().filter((artifact) => artifact.kind === "file" && artifact.meta?.tool === "read");
 	const refs = buildReferenceList([...files, ...files], cwd);
 	assert.equal((refs.match(/Use current file contents/g) ?? []).length, 0);
 	assert.equal((refs.match(/File refs point to current disk paths/g) ?? []).length, 1);
