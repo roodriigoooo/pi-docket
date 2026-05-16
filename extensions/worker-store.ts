@@ -3,49 +3,14 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
+
+export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
 export const WORKER_TMUX_PREFIX = "trail-worker-";
 export const TRAIL_WORKER_ENV = "TRAIL_WORKER_ID";
 export const WORKER_DASHBOARD_TMUX = "trail-workers";
-
-export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-
-export type WorkerQuestion = {
-	id: string;
-	text: string;
-	createdAt: string;
-	answeredAt?: string;
-};
-
-export type WorkerStatus = {
-	id: string;
-	index: number;
-	tmuxSession: string;
-	task: string;
-	cwd: string;
-	createdAt: string;
-	updatedAt: string;
-	state: WorkerState;
-	pid?: number;
-	sessionFile?: string;
-	model?: string;
-	contextPercent?: number;
-	artifactCount?: number;
-	question?: string;
-	questions?: WorkerQuestion[];
-	summary?: string;
-	lastError?: string;
-};
-
-export function workerShortLabel(index: number): string {
-	return `w${index}`;
-}
-
-export function workerSummaryName(status: WorkerStatus, max = 32): string {
-	const slug = status.task.split(/\s+/).slice(0, 6).join(" ").trim();
-	return slug.length > max ? `${slug.slice(0, max - 1)}…` : slug;
-}
 
 export type WorkerStore = {
 	root(): string;
@@ -139,19 +104,12 @@ function makeWorkerId(task: string, hint?: string): string {
 }
 
 export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string }): string {
-	return [
-		`You are Trail worker ${workerShortLabel(input.index)} (${input.id}).`,
-		"Your task is recorded in:",
-		`  ${path.join(input.dir, "task.md")}`,
-		"",
-		`Read it, then begin. Your artifacts are auto-snapshotted to ${path.join(input.dir, "artifacts.json")}.`,
-		"Use Trail worker protocol tools for parent coordination:",
-		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
-		"- When finished with useful output, call `trail_done` with a concise summary.",
-		"- If unable to continue, call `trail_fail` with the reason.",
-		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
-		"The parent reviews worker attention in `/trail` and sends follow-up with `/trail tell w<N> <message>`.",
-	].join("\n");
+	return buildBackgroundWorkerInitialPrompt({
+		label: workerShortLabel(input.index),
+		id: input.id,
+		taskFile: path.join(input.dir, "task.md"),
+		artifactsFile: path.join(input.dir, "artifacts.json"),
+	});
 }
 
 export function explicitExtensionArgs(): string[] {
@@ -237,14 +195,10 @@ export function createWorkerStore(): WorkerStore {
 
 		async addQuestion(id: string, text: string): Promise<WorkerStatus | undefined> {
 			const current = await this.find(id);
-			const trimmed = text.trim();
-			if (!current || !trimmed) return current;
-			const legacy = current.question && !current.questions?.length
-				? [{ id: "legacy", text: current.question, createdAt: current.updatedAt }]
-				: [];
-			const question: WorkerQuestion = { id: `${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`, text: trimmed, createdAt: new Date().toISOString() };
-			const questions = [...legacy, ...(current.questions ?? []), question];
-			return this.patchStatus(current.id, { state: "needs_input", question: questions.length === 1 ? trimmed : `${questions.length} questions`, questions });
+			if (!current) return undefined;
+			const question: WorkerQuestion = { id: `${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`, text: text.trim(), createdAt: new Date().toISOString() };
+			const patch = appendWorkerQuestionPatch(current, text, question);
+			return patch ? this.patchStatus(current.id, patch) : current;
 		},
 
 		async sendInput(id: string, text: string): Promise<boolean> {
@@ -254,7 +208,7 @@ export function createWorkerStore(): WorkerStore {
 			if (!safeText) return false;
 			const result = spawnSync("tmux", ["send-keys", "-t", status.tmuxSession, safeText, "Enter"], { stdio: "ignore" });
 			if (result.status !== 0) return false;
-			await this.patchStatus(status.id, { state: "active", question: undefined, questions: [] });
+			await this.patchStatus(status.id, workerInputAcceptedPatch());
 			return true;
 		},
 

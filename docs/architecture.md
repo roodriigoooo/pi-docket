@@ -26,7 +26,7 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Worker Commands**: Module that owns `/trail` command flows for spawning, telling, listing, loading, unloading, and deleting Trail workers.
 
-**Background Work**: worker-produced attention and artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view. Waiting, ready, and failed worker states are represented as synthetic status Artifacts so Review can rank them with ordinary errors/files.
+**Background Work**: Module that owns worker state transitions, worker protocol semantics, worker attention ranking, and synthetic status Artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view. Waiting, ready, and failed worker states are represented as synthetic status Artifacts so Review can rank them with ordinary errors/files.
 
 **Navigator**: interactive Trail view for Review, Answers, All, search, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
 
@@ -145,6 +145,30 @@ Leverage:
 - Trail command flow does not manage chip arrays, carryover maps, slot names, or stale Reference expansion.
 - Mounted Checkpoint and worker Artifacts share one slot and Reference expansion policy.
 - Consume-on-use queueing stays local to mounted Checkpoint state while persistence remains a store adapter.
+
+### Background Work
+
+Interface:
+
+- `deriveWorkerState(worker)`
+- `workerProtocolPatch(worker, state, text, question)`
+- `workerHeartbeatPatch(worker, heartbeat)`
+- `workerStatusArtifact(worker)`
+- `namespaceWorkerArtifacts(worker, artifacts)`
+- `buildWorkerInitialPrompt(args)`
+
+Owned flow:
+1. Derive attention states from persisted worker snapshots.
+2. Apply `trail_wait`, `trail_done`, and `trail_fail` protocol transitions.
+3. Preserve sticky attention states across heartbeat updates.
+4. Project worker attention into synthetic status Artifacts for Review.
+5. Namespace worker-produced Artifacts by worker provenance.
+
+Leverage:
+- Tmux and filesystem code stays in Worker Store as adapters.
+- Worker Commands and Trail TUI share one state vocabulary.
+- Review receives worker attention as Artifacts and does not depend on worker storage.
+- Protocol tests cross the Background Work Interface without tmux or Pi UI.
 
 ### Worker Commands
 

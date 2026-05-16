@@ -1,6 +1,7 @@
+import { workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
-import { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStore, type WorkerStatus } from "./worker-store.js";
+import type { WorkerStore } from "./worker-store.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
@@ -50,14 +51,8 @@ export async function workerCompletionCandidates(store: WorkerStore): Promise<Wo
 	}
 }
 
-function pendingQuestions(worker: WorkerStatus): WorkerQuestion[] {
-	if (worker.questions?.length) return worker.questions;
-	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
-	return [];
-}
-
 function formatWorkerTell(worker: WorkerStatus, text: string): string {
-	const questions = pendingQuestions(worker);
+	const questions = workerQuestions(worker);
 	if (questions.length === 0) return `Parent message: ${text}`;
 	const questionList = questions.map((question, index) => `${index + 1}) ${question.text}`).join(" ");
 	return `Parent message for ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Message: ${text}`;

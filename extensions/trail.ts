@@ -38,6 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
+import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerDisplayName, workerHeartbeatPatch, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -48,7 +49,7 @@ import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMM
 import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStatus } from "./worker-store.js";
+import { createWorkerStore, TRAIL_WORKER_ENV } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -831,8 +832,6 @@ async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summar
 	});
 }
 
-type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "empty" | "failed" | "idle";
-
 type ParallelKindFilter = ArtifactKind | "all";
 type ParallelSource = "all" | string;
 
@@ -847,19 +846,6 @@ type ParallelWorkAction =
 	| null;
 
 const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
-
-function workerDerivedState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
-	if (worker.state === "needs_input") return "needs_input";
-	if (worker.state === "failed" || worker.state === "error") return "failed";
-	if (worker.state === "ready") return "ready";
-	if (worker.state === "ended") return (worker.artifactCount ?? 0) > 0 ? "ready" : "empty";
-	const ageMs = now - Date.parse(worker.updatedAt);
-	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
-	if (worker.state === "active") return "thinking";
-	if (worker.state === "starting") return "starting";
-	if (worker.state === "idle") return "idle";
-	return "idle";
-}
 
 function workerStateGlyph(state: WorkerDerivedState): string {
 	if (state === "starting") return "◌";
@@ -878,17 +864,6 @@ function workerStateColor(theme: any, state: WorkerDerivedState, text: string): 
 	if (state === "failed") return theme.fg("error", text);
 	if (state === "starting" || state === "thinking") return theme.fg("accent", text);
 	return theme.fg("muted", text);
-}
-
-function workerStateRank(worker: WorkerStatus): number {
-	const state = workerDerivedState(worker);
-	if (state === "needs_input") return 0;
-	if (state === "failed") return 1;
-	if (state === "ready") return 2;
-	if (state === "thinking") return 3;
-	if (state === "starting") return 4;
-	if (state === "stale") return 5;
-	return 6;
 }
 
 function artifactInboxRank(kind: ArtifactKind): number {
@@ -916,22 +891,8 @@ function parallelKindGlyph(kind: ArtifactKind): string {
 	return "·";
 }
 
-function workerSourceLabel(worker: WorkerStatus): string {
-	return workerShortLabel(worker.index);
-}
-
-function workerDisplayName(worker: WorkerStatus, max = 34): string {
-	return workerSummaryName(worker, max);
-}
-
-function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
-	if (worker.questions?.length) return worker.questions;
-	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
-	return [];
-}
-
 function workerAttentionLabel(worker: WorkerStatus): string {
-	const state = workerDerivedState(worker);
+	const state = deriveWorkerState(worker);
 	const label = workerSourceLabel(worker);
 	if (state === "needs_input") {
 		const count = workerQuestions(worker).length;
@@ -945,7 +906,7 @@ function workerAttentionLabel(worker: WorkerStatus): string {
 }
 
 function workerAttentionChip(worker: WorkerStatus, verbose: boolean): string {
-	const state = workerDerivedState(worker);
+	const state = deriveWorkerState(worker);
 	const label = workerSourceLabel(worker);
 	const count = workerQuestions(worker).length;
 	if (verbose) return workerAttentionLabel(worker);
@@ -955,45 +916,10 @@ function workerAttentionChip(worker: WorkerStatus, verbose: boolean): string {
 	return `${workerStateGlyph(state)} ${label}`;
 }
 
-function isPromptDockWorker(worker: WorkerStatus): boolean {
-	const state = workerDerivedState(worker);
-	return state !== "empty";
-}
-
-function workerStatusArtifact(worker: WorkerStatus): Artifact | undefined {
-	const state = workerDerivedState(worker);
-	if (state !== "needs_input" && state !== "ready" && state !== "failed") return undefined;
-	const label = workerSourceLabel(worker);
-	const questions = workerQuestions(worker);
-	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
-	const text = state === "needs_input" ? questionText : state === "ready" ? worker.summary : worker.lastError;
-	const title = state === "needs_input"
-		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
-		: state === "ready"
-			? `${label} ready${text ? `: ${text}` : ""}`
-			: `${label} failed${text ? `: ${text}` : ""}`;
-	return {
-		id: "status",
-		displayId: "status",
-		ref: `worker-status:${worker.id}:0`,
-		kind: state === "failed" ? "error" : "response",
-		title,
-		subtitle: workerDisplayName(worker),
-		body: [`worker: ${label}`, `state: ${state}`, `task: ${worker.task}`, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
-		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length },
-	};
-}
-
 async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
 	const artifacts = await createWorkerStore().readArtifacts(worker.id);
 	const status = workerStatusArtifact(worker);
 	return status ? [status, ...artifacts.filter((artifact) => artifact.ref !== status.ref)] : artifacts;
-}
-
-function namespaceWorkerArtifacts(worker: WorkerStatus, artifacts: Artifact[]): Artifact[] {
-	const slot = workerSourceLabel(worker);
-	return artifacts.map((artifact) => ({ ...artifact, id: `${slot}.${artifact.displayId}`, displayId: `${slot}.${artifact.displayId}`, source: slot }));
 }
 
 function parallelEntries(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, source: ParallelSource, filter: ParallelKindFilter, dismissed: Set<string>): ParallelWorkEntry[] {
@@ -1141,7 +1067,7 @@ class TrailParallelWorkView implements Component {
 		const border = (s: string) => this.theme.fg("border", s);
 		const divider = (s: string) => this.theme.fg("borderMuted", s);
 		const workerCounts = this.workers.reduce((acc, worker) => {
-			const state = workerDerivedState(worker);
+			const state = deriveWorkerState(worker);
 			if (state === "thinking" || state === "starting") acc.active++;
 			if (state === "needs_input") acc.waiting++;
 			if (state === "ready") acc.ready++;
@@ -1220,7 +1146,7 @@ class TrailParallelWorkView implements Component {
 		const parts = [this.source === "all" ? activePill(this.theme, "all") : inactivePill(this.theme, "all")];
 		const sorted = [...this.workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 		for (const worker of sorted) {
-			const state = workerDerivedState(worker);
+			const state = deriveWorkerState(worker);
 			const label = workerAttentionLabel(worker);
 			parts.push(this.source === worker.id ? activePill(this.theme, label) : workerStateColor(this.theme, state, ` ${label} `));
 		}
@@ -1715,7 +1641,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						const maxWorkers = width < 72 ? 2 : width < 110 ? 3 : 4;
 						const shown = sorted.slice(0, maxWorkers);
 						const verbose = sorted.length === 1 && width >= 72;
-						const parts = shown.map((worker) => workerStateColor(theme, workerDerivedState(worker), workerAttentionChip(worker, verbose)));
+						const parts = shown.map((worker) => workerStateColor(theme, deriveWorkerState(worker), workerAttentionChip(worker, verbose)));
 						const more = sorted.length > shown.length ? dim(` +${sorted.length - shown.length}`) : "";
 						const command = width >= 88 ? `${dim("/trail w")} ${dim("·")} ${dim("/trail workers")}` : dim("/trail");
 						return [truncateToWidth(`${accent(theme.bold("trail"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${command}`, width)];
@@ -1729,22 +1655,17 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const emitWorkerStateArtifact = (_ctx: ExtensionContext, state: "needs_input" | "ready" | "failed", text?: string): void => {
-		const subject = state === "needs_input" ? "needs input" : state === "ready" ? "ready" : "failed";
-		const title = state === "needs_input"
-			? `Needs input: ${text ?? "clarification requested"}`
-			: state === "ready"
-				? `Worker ready${text ? `: ${text}` : ""}`
-				: `Worker failed: ${text ?? "unknown reason"}`;
+	const emitWorkerStateArtifact = (_ctx: ExtensionContext, state: WorkerProtocolState, text?: string): void => {
+		const message = workerProtocolMessage(state, text);
 		pi.sendMessage({
 			customType: "trail",
-			content: text ?? subject,
+			content: message.content,
 			display: true,
 			details: {
-				kind: state === "failed" ? "error" : "action",
+				kind: message.messageKind,
 				heading: "trail · worker",
-				subject,
-				trail: { kind: state === "failed" ? "error" : "response", title, subtitle: `worker ${subject}` },
+				subject: message.subject,
+				trail: { kind: message.artifactKind, title: message.title, subtitle: message.subtitle },
 			} as TrailMessageDetails & { trail: { kind: ArtifactKind; title: string; subtitle: string } },
 		}, { triggerTurn: false });
 	};
@@ -1771,37 +1692,29 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const workerStore = createWorkerStore();
 			await workerStore.writeArtifacts(workerId, artifacts);
 			const current = await workerStore.find(workerId);
-			const stickyState = current?.state === "needs_input" || current?.state === "ready" || current?.state === "failed";
-			await workerStore.patchStatus(workerId, {
-				state: stickyState ? current.state : "active",
+			await workerStore.patchStatus(workerId, workerHeartbeatPatch(current, {
 				pid: process.pid,
 				sessionFile: ctx.sessionManager.getSessionFile?.(),
 				artifactCount: artifacts.length,
-			});
+			}));
 		} catch {
 			// best-effort heartbeat; never crash the worker
 		}
 	};
 
-	const applyWorkerState = async (ctx: ExtensionContext, state: "needs_input" | "ready" | "failed", text?: string): Promise<void> => {
+	const applyWorkerState = async (ctx: ExtensionContext, state: WorkerProtocolState, text?: string): Promise<void> => {
 		if (!workerId) return;
 		const store = createWorkerStore();
-		if (state === "needs_input") await store.addQuestion(workerId, text ?? "");
-		else await store.patchStatus(workerId, {
-			state,
-			question: undefined,
-			questions: [],
-			summary: state === "ready" ? text : undefined,
-			lastError: state === "failed" ? text : undefined,
+		const current = await store.find(workerId);
+		if (!current) return;
+		const patch = workerProtocolPatch(current, state, text, {
+			id: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`,
+			text: text ?? "",
+			createdAt: new Date().toISOString(),
 		});
+		if (patch) await store.patchStatus(workerId, patch);
 		emitWorkerStateArtifact(ctx, state, text);
 		await writeWorkerHeartbeat(ctx);
-	};
-
-	const workerProtocolResultText = (state: "needs_input" | "ready" | "failed"): string => {
-		if (state === "needs_input") return "Trail wait recorded. Stop now and wait for parent reply.";
-		if (state === "ready") return "Trail done recorded. Parent can review the worker output.";
-		return "Trail failure recorded. Parent can review the failure.";
 	};
 
 	if (workerId) {

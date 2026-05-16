@@ -1,7 +1,7 @@
 import { createArtifactCatalog, type ArtifactCatalog, type TrailRuntimeContext } from "./artifact-catalog.js";
 import { loadConfig, type TrailConfig } from "./trail-config.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
-import { workerShortLabel, type WorkerStatus } from "./worker-store.js";
+import { workerShortLabel, type WorkerStatus } from "./background-work.js";
 
 export type ChipMode = "ref" | "full";
 
