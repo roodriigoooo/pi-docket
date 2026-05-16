@@ -45,7 +45,7 @@ import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-stor
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
-import { availableSources, handleNavigatorKey, initialNavigatorState, navigatorBucket, navigatorViewModel, selectedArtifact, type NavigatorAction, type NavigatorKey, type NavigatorMode, type NavigatorState } from "./trail-navigator.js";
+import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { createWorkerStore, TRAIL_WORKER_ENV, workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStatus } from "./worker-store.js";
@@ -331,20 +331,18 @@ function filterBar(theme: any, active: string): string {
 	return filters.map((filter) => filter.value === active ? activePill(theme, filter.label) : inactivePill(theme, filter.label)).join(" ");
 }
 
-function sourceBar(theme: any, sources: string[], active: string): string {
+function sourceBar(theme: any, sources: NavigatorSource[], active: NavigatorSource): string {
 	if (sources.length <= 1) return "";
 	return sources
-		.map((source) => source === active ? activePill(theme, source) : inactivePill(theme, source))
+		.map((source) => sameNavigatorSource(source, active) ? activePill(theme, navigatorSourceLabel(source)) : inactivePill(theme, navigatorSourceLabel(source)))
 		.join(" ");
 }
 
 type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker"; artifact?: Artifact };
 
-type TrailBucket = "needs" | "pinned" | "recent";
-
 function modeBar(theme: any, active: NavigatorMode): string {
 	const modes: Array<{ value: NavigatorMode; label: string }> = [
-		{ value: "work", label: "review" },
+		{ value: "review", label: "review" },
 		{ value: "answers", label: "answers" },
 		{ value: "all", label: "all" },
 	];
@@ -355,20 +353,9 @@ function artifactMeta(artifact: Artifact): Record<string, unknown> {
 	return artifact.meta ?? {};
 }
 
-function artifactTool(artifact: Artifact): string | undefined {
-	const tool = artifactMeta(artifact).tool;
-	return typeof tool === "string" ? tool : undefined;
-}
-
 function artifactHasDiff(artifact: Artifact): boolean {
 	const diff = artifactMeta(artifact).diff;
 	return typeof diff === "string" && diff.length > 0;
-}
-
-function artifactWorkerStatus(artifact: Artifact): WorkerDerivedState | undefined {
-	const status = artifactMeta(artifact).workerStatus;
-	if (status === "needs_input" || status === "ready" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
-	return undefined;
 }
 
 function artifactWorkerRef(artifact: Artifact): string | undefined {
@@ -377,118 +364,69 @@ function artifactWorkerRef(artifact: Artifact): string | undefined {
 	return artifact.source;
 }
 
-function isWorkerQuestionArtifact(artifact: Artifact | undefined): artifact is Artifact {
-	return !!artifact && artifactWorkerStatus(artifact) === "needs_input";
-}
-
-function isChangedFileArtifact(artifact: Artifact): boolean {
-	return artifact.kind === "file" && ["edit", "write"].includes(artifactTool(artifact) ?? "");
-}
-
-function isFailedCommandArtifact(artifact: Artifact): boolean {
-	if (artifact.kind !== "command") return false;
-	const exitCode = artifactMeta(artifact).exitCode;
-	return typeof exitCode === "number" && exitCode !== 0;
-}
-
-function trailBucketForArtifact(artifact: Artifact, pinnedRefs: Set<string>, completedRefs: Set<string>): TrailBucket | undefined {
-	if (pinnedRefs.has(artifact.ref)) return "pinned";
-	if (completedRefs.has(artifact.ref)) return "recent";
-	if (artifactWorkerStatus(artifact) === "needs_input" || artifactWorkerStatus(artifact) === "ready" || artifactWorkerStatus(artifact) === "failed") return "needs";
-	if (artifact.kind === "error") return "needs";
-	if (isChangedFileArtifact(artifact)) return "needs";
-	if (isFailedCommandArtifact(artifact)) return "needs";
-	if (artifact.source && (artifact.kind === "response" || artifact.kind === "code")) return "needs";
-	return undefined;
-}
-
-function trailAttentionRankForArtifact(artifact: Artifact): number | undefined {
-	const status = artifactWorkerStatus(artifact);
-	if (status === "needs_input") return 0;
-	if (status === "failed") return 1;
-	if (artifact.kind === "error" || isFailedCommandArtifact(artifact)) return 2;
-	if (isChangedFileArtifact(artifact)) return 3;
-	if (status === "ready") return 4;
-	if (artifact.source && artifact.kind === "response") return 5;
-	if (artifact.source && artifact.kind === "code") return 6;
-	return undefined;
-}
-
-function trailPrimaryAction(artifact: Artifact): string {
-	if (artifactWorkerStatus(artifact) === "needs_input") return "Tell worker";
-	if (artifactWorkerStatus(artifact) === "failed") return "Inspect failure";
-	if (artifactWorkerStatus(artifact) === "ready") return "View answer";
-	if (artifact.kind === "file" && artifactHasDiff(artifact)) return "Review diff";
-	if (artifact.kind === "file") return "Open file";
-	if (artifact.kind === "error") return "Inspect failure";
-	if (artifact.kind === "command") return isFailedCommandArtifact(artifact) ? "Inspect failure" : "Inspect output";
-	if (artifact.kind === "response") return "View answer";
-	if (artifact.kind === "code") return "View code";
-	if (artifact.kind === "checkpoint") return "Open checkpoint";
-	return "Open";
-}
-
-function trailReason(artifact: Artifact): string {
-	const bucket = navigatorBucket(artifact);
-	const status = artifactWorkerStatus(artifact);
-	if (bucket === "pinned") return "pinned";
-	if (bucket === "recent") return "recently reviewed";
-	if (status === "needs_input") return "worker waiting";
-	if (status === "failed") return "worker failed";
-	if (status === "ready") return "worker ready";
-	if (artifact.kind === "error") return "needs attention";
-	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changed file" : "created file";
-	if (isFailedCommandArtifact(artifact)) return "failed command";
-	if (artifact.source && artifact.kind === "response") return "worker answer";
-	if (artifact.source && artifact.kind === "code") return "worker output";
-	if (artifact.kind === "response") return "assistant answer";
-	return "";
-}
-
-function bucketName(bucket: TrailBucket | undefined, mode: NavigatorMode): string {
+function bucketName(bucket: ReviewBucket | undefined, mode: NavigatorMode): string {
 	if (bucket === "needs") return "next";
 	if (bucket === "pinned") return "pinned";
 	if (bucket === "recent") return "recent";
 	return mode === "answers" ? "answer" : "item";
 }
 
-function bucketGlyph(bucket: TrailBucket | undefined, mode: NavigatorMode): string {
+function bucketGlyph(bucket: ReviewBucket | undefined, mode: NavigatorMode): string {
 	if (bucket === "needs") return "◆";
 	if (bucket === "pinned") return "●";
 	if (bucket === "recent") return "✓";
 	return mode === "answers" ? "✦" : "·";
 }
 
-function colorBucket(theme: any, bucket: TrailBucket | undefined, mode: NavigatorMode, text: string): string {
+function colorBucket(theme: any, bucket: ReviewBucket | undefined, mode: NavigatorMode, text: string): string {
 	if (bucket === "needs") return theme.fg("warning", text);
 	if (bucket === "pinned") return theme.fg("accent", text);
 	if (bucket === "recent") return theme.fg("success", text);
 	return mode === "answers" ? theme.fg("accent", text) : theme.fg("muted", text);
 }
 
-function selectedActionHints(artifact: Artifact, pinned: boolean, completed: boolean): string[] {
-	const hints = [`enter ${trailPrimaryAction(artifact).toLowerCase()}`];
-	if (artifactWorkerRef(artifact)) hints.push("t tell");
-	if (artifact.kind === "file") hints.push("o open");
-	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", completed ? "x restore" : "x done", "v preview");
-	return hints;
+function reviewReasonLabel(reasonId: ReviewReasonId | undefined): string | undefined {
+	if (reasonId === "pinned") return "pinned";
+	if (reasonId === "done") return "recently reviewed";
+	if (reasonId === "workerNeedsInput") return "worker waiting";
+	if (reasonId === "workerFailed") return "worker failed";
+	if (reasonId === "workerReady") return "worker ready";
+	if (reasonId === "error") return "needs attention";
+	if (reasonId === "changedFile") return "changed file";
+	if (reasonId === "createdFile") return "created file";
+	if (reasonId === "failedCommand") return "failed command";
+	if (reasonId === "workerAnswer") return "worker answer";
+	if (reasonId === "workerOutput") return "worker output";
+	if (reasonId === "assistantAnswer") return "assistant answer";
+	return undefined;
 }
 
-function decorateTrailArtifacts(artifacts: Artifact[], pinnedRefs: Set<string>, completedRefs: Set<string>): Artifact[] {
-	return artifacts.map((artifact) => {
-		const bucket = trailBucketForArtifact(artifact, pinnedRefs, completedRefs);
-		const attentionRank = trailAttentionRankForArtifact(artifact);
-		return {
-			...artifact,
-			meta: {
-				...(artifact.meta ?? {}),
-				...(bucket ? { trailBucket: bucket } : {}),
-				...(attentionRank !== undefined ? { trailAttentionRank: attentionRank } : {}),
-				trailPrimaryAction: trailPrimaryAction(artifact),
-				trailReason: trailReason({ ...artifact, meta: { ...(artifact.meta ?? {}), ...(bucket ? { trailBucket: bucket } : {}) } }),
-			},
-		};
-	});
+function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
+	const artifact = item.artifact;
+	if (action === "tellWorker") return "Tell worker";
+	if (action === "openFile") return "Open file";
+	if (action === "attachReference") return "Attach";
+	if (action === "injectFull") return "Full";
+	if (action === "copyArtifact") return "Copy";
+	if (action === "pin") return "Pin";
+	if (action === "markDone") return "Done";
+	if (item.reasonId === "workerFailed" || item.reasonId === "error" || item.reasonId === "failedCommand") return "Inspect failure";
+	if (item.reasonId === "workerReady") return "View answer";
+	if (artifact.kind === "file" && artifactHasDiff(artifact)) return "Review diff";
+	if (artifact.kind === "command") return "Inspect output";
+	if (artifact.kind === "response") return "View answer";
+	if (artifact.kind === "code") return "View code";
+	if (artifact.kind === "checkpoint") return "Open checkpoint";
+	return "Open";
+}
+
+function selectedActionHints(item: ReviewItem, pinned: boolean, done: boolean): string[] {
+	const artifact = item.artifact;
+	const hints = [`enter ${reviewActionLabel(item.primaryAction, item).toLowerCase()}`];
+	if (item.actions.includes("tellWorker")) hints.push("t tell");
+	if (item.actions.includes("openFile")) hints.push("o open");
+	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", done ? "x restore" : "x done", "v preview");
+	return artifact ? hints : [];
 }
 
 function trailMetaString(artifact: Artifact, key: string): string | undefined {
@@ -496,17 +434,16 @@ function trailMetaString(artifact: Artifact, key: string): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function bucketCounts(artifacts: Artifact[]): Record<TrailBucket, number> {
-	const counts: Record<TrailBucket, number> = { needs: 0, pinned: 0, recent: 0 };
-	for (const artifact of artifacts) {
-		const bucket = navigatorBucket(artifact);
-		if (bucket) counts[bucket]++;
+function bucketCounts(items: ReviewItem[]): Record<ReviewBucket, number> {
+	const counts: Record<ReviewBucket, number> = { needs: 0, pinned: 0, recent: 0 };
+	for (const item of items) {
+		if (item.bucket) counts[item.bucket]++;
 	}
 	return counts;
 }
 
 function navigatorModeLabel(mode: NavigatorMode): string {
-	if (mode === "work") return "review";
+	if (mode === "review") return "review";
 	if (mode === "answers") return "answers";
 	return "all";
 }
@@ -515,7 +452,7 @@ function plural(count: number, singular: string, pluralLabel = `${singular}s`): 
 	return `${count} ${count === 1 ? singular : pluralLabel}`;
 }
 
-function trailStatusLine(mode: NavigatorMode, items: Artifact[], artifacts: Artifact[]): string {
+function trailStatusLine(mode: NavigatorMode, items: ReviewItem[], artifacts: Artifact[]): string {
 	if (artifacts.length === 0) return "quiet until something needs attention";
 	if (mode === "answers") return plural(items.length, "answer");
 	if (mode === "all") return plural(items.length, "artifact");
@@ -542,7 +479,7 @@ function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): EmptyT
 			actions: ["ask agent to inspect a file", "run a command", "load a checkpoint or worker"],
 		};
 	}
-	if (state.mode === "work") {
+	if (state.mode === "review") {
 		return {
 			title: "All clear",
 			body: "Trail will surface changed files, failures, pinned items, and worker output when they need review.",
@@ -582,69 +519,89 @@ class TrailView implements Component {
 		private done: (result: TrailBrowserAction | null) => void,
 	) {
 		const sources = availableSources(artifacts);
-		const source = sources.includes("all") ? "all" : sources.includes("current") ? "current" : sources[0] ?? "all";
+		const source = sources.find((candidate) => candidate.kind === "all") ?? sources.find((candidate) => candidate.kind === "current") ?? sources[0] ?? initialNavigatorState().source;
 		this.state = { ...initialNavigatorState(), source, mode: initialMode };
 	}
 
-	private decoratedArtifacts(): Artifact[] {
-		return decorateTrailArtifacts(this.artifacts, this.pinnedRefs, this.completedRefs);
+	private queueState(): ReviewQueueState {
+		return { pinnedRefs: this.pinnedRefs, doneRefs: this.completedRefs };
 	}
 
 	handleInput(data: string): void {
-		const artifacts = this.decoratedArtifacts();
-		if (data === "p") {
-			const artifact = selectedArtifact(this.state, artifacts);
-			if (artifact) {
-				if (this.pinnedRefs.has(artifact.ref)) this.pinnedRefs.delete(artifact.ref);
-				else this.pinnedRefs.add(artifact.ref);
-			}
-			this.invalidate();
-			this.tui.requestRender();
-			return;
-		}
-		if (data === "x") {
-			const artifact = selectedArtifact(this.state, artifacts);
-			if (artifact) {
-				if (this.completedRefs.has(artifact.ref)) this.completedRefs.delete(artifact.ref);
-				else {
-					this.pinnedRefs.delete(artifact.ref);
-					this.completedRefs.add(artifact.ref);
-				}
-			}
-			this.invalidate();
-			this.tui.requestRender();
-			return;
-		}
 		if (data === "?") {
 			this.showHelp = !this.showHelp;
 			this.invalidate();
 			this.tui.requestRender();
 			return;
 		}
-		const current = selectedArtifact(this.state, artifacts);
-		if ((data === "t" && current && artifactWorkerRef(current)) || (matchesKey(data, Key.enter) && isWorkerQuestionArtifact(current))) {
-			this.done({ action: "tellWorker", artifact: current });
-			return;
-		}
-		const key: NavigatorKey = {
-			raw: data,
-			isDown: matchesKey(data, Key.down),
-			isUp: matchesKey(data, Key.up),
-			isEnter: matchesKey(data, Key.enter),
-			isTab: matchesKey(data, Key.tab),
-			isEscape: matchesKey(data, Key.escape),
-			isCtrlC: matchesKey(data, Key.ctrl("c")),
-		};
-		const transition = handleNavigatorKey(this.state, artifacts, key);
+		const intent = this.intentForInput(data);
+		if (!intent) return;
+		const transition = handleNavigatorIntent(this.state, this.artifacts, this.queueState(), intent);
 		this.state = transition.state;
 		if (transition.action) this.finish(transition.action);
 		this.invalidate();
 		this.tui.requestRender();
 	}
 
+	private intentForInput(data: string): NavigatorIntent | undefined {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") return { kind: "close" };
+		if (data === "j" || matchesKey(data, Key.down)) return { kind: "move", by: 1 };
+		if (data === "k" || matchesKey(data, Key.up)) return { kind: "move", by: -1 };
+		if (data === "g") return { kind: "top" };
+		if (data === "G") return { kind: "bottom" };
+		if (data === "v") return { kind: "toggleDetail" };
+		if (data === "/") return { kind: "search" };
+		if (data === "1") return { kind: "setMode", mode: "review" };
+		if (data === "2") return { kind: "setMode", mode: "answers" };
+		if (data === "3") return { kind: "setMode", mode: "all" };
+		if (data === "\t" || matchesKey(data, Key.tab)) return { kind: "cycleMode" };
+		if (data === "f") return { kind: "cycleFilter" };
+		if (data === "s") return { kind: "cycleSource" };
+		if (matchesKey(data, Key.enter)) return { kind: "activatePrimary" };
+		if (data === "o") return { kind: "runAction", action: "openFile" };
+		if (data === "t") return { kind: "runAction", action: "tellWorker" };
+		if (data === "a" || data === "r" || data === "i") return { kind: "runAction", action: "attachReference" };
+		if (data === "I") return { kind: "runAction", action: "injectFull" };
+		if (data === "y") return { kind: "runAction", action: "copyArtifact" };
+		if (data === "p") return { kind: "runAction", action: "pin" };
+		if (data === "x") return { kind: "runAction", action: "markDone" };
+		if (data === "c") return { kind: "createCheckpoint" };
+		return undefined;
+	}
+
 	private finish(action: NavigatorAction): void {
-		if (action.action === "close") this.done(null);
-		else this.done(action);
+		if (action.action === "close") {
+			this.done(null);
+			return;
+		}
+		if (action.action === "search") {
+			this.done({ action: "search" });
+			return;
+		}
+		if (action.action === "createCheckpoint") {
+			this.done({ action: "checkpoint" });
+			return;
+		}
+		const artifact = action.item.artifact;
+		if (action.id === "pin") {
+			if (this.pinnedRefs.has(artifact.ref)) this.pinnedRefs.delete(artifact.ref);
+			else this.pinnedRefs.add(artifact.ref);
+			return;
+		}
+		if (action.id === "markDone") {
+			if (this.completedRefs.has(artifact.ref)) this.completedRefs.delete(artifact.ref);
+			else {
+				this.pinnedRefs.delete(artifact.ref);
+				this.completedRefs.add(artifact.ref);
+			}
+			return;
+		}
+		if (action.id === "inspect") this.done({ action: "inspect", artifact });
+		else if (action.id === "openFile") this.done({ action: "openFile", artifact });
+		else if (action.id === "tellWorker") this.done({ action: "tellWorker", artifact });
+		else if (action.id === "attachReference") this.done({ action: "reference", artifact });
+		else if (action.id === "injectFull") this.done({ action: "injectFull", artifact });
+		else if (action.id === "copyArtifact") this.done({ action: "copy", artifact });
 	}
 
 	invalidate(): void {
@@ -655,17 +612,17 @@ class TrailView implements Component {
 
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const artifacts = this.decoratedArtifacts();
+		const artifacts = this.artifacts;
 		this.container = new Box(2, 1, trailCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
-		const view = navigatorViewModel(this.state, artifacts, this.state.showDetail ? 7 : 12);
+		const view = navigatorViewModel(this.state, artifacts, this.queueState(), this.state.showDetail ? 7 : 12);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
 		const outerBorder = (s: string) => this.theme.fg("border", s);
 		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
 
-		const sel = view.selectedArtifact;
+		const sel = view.selectedItem;
 		const sources = availableSources(artifacts);
 		const sourceLabel = this.state.source;
 		const counts = bucketCounts(view.items);
@@ -677,8 +634,8 @@ class TrailView implements Component {
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}`, innerWidth - 2), 1, 0));
 		if (this.state.filter !== "all") this.container.addChild(new Text(`${muted("filter")} ${filterBar(this.theme, this.state.filter)}`, 1, 0));
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
-		const defaultSource = sources.includes("all") ? "all" : sources[0];
-		const sourceNarrowed = sources.length > 1 && sourceLabel !== defaultSource;
+		const defaultSource = sources.find((source) => source.kind === "all") ?? sources[0];
+		const sourceNarrowed = sources.length > 1 && !!defaultSource && !sameNavigatorSource(sourceLabel, defaultSource);
 		if ((sourceNarrowed || this.showHelp) && sourceLine) this.container.addChild(new Text(`${muted("source")} ${sourceLine}`, 1, 0));
 		this.container.addChild(new DynamicBorder(dividerBorder));
 
@@ -693,13 +650,14 @@ class TrailView implements Component {
 			this.container.addChild(new Spacer(1));
 		} else {
 			for (let i = 0; i < view.visible.length; i++) {
-				const artifact = view.visible[i];
-				if (!artifact) continue;
+				const item = view.visible[i];
+				if (!item) continue;
+				const artifact = item.artifact;
 				const absolute = view.visibleStart + i;
 				const selected = absolute === view.selected;
-				const bucket = navigatorBucket(artifact);
-				if (this.state.mode === "work") {
-					const previousBucket = absolute > 0 ? navigatorBucket(view.items[absolute - 1]!) : undefined;
+				const bucket = item.bucket;
+				if (this.state.mode === "review") {
+					const previousBucket = absolute > 0 ? view.items[absolute - 1]?.bucket : undefined;
 					if (bucket && bucket !== previousBucket) {
 						const count = counts[bucket];
 						const label = `${bucketName(bucket, this.state.mode)} ${count}`;
@@ -725,25 +683,26 @@ class TrailView implements Component {
 		}
 
 		if (sel) {
-			const bucket = navigatorBucket(sel);
-			const primary = trailMetaString(sel, "trailPrimaryAction") ?? trailPrimaryAction(sel);
-			const focusMeta = [kindLabel(sel.kind), trailMetaString(sel, "trailReason"), sel.source ? `from ${sel.source}` : "current", relativeTime(sel.timestamp), `@${sel.id}`].filter(Boolean).join(" · ");
+			const artifact = sel.artifact;
+			const primary = reviewActionLabel(sel.primaryAction, sel);
+			const focusMeta = [kindLabel(artifact.kind), reviewReasonLabel(sel.reasonId), artifact.source ? `from ${artifact.source}` : "current", relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
 			this.container.addChild(new DynamicBorder(dividerBorder));
-			this.container.addChild(new Text(truncateToWidth(`${accent(primary)} ${dim("·")} ${muted(sel.title)}`, listWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(`${accent(primary)} ${dim("·")} ${muted(artifact.title)}`, listWidth - 2), 1, 0));
 			if (focusMeta) this.container.addChild(new Text(truncateToWidth(dim(focusMeta), listWidth - 2), 1, 0));
-			const hints = selectedActionHints(sel, this.pinnedRefs.has(sel.ref), this.completedRefs.has(sel.ref));
+			const hints = selectedActionHints(sel, this.pinnedRefs.has(artifact.ref), this.completedRefs.has(artifact.ref));
 			this.container.addChild(new Text(truncateToWidth(hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · "), listWidth - 2), 1, 0));
 		}
 
-		if (this.state.showDetail && view.selectedArtifact) {
+		if (this.state.showDetail && view.selectedItem) {
+			const artifact = view.selectedItem.artifact;
 			this.container.addChild(new DynamicBorder(dividerBorder));
-			this.container.addChild(new Text(`${accent("preview")} ${muted(view.selectedArtifact.ref)}`, 1, 0));
-			const detail = this.fullText(view.selectedArtifact).split("\n").slice(0, 14);
+			this.container.addChild(new Text(`${accent("preview")} ${muted(artifact.ref)}`, 1, 0));
+			const detail = this.fullText(artifact).split("\n").slice(0, 14);
 			for (const line of detail) this.container.addChild(new Text(truncateToWidth(dim(line), listWidth - 2), 1, 0));
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const nextMode = this.state.mode === "work" ? "answers" : this.state.mode === "answers" ? "all" : "review";
+		const nextMode = this.state.mode === "review" ? "answers" : this.state.mode === "answers" ? "all" : "review";
 		this.container.addChild(new Text(dim(`↑↓ move · Enter open · t tell worker · a attach · / search · tab ${nextMode} · ? help · Esc close`), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 review · 2 answers · 3 all")}`, 1, 0));
@@ -763,7 +722,7 @@ async function showTrailBrowser(
 	artifacts: Artifact[],
 	pinnedRefs: Set<string>,
 	completedRefs: Set<string>,
-	initialMode: NavigatorMode = "work",
+	initialMode: NavigatorMode = "review",
 ): Promise<TrailBrowserAction | null> {
 	return ctx.ui.custom((tui, theme, _kb, done) => new TrailView(tui, theme, artifacts, pinnedRefs, completedRefs, initialMode, (artifact) => catalog.fullText(artifact), done), {
 		overlay: true,
@@ -2235,7 +2194,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			if (intent.kind === "browse" || intent.kind === "answers" || intent.kind === "search") await refreshWorkerCarryoverForReview();
 			const catalog = createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 			let artifacts = catalog.list();
-			let initialMode: NavigatorMode = intent.kind === "browse" && intent.mode ? intent.mode : "work";
+			let initialMode: NavigatorMode = intent.kind === "browse" && intent.mode ? intent.mode : "review";
 
 			if (intent.kind === "answers") {
 				initialMode = "answers";

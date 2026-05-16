@@ -172,4 +172,24 @@ Leverage:
 - Worker Store and Loaded Artifact Context are adapters, so worker command behavior is testable without tmux or Pi UI.
 - Mixed Checkpoint/worker load selection remains outside this Module, keeping Worker Commands focused on explicit worker operations.
 
+### Navigator
+
+Interface:
+
+- `navigatorViewModel(state, artifacts, queueState)`
+- `filteredReviewItems(state, artifacts, queueState)`
+- `handleNavigatorIntent(state, artifacts, queueState, intent)`
+- `availableSources(artifacts)`
+
+Owned flow:
+1. Derive Review Items from Artifacts and queue state.
+2. Rank Review Items by attention: worker questions, failures, changed files, ready worker output, pinned items, and recent done items.
+3. Expose domain action ids for selected Review Items.
+4. Apply mode, source, filter, selection, and preview state transitions from Navigator intents.
+
+Leverage:
+- TUI views render Review Items and map keys/labels; they do not own Review ranking or action eligibility.
+- Review queue tests cross the same seam as the TUI Adapter.
+- Background Work reaches Review through synthetic status Artifacts, so Navigator does not depend on worker storage or tmux.
+
 ## Planned deepening opportunities

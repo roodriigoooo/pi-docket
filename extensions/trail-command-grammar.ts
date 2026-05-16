@@ -11,7 +11,7 @@ export type CheckpointCreateOptions = {
 
 export type TrailIntent =
 	| { kind: "help" }
-	| { kind: "browse"; mode?: "work" | "answers" | "all" }
+	| { kind: "browse"; mode?: "review" | "answers" | "all" }
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
@@ -203,7 +203,7 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (!tokenized.ok) return parseError(tokenized.message);
 	const [command = "browse", ...rest] = tokenized.tokens;
 
-	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "work" } };
+	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "review" } };
 	if (command === "all") return { ok: true, intent: { kind: "browse", mode: "all" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
