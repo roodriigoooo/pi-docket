@@ -4,7 +4,7 @@ Session artifacts as first-class objects for Pi.
 
 ## Commands
 
-- `/trail` — open review inbox
+- `/trail` — open inbox
 - `/trail answers [query]` — browse assistant and worker answers
 - `/trail all` — browse everything captured
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
@@ -15,7 +15,10 @@ Session artifacts as first-class objects for Pi.
 - `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
-- `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
+- `/trail spawn [--worktree|-w] <task>` — spawn a tmux-backed Pi worker session; `--worktree` isolates edits
+- `/trail w<N>` / `/trail result w<N>` — show a worker result panel above the prompt
+- `/trail use w<N>` — attach the worker result to the next prompt as a compact Trail ref
+- `/trail ask w<N> [text]` — alias for tell
 - `/trail tell w<N> [text]` — send input or follow-up to a worker; no text opens a prompt
 - `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
 - `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
@@ -28,7 +31,7 @@ Session artifacts as first-class objects for Pi.
 
 Short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
 
-Worker status appears in a compact dock above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. Tell workers with `/trail tell w<N> [text]` or `t` from Review; omitting text opens a small input prompt. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, `trail_fail`) for parent coordination; worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions.
+Worker status appears in a compact dock above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. Ready workers include a concise result when available, and the dock may include a tiny git breadcrumb like `main ±3`. Use `/trail w<N>` to expand a result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination; worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers default to read-only investigation unless explicitly asked to edit; use `/trail spawn --worktree <task>` for isolated parallel editing. Trail removes the worktree when deleting that worker, but does not auto-merge worker edits.
 
 ## Checkpoint resume keys
 
@@ -55,13 +58,13 @@ Worker status appears in a compact dock above the prompt while workers are start
 
 ## Navigator keys
 
-Default `/trail` view is Review: unresolved items first, recent items only when all clear. Preview is off by default.
+Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
 - `/` — search Trail
-- `tab` — cycle Review → Answers → All
-- `1` — Review
+- `tab` — cycle Inbox → Answers → All
+- `1` — Inbox
 - `2` — Answers
 - `3` — All
 - `f` — cycle artifact kind filter
@@ -72,7 +75,7 @@ Default `/trail` view is Review: unresolved items first, recent items only when 
 - `a` or `i` — attach compact artifact reference chip
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
-- `p` — pin/unpin item in Review
+- `p` — pin/unpin item in Inbox
 - `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview

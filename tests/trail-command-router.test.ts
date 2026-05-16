@@ -12,7 +12,8 @@ import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
 const checkpoint: CheckpointIndexEntry = { id: "ck-1", mode: "handoff", file: "/tmp/ck.md", createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo", consumeOnUse: true };
 const summary: CheckpointSummary = { entry: checkpoint, artifactCount: 1, estimatedTokens: 1, files: 0, errors: 0, commands: 0 };
-const worker: WorkerStatus = { id: "worker-1", index: 2, tmuxSession: "trail-worker-1", task: "inspect bug", cwd: "/repo", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "active" };
+const worker: WorkerStatus = { id: "worker-1", index: 2, tmuxSession: "trail-worker-1", task: "inspect bug", cwd: "/repo", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "ready", summary: "ship the fix" };
+const workerStatus: Artifact = { id: "w2.status", displayId: "w2.status", ref: "worker-status:worker-1:0", kind: "response", title: "w2 ready: ship the fix", subtitle: "inspect bug", body: "worker: w2\nstate: ready\nmessage:\nship the fix", timestamp: 1, meta: { workerId: "worker-1", workerLabel: "w2", workerStatus: "ready", summary: "ship the fix" } };
 
 function fakeCatalog(): ArtifactCatalog {
 	return {
@@ -35,7 +36,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		defaultLoadSource: ({ checkpoints, workers }: { checkpoints: CheckpointIndexEntry[]; workers: WorkerStatus[] }): LoadableSource | undefined => checkpoints[0] ? { kind: "checkpoint", checkpoint: checkpoints[0] } : workers[0] ? { kind: "worker", worker: workers[0] } : undefined,
 		loadSource: async (source: LoadableSource) => {
 			calls.push(`loadSource:${source.kind}`);
-			return { source, queuedConsume: source.kind === "checkpoint", slot: { slot: source.kind === "checkpoint" ? "c1" : "w2", kind: source.kind, sourceId: source.kind === "checkpoint" ? source.checkpoint.id : source.worker.id, artifacts: [artifact] } };
+			return { source, queuedConsume: source.kind === "checkpoint", slot: { slot: source.kind === "checkpoint" ? "c1" : "w2", kind: source.kind, sourceId: source.kind === "checkpoint" ? source.checkpoint.id : source.worker.id, artifacts: source.kind === "worker" ? [workerStatus] : [artifact] } };
 		},
 		toggleChip: () => { calls.push("toggleChip"); return "added" as const; },
 		slots: () => [],
@@ -72,6 +73,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 	const workerStore = {
 		find: async () => worker,
 		list: async () => [worker],
+		readArtifacts: async () => [workerStatus],
 	} as unknown as WorkerStore;
 	const deps: TrailCommandRouterDeps = {
 		hasUI: false,
@@ -90,6 +92,8 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		refreshChipWidget: () => { calls.push("refreshChips"); },
 		refreshWorkerDockWidget: async () => { calls.push("refreshWorkers"); },
 		refreshWorkerCarryoverForReview: async () => { calls.push("refreshCarryover"); },
+		showWorkerResult: () => { calls.push("showWorkerResult"); },
+		clearWorkerResult: () => { calls.push("clearWorkerResult"); return false; },
 		markArtifactDone: (item) => { calls.push(`done:${item.ref}`); },
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
 		createCheckpoint: async () => { calls.push("createCheckpoint"); },
@@ -114,7 +118,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 test("Trail Command Router handles clear through loaded artifact context", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "clear" });
-	assert.deepEqual(calls, ["clearChips", "refreshChips", "notify:Trail chips cleared"]);
+	assert.deepEqual(calls, ["clearChips", "refreshChips", "clearWorkerResult", "notify:Trail cleared"]);
 });
 
 test("Trail Command Router loads default checkpoint without UI", async () => {
@@ -127,6 +131,18 @@ test("Trail Command Router routes worker delete and refreshes dock", async () =>
 	const { calls, router } = harness();
 	await router.handle({ kind: "delete", target: "w2", targetKind: "worker" });
 	assert.deepEqual(calls, ["worker.delete", "refreshWorkers"]);
+});
+
+test("Trail Command Router shows worker result without UI", async () => {
+	const { calls, router } = harness();
+	await router.handle({ kind: "worker-result", worker: "w2", action: "show" });
+	assert.deepEqual(calls, ["emit:list:trail · w2"]);
+});
+
+test("Trail Command Router uses worker result as a prompt chip", async () => {
+	const { calls, router } = harness();
+	await router.handle({ kind: "worker-result", worker: "w2", action: "use" });
+	assert.deepEqual(calls, ["loadSource:worker", "toggleChip", "refreshChips", "showWorkerResult", "announceChip", "refreshWorkers"]);
 });
 
 test("Trail Command Router handles artifact ref chips through context", async () => {

@@ -2,7 +2,7 @@
  * Trail — session artifacts as first-class objects.
  *
  * Commands:
- *   /trail                         open review inbox
+ *   /trail                         open inbox
  *   /trail answers [query]          browse assistant/worker answers
  *   /trail search <query>           ranked artifact search
  *   /trail checkpoint [flags] [note]
@@ -38,11 +38,12 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerDisplayName, workerHeartbeatPatch, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerHeartbeatPatch, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
+import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
@@ -50,6 +51,7 @@ import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection
 import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
+import { workerResultHeadline, workerResultText } from "./worker-result.js";
 import { createWorkerStore, TRAIL_WORKER_ENV } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -342,7 +344,7 @@ function sourceBar(theme: any, sources: NavigatorSource[], active: NavigatorSour
 
 function modeBar(theme: any, active: NavigatorMode): string {
 	const modes: Array<{ value: NavigatorMode; label: string }> = [
-		{ value: "review", label: "review" },
+		{ value: "review", label: "inbox" },
 		{ value: "answers", label: "answers" },
 		{ value: "all", label: "all" },
 	];
@@ -432,7 +434,7 @@ function bucketCounts(items: ReviewItem[]): Record<ReviewBucket, number> {
 }
 
 function navigatorModeLabel(mode: NavigatorMode): string {
-	if (mode === "review") return "review";
+	if (mode === "review") return "inbox";
 	if (mode === "answers") return "answers";
 	return "all";
 }
@@ -447,7 +449,7 @@ function trailStatusLine(mode: NavigatorMode, items: ReviewItem[], artifacts: Ar
 	if (mode === "all") return plural(items.length, "artifact");
 	const counts = bucketCounts(items);
 	const parts: string[] = [];
-	if (counts.needs > 0) parts.push(`${counts.needs} needs review`);
+	if (counts.needs > 0) parts.push(`${counts.needs} needs attention`);
 	if (counts.pinned > 0) parts.push(plural(counts.pinned, "pinned", "pinned"));
 	if (parts.length > 0) return parts.join(" · ");
 	if (counts.recent > 0) return `✓ all clear · ${plural(counts.recent, "recent item")}`;
@@ -471,7 +473,7 @@ function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): EmptyT
 	if (state.mode === "review") {
 		return {
 			title: "All clear",
-			body: "Trail will surface changed files, failures, pinned items, and worker output when they need review.",
+			body: "Trail will surface changed files, failures, pinned items, and worker output when they need attention.",
 			actions: ["press tab for answers", "press / to search", "pin useful items with p"],
 		};
 	}
@@ -486,7 +488,7 @@ function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): EmptyT
 	return {
 		title: `No ${filter}artifacts here`,
 		body: "This view is filtered. Your activity may still exist in another source, kind, or mode.",
-		actions: ["press f to change filter", "press s to switch source", "press 1 for review"],
+		actions: ["press f to change filter", "press s to switch source", "press 1 for inbox"],
 	};
 }
 
@@ -692,9 +694,9 @@ class TrailView implements Component {
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
 		const nextMode = this.state.mode === "review" ? "answers" : this.state.mode === "answers" ? "all" : "review";
-		this.container.addChild(new Text(dim(`↑↓ move · Enter open · t tell worker · a attach · / search · tab ${nextMode} · ? help · Esc close`), 1, 0));
+		this.container.addChild(new Text(dim(`↑↓ · enter · tab ${navigatorModeLabel(nextMode)} · / search · ? help · esc`), 1, 0));
 		if (this.showHelp) {
-			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 review · 2 answers · 3 all")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 all")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Filters")} ${dim("f kind · s source")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Actions")} ${dim("o open file · i attach alias · I full · y copy · p pin · x done · c checkpoint · v preview")}`, 1, 0));
 		}
@@ -796,7 +798,9 @@ class TrailResumeView implements Component {
 			const id = selected ? accent(this.theme.bold(entry.id.slice(0, 18).padEnd(18))) : muted(entry.id.slice(0, 18).padEnd(18));
 			const mode = entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
 			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files · ${summary.errors} err · ${summary.commands} cmd`;
-			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
+			const git = gitSnapshotLabel(entry.git);
+			const meta = [stats, git].filter(Boolean).join(" · ");
+			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${meta} ${muted(entry.note ?? "")}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
@@ -824,17 +828,6 @@ type ParallelKindFilter = ArtifactKind | "all";
 type ParallelSource = "all" | string;
 
 const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
-
-function workerStateGlyph(state: WorkerDerivedState): string {
-	if (state === "starting") return "◌";
-	if (state === "thinking") return "◐";
-	if (state === "needs_input") return "?";
-	if (state === "stale") return "◯";
-	if (state === "ready") return "✓";
-	if (state === "failed") return "!";
-	if (state === "empty") return "□";
-	return "○";
-}
 
 function workerStateColor(theme: any, state: WorkerDerivedState, text: string): string {
 	if (state === "needs_input") return theme.fg("warning", text);
@@ -870,28 +863,11 @@ function parallelKindGlyph(kind: ArtifactKind): string {
 }
 
 function workerAttentionLabel(worker: WorkerStatus): string {
-	const state = deriveWorkerState(worker);
-	const label = workerSourceLabel(worker);
-	if (state === "needs_input") {
-		const count = workerQuestions(worker).length;
-		return count > 1 ? `? ${label} needs input · ${count} questions` : `? ${label} needs input`;
-	}
-	if (state === "failed") return `! ${label} failed`;
-	if (state === "ready") return `✓ ${label} ready`;
-	if (state === "stale") return `◯ ${label} stale`;
-	if (state === "empty") return `□ ${label} done`;
-	return `${workerStateGlyph(state)} ${label} ${workerDisplayName(worker, 28)}`;
+	return workerActivityChip(worker, { verbose: true });
 }
 
 function workerAttentionChip(worker: WorkerStatus, verbose: boolean): string {
-	const state = deriveWorkerState(worker);
-	const label = workerSourceLabel(worker);
-	const count = workerQuestions(worker).length;
-	if (verbose) return workerAttentionLabel(worker);
-	if (state === "needs_input") return count > 1 ? `? ${label}×${count}` : `? ${label}`;
-	if (state === "failed") return `! ${label}`;
-	if (state === "ready") return `✓ ${label}`;
-	return `${workerStateGlyph(state)} ${label}`;
+	return workerActivityChip(worker, { verbose });
 }
 
 async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
@@ -1061,6 +1037,13 @@ class TrailParallelWorkView implements Component {
 
 		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("trail"))} ${dim("·")} ${accent("workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)} ${dim(entries.length ? `· ${entries.length} items` : "")}`, innerWidth - 2), 1, 0));
+		const mascotWorker = this.selectedWorker() ?? this.workers[0];
+		if (mascotWorker) {
+			const mascot = workerMascotLines(mascotWorker);
+			this.container.addChild(new Text(truncateToWidth(` ${accent(mascot[0] ?? "")} ${muted(workerAttentionLabel(mascotWorker))}`, innerWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${dim(mascot[1] ?? "")} ${dim(workerDisplayName(mascotWorker, 36))}${mascotWorker.worktree ? dim(" · worktree") : ""}`, innerWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${dim(mascot[2] ?? "")}`, innerWidth - 2), 1, 0));
+		}
 		if (this.source !== "all" || this.showHelp) this.container.addChild(new Text(`${muted("workers")} ${this.renderWorkerPills(innerWidth - 10)}`, 1, 0));
 		if (this.filter !== "all" || this.showHelp) this.container.addChild(new Text(`${muted("filter")}  ${activePill(this.theme, this.filter === "response" ? "answer" : this.filter)} ${dim("f kind · tab worker")}`, 1, 0));
 		this.container.addChild(new DynamicBorder(divider));
@@ -1071,6 +1054,7 @@ class TrailParallelWorkView implements Component {
 				? "Spawn a side investigation when you want evidence without interrupting current flow."
 				: "Workers may still be starting, or this worker/kind filter has no matching artifacts yet.";
 			this.container.addChild(new Spacer(1));
+			for (const line of workerMascotLines(mascotWorker)) this.container.addChild(new Text(` ${accent(line)}`, 1, 0));
 			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold(title))} `, "", listWidth - 2, divider, TOP_CORNERS), 1, 0));
 			this.container.addChild(new Text(truncateToWidth(` ${muted(body)}`, listWidth - 2), 1, 0));
 			this.container.addChild(new Text(truncateToWidth(` ${dim("Try: /trail spawn <task> · f filter · tab worker")}`, listWidth - 2), 1, 0));
@@ -1278,7 +1262,9 @@ class TrailLoadPicker implements Component {
 			const id = selected ? accent(this.theme.bold(entry.id.slice(0, 18).padEnd(18))) : muted(entry.id.slice(0, 18).padEnd(18));
 			const mode = entry.consumedAt ? `${entry.mode}:consumed` : entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
 			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files`;
-			const line = `${marker} ${id} ${accent(mode.padEnd(14))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${stats} ${muted(entry.note ?? "")}`;
+			const git = gitSnapshotLabel(entry.git);
+			const meta = [stats, git].filter(Boolean).join(" · ");
+			const line = `${marker} ${id} ${accent(mode.padEnd(14))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${meta} ${muted(entry.note ?? "")}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 	}
@@ -1302,8 +1288,9 @@ class TrailLoadPicker implements Component {
 			const state = this.theme.fg(stateColor, (worker.state ?? "?").padEnd(8));
 			const artifacts = `${worker.artifactCount ?? "?"} art`.padEnd(8);
 			const age = workerAge(worker.updatedAt).padEnd(8);
+			const git = gitSnapshotLabel(worker.git);
 			const summary = workerSummaryName(worker, 48);
-			const line = `${marker} ${id} ${state} ${dim(artifacts)} ${dim(age)} ${selected ? this.theme.bold(this.theme.fg("text", summary)) : muted(summary)}`;
+			const line = `${marker} ${id} ${state} ${dim(artifacts)} ${dim(age)} ${git ? dim(`${git} `) : ""}${selected ? this.theme.bold(this.theme.fg("text", summary)) : muted(summary)}`;
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 	}
@@ -1409,8 +1396,9 @@ type QueueConsume = (checkpoint: CheckpointIndexEntry) => void;
 type CompletionCandidate = { value: string; label: string };
 
 async function checkpointAndWorkerCandidates(subcommand: string): Promise<CompletionCandidate[]> {
-	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "tell";
-	const wantCheckpoints = subcommand !== "unload" && subcommand !== "tell";
+	const workerOnly = subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use";
+	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete" || workerOnly;
+	const wantCheckpoints = subcommand !== "unload" && !workerOnly;
 	const out: CompletionCandidate[] = [];
 
 	if (wantCheckpoints) {
@@ -1527,6 +1515,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let sweptOnce = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let workerDockTimer: NodeJS.Timeout | undefined;
+	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
@@ -1548,6 +1537,49 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const config = await loadConfig(cwd);
 			await createCheckpointStore().sweepConsumed(config.consumedRetentionDays);
 		} catch { /* best-effort */ }
+	};
+
+	const refreshWorkerResultWidget = (): void => {
+		const ctx = activeCtx;
+		if (!ctx?.hasUI) return;
+		if (!workerResult) {
+			ctx.ui.setWidget("trail-worker-result", undefined);
+			return;
+		}
+		const snapshot = workerResult;
+		ctx.ui.setWidget(
+			"trail-worker-result",
+			(_tui, theme) => {
+				const accent = (s: string) => theme.fg("accent", s);
+				const dim = (s: string) => theme.fg("dim", s);
+				const muted = (s: string) => theme.fg("muted", s);
+				const success = (s: string) => theme.fg("success", s);
+				const label = workerSourceLabel(snapshot.worker);
+				const chip = workerActivityChip(snapshot.worker);
+				const headline = workerResultHeadline(snapshot.worker, snapshot.artifacts, 78);
+				const container = new Container();
+				container.addChild(new Text(`${accent(theme.bold("trail"))} ${dim("·")} ${success(chip)} ${muted(headline)}  ${dim(`/trail use ${label} · /trail ask ${label}`)}`, 0, 0));
+				if (snapshot.expanded) {
+					for (const line of workerResultText(snapshot.worker, snapshot.artifacts, 7).split("\n").slice(1)) {
+						container.addChild(new Text(truncateToWidth(dim(line), 110), 2, 0));
+					}
+				}
+				return container;
+			},
+			{ placement: "aboveEditor" },
+		);
+	};
+
+	const showWorkerResultWidget = (worker: WorkerStatus, artifacts: Artifact[], expanded: boolean): void => {
+		workerResult = { worker, artifacts, expanded };
+		refreshWorkerResultWidget();
+	};
+
+	const clearWorkerResultWidget = (): boolean => {
+		const had = workerResult !== undefined;
+		workerResult = undefined;
+		refreshWorkerResultWidget();
+		return had;
 	};
 
 	const refreshChipWidget = (): void => {
@@ -1603,6 +1635,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const sorted = [...workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
 				"trail-workers",
 				(_tui, theme) => ({
@@ -1616,7 +1649,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 						const parts = shown.map((worker) => workerStateColor(theme, deriveWorkerState(worker), workerAttentionChip(worker, verbose)));
 						const more = sorted.length > shown.length ? dim(` +${sorted.length - shown.length}`) : "";
 						const command = width >= 88 ? `${dim("/trail w")} ${dim("·")} ${dim("/trail workers")}` : dim("/trail");
-						return [truncateToWidth(`${accent(theme.bold("trail"))} ${dim("·")} ${parts.join(muted(" · "))}${more}  ${command}`, width)];
+						const heading = git ? `${accent(theme.bold("trail"))} ${dim("·")} ${dim(git)} ${dim("·")}` : `${accent(theme.bold("trail"))} ${dim("·")}`;
+						return [truncateToWidth(`${heading} ${parts.join(muted(" · "))}${more}  ${command}`, width)];
 					},
 					invalidate() {},
 				}),
@@ -1651,7 +1685,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				await loadedArtifacts.loadSource({ kind: "worker", worker });
 			}));
 		} catch {
-			// best-effort; the review inbox should still open for current-session artifacts
+			// best-effort; the inbox should still open for current-session artifacts
 		}
 	};
 
@@ -1743,8 +1777,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 		pinnedRefs = new Set();
 		completedRefs = new Set();
 		loadedArtifacts.reset();
+		workerResult = undefined;
 		loadedCheckpoint = loadedCheckpointFromSession(ctx);
-		if (ctx.hasUI) ctx.ui.setWidget("trail-chips", undefined);
+		if (ctx.hasUI) {
+			ctx.ui.setWidget("trail-chips", undefined);
+			ctx.ui.setWidget("trail-worker-result", undefined);
+		}
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
 		void maybeSweep(ctx.cwd);
 		if (workerId) {
@@ -1753,7 +1791,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			heartbeatTimer.unref?.();
 		} else if (ctx.hasUI) {
 			void refreshWorkerDockWidget();
-			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 5000);
+			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 500);
 			workerDockTimer.unref?.();
 		}
 	});
@@ -1775,9 +1813,11 @@ export default function trailExtension(pi: ExtensionAPI) {
 		pinnedRefs = new Set();
 		completedRefs = new Set();
 		loadedArtifacts.reset();
+		workerResult = undefined;
 		loadedCheckpoint = undefined;
 		if (ctx.hasUI) {
 			ctx.ui.setWidget(TRAIL_CHECKPOINT_WIDGET_ID, undefined);
+			ctx.ui.setWidget("trail-worker-result", undefined);
 			ctx.ui.setWidget("trail-workers", undefined);
 		}
 	});
@@ -1795,13 +1835,15 @@ export default function trailExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(`Trail dropped stale chip(s): ${result.missing.join(", ")}`, "warning");
 		}
 		loadedArtifacts.clearChips();
+		workerResult = undefined;
 		refreshChipWidget();
+		refreshWorkerResultWidget();
 		if (result.expanded === 0) return { action: "continue" };
 		return { action: "transform", text: result.text };
 	});
 
 	pi.registerCommand("trail", {
-		description: "Review unresolved agent work and create fresh-session checkpoints",
+		description: "Inspect unresolved agent work and create fresh-session checkpoints",
 		getArgumentCompletions: async (prefix: string) => {
 			const trimmed = prefix.replace(/^\s+/, "");
 			const firstSpace = trimmed.indexOf(" ");
@@ -1811,7 +1853,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 			const subcommand = trimmed.slice(0, firstSpace);
 			const rest = trimmed.slice(firstSpace + 1);
-			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "tell") {
+			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use") {
 				const lastSpace = rest.lastIndexOf(" ");
 				const partial = lastSpace === -1 ? rest : rest.slice(lastSpace + 1);
 				const completed = lastSpace === -1 ? "" : `${rest.slice(0, lastSpace + 1)}`;
@@ -1870,6 +1912,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 				refreshChipWidget,
 				refreshWorkerDockWidget,
 				refreshWorkerCarryoverForReview,
+				showWorkerResult: showWorkerResultWidget,
+				clearWorkerResult: clearWorkerResultWidget,
 				markArtifactDone: (artifact) => completedRefs.add(artifact.ref),
 				applyWorkerState: (state, text) => applyWorkerState(ctx, state, text),
 				createCheckpoint: async (options) => {

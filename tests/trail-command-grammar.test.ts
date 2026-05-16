@@ -51,9 +51,11 @@ test("Trail grammar parses list with --include-consumed and --workers", () => {
 
 test("Trail grammar parses spawn", () => {
 	assert.deepEqual(parseTrailCommand("spawn investigate auth bug"), { ok: true, intent: { kind: "spawn", task: "investigate auth bug" } });
+	assert.deepEqual(parseTrailCommand("spawn --worktree edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
+	assert.deepEqual(parseTrailCommand("spawn -w edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
 	const invalid = parseTrailCommand("spawn");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn \[--worktree\|-w\] <task>/);
 });
 
 test("Trail grammar parses workers dashboard", () => {
@@ -67,6 +69,7 @@ test("Trail grammar parses workers dashboard", () => {
 test("Trail grammar parses worker tell and attention commands", () => {
 	assert.deepEqual(parseTrailCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseTrailCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });
+	assert.deepEqual(parseTrailCommand("ask w1 nope"), { ok: true, intent: { kind: "tell", worker: "w1", text: "nope" } });
 	assert.deepEqual(parseTrailCommand("wait should I include checkpoints?"), { ok: true, intent: { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" } });
 	assert.deepEqual(parseTrailCommand("done summary ready"), { ok: true, intent: { kind: "worker-state", state: "ready", text: "summary ready" } });
 	assert.deepEqual(parseTrailCommand("done"), { ok: true, intent: { kind: "worker-state", state: "ready", text: undefined } });
@@ -74,7 +77,15 @@ test("Trail grammar parses worker tell and attention commands", () => {
 	assert.ok(TRAIL_COMMANDS.includes("tell"));
 	assert.match(trailUsage(), /\/trail tell w<N> \[text\]/);
 	assert.equal(parseTrailCommand("reply w1 nope").ok, false);
-	assert.equal(parseTrailCommand("ask w1 nope").ok, false);
+});
+
+test("Trail grammar parses worker result commands", () => {
+	assert.deepEqual(parseTrailCommand("w1"), { ok: true, intent: { kind: "worker-result", worker: "w1", action: "show" } });
+	assert.deepEqual(parseTrailCommand("result w1"), { ok: true, intent: { kind: "worker-result", worker: "w1", action: "show" } });
+	assert.deepEqual(parseTrailCommand("use w:auth-bug-a3b1"), { ok: true, intent: { kind: "worker-result", worker: "auth-bug-a3b1", action: "use" } });
+	assert.ok(TRAIL_COMMANDS.includes("result"));
+	assert.ok(TRAIL_COMMANDS.includes("use"));
+	assert.match(trailUsage(), /\/trail use w<N>/);
 });
 
 test("Trail grammar recognizes accidental worker protocol in bash", () => {

@@ -10,7 +10,7 @@ my goal is to make session context less magical and less lossy. when i am workin
 
 Trail turns commands, errors, file operations, code blocks, prompts, responses, and checkpoints into things you can browse, inspect, copy, reference, and package into a handoff for a fresh session.
 
-it is not meant to be history search. it is more like a quiet review inbox, answer shelf, and checkpoint tool for agent work.
+it is not meant to be history search. it is more like a quiet inbox, answer shelf, and checkpoint tool for agent work.
 
 ## why i made this
 
@@ -62,7 +62,7 @@ pi install npm:@roodriigoooo/trail
 
 ## example usage
 
-open the review inbox:
+open the inbox:
 
 ```bash
 /trail
@@ -131,7 +131,7 @@ If `/trail spawn` or `/trail workers` is unknown, you are running an older insta
 
 ## commands
 
-- `/trail` — open review inbox
+- `/trail` — open inbox
 - `/trail answers [query]` — browse assistant and worker answers without showing every artifact
 - `/trail all` — browse everything captured
 - `/trail search <query>` — search ranked artifact docs, then browse matches
@@ -142,7 +142,10 @@ If `/trail spawn` or `/trail workers` is unknown, you are running an older insta
 - `/trail unload <id|w<N>|all>` — drop loaded checkpoint or worker artifacts from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint (bypasses soft-consume) or kill/delete a worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
-- `/trail spawn <task>` — spawn a tmux-backed Pi worker session for parallel investigation
+- `/trail spawn [--worktree|-w] <task>` — spawn a tmux-backed Pi worker session for parallel investigation; `--worktree` isolates edits
+- `/trail w<N>` / `/trail result w<N>` — show a worker result chip/panel above the prompt
+- `/trail use w<N>` — attach the worker result to the next prompt as a compact Trail ref
+- `/trail ask w<N> [text]` — alias for tell
 - `/trail tell w<N> [text]` — send input or follow-up to a worker; no text opens a prompt
 - `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
 - `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
@@ -166,15 +169,21 @@ Typical flow:
 /trail
 ```
 
-A compact worker dock stays above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. It shows at-a-glance chips (`◐ w1`, `? w2`, `✓ w3`) without adding context bytes.
+A compact worker dock stays above the prompt while workers are starting, active, waiting, ready, failed, idle, or stale. It animates only starting/thinking workers at low FPS with at-a-glance chips (`w1[o  ]`, `w1(o_o)`, `w2(?_?)`, `w3(^_^)`) without adding context bytes. Ready workers include the concise result when available, e.g. `w1(^_^) mascot viable...`.
 
-`/trail` is the unified review inbox: worker output appears beside current-session errors, changed files, pinned items, and recent review items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
+Use `/trail w1` or `/trail result w1` to expand a worker result panel above the prompt. Use `/trail use w1` to attach the worker result as a compact Trail ref for the next agent message. Use `/trail ask w1 ...` or `/trail tell w1 ...` for follow-up.
+
+`/trail` is the unified inbox: worker output appears beside current-session errors, changed files, pinned items, and recent items. `/trail workers` remains available as a power/debug view when you need to inspect workers directly.
 
 Workers surface attention states with protocol tools: `trail_wait`, `trail_done`, and `trail_fail`. The worker-side `/trail wait`, `/trail done`, and `/trail fail` commands remain Pi prompt fallbacks, but workers are told not to run them through bash. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions and recorded instead of failing as missing shell commands.
 
-Waiting, ready, and failed states appear as first-class Review rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Review row with a question count. Send input from the parent session with `/trail tell w<N> [text]` or by selecting the worker row in Review and pressing `t`. If you omit text, Trail opens a small input prompt instead of polluting the parent prompt box.
+Waiting, ready, and failed states appear as first-class Inbox rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Inbox row with a question count. Send input from the parent session with `/trail tell w<N> [text]` or by selecting the worker row in Inbox and pressing `t`. If you omit text, Trail opens a small input prompt instead of polluting the parent prompt box.
 
-Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a` or `i`) or full text (`I`).
+Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a` or `i`), attach a worker result with `/trail use w<N>`, or full text (`I`).
+
+Trail keeps git narrow: worker spawns and checkpoints record current branch/head plus dirty-file count when available. The worker dock may show a tiny breadcrumb like `main ±3`; Trail does not stage, commit, or replace git diff tools.
+
+Workers default to read-only investigation unless their task explicitly asks for edits. For parallel editing, use `/trail spawn --worktree <task>` so the worker runs in an isolated detached git worktree. Deleting that worker removes the worktree. Trail does not auto-merge; inspect/apply the worker changes from the reported worktree path.
 
 ## parallel work inbox keys
 
@@ -228,13 +237,13 @@ Checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/che
 
 ## navigator keys
 
-Default `/trail` view is Review: unresolved items first, recent items only when all clear. It keeps changed files, errors, pinned items, and worker output actionable without dumping the transcript. Preview is off by default.
+Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. It keeps changed files, errors, pinned items, and worker output actionable without dumping the transcript. Preview is off by default.
 
 - `j/k` or arrows — move
 - `g/G` — top/bottom
 - `/` — search Trail
-- `tab` — cycle Review → Answers → All
-- `1` — Review
+- `tab` — cycle Inbox → Answers → All
+- `1` — Inbox
 - `2` — Answers
 - `3` — All
 - `f` — cycle artifact kind filter
@@ -245,7 +254,7 @@ Default `/trail` view is Review: unresolved items first, recent items only when 
 - `a` or `i` — attach compact artifact reference chip
 - `I` — attach full artifact text chip
 - `y` — copy selected artifact
-- `p` — pin/unpin item in Review
+- `p` — pin/unpin item in Inbox
 - `x` — mark item done / restore it to the queue
 - `c` — create handoff checkpoint
 - `v` — toggle preview

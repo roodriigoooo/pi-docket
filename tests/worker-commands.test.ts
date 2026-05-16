@@ -77,9 +77,18 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	await commands.spawn("inspect bug");
 
 	assert.deepEqual(spawned, [{ task: "inspect bug", cwd: "/repo", parentSession: "/session.json" }]);
-	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
-	assert.match(announcements[0]?.detail ?? "", /review: \/trail/);
+	assert.equal(announcements[0]?.subject, "spawned w2[o  ] · starting");
+	assert.match(announcements[0]?.detail ?? "", /w2\[o  \] inspect bug now please/);
+	assert.match(announcements[0]?.detail ?? "", /inbox:  \/trail/);
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/trail workers/);
+});
+
+test("Worker Commands passes worktree spawn option", async () => {
+	const { commands, spawned } = deps();
+
+	await commands.spawn("edit bug", { worktree: true });
+
+	assert.deepEqual(spawned, [{ task: "edit bug", cwd: "/repo", parentSession: "/session.json", worktree: true }]);
 });
 
 test("Worker Commands sends parent messages to workers", async () => {
@@ -113,6 +122,7 @@ test("Worker Commands loads and unloads worker artifacts", async () => {
 	assert.deepEqual(loaded, ["worker-1"]);
 	assert.deepEqual(unloaded, ["worker-1"]);
 	assert.equal(announcements[0]?.subject, "loaded w2 · 1 artifact");
+	assert.match(announcements[0]?.detail ?? "", /attach: @w2\.<id>/);
 	assert.equal(announcements[1]?.subject, "unloaded w2");
 });
 

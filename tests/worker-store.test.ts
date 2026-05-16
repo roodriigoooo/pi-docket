@@ -49,7 +49,10 @@ test("worker initial prompt prefers protocol tools over bash slash commands", ()
 	assert.match(prompt, /call `trail_done`/);
 	assert.match(prompt, /call `trail_fail`/);
 	assert.match(prompt, /Do not run `\/trail wait`/);
+	assert.match(prompt, /Default to read-only investigation/);
 	assert.match(prompt, /\/trail tell w<N>/);
+	const worktreePrompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo", worktreePath: "/tmp/trail-worker-demo/worktree" });
+	assert.match(worktreePrompt, /isolated git worktree: \/tmp\/trail-worker-demo\/worktree/);
 });
 
 test("worker store find resolves by short label, bare digits, and partial id", async () => {

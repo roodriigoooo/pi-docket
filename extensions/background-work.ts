@@ -1,4 +1,5 @@
-import type { Artifact } from "./types.js";
+import { gitSnapshotLabel } from "./git-context.js";
+import type { Artifact, GitSnapshot } from "./types.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "empty" | "failed" | "idle";
@@ -11,12 +12,20 @@ export type WorkerQuestion = {
 	answeredAt?: string;
 };
 
+export type WorkerWorktree = {
+	path: string;
+	baseCwd: string;
+	baseHead?: string;
+};
+
 export type WorkerStatus = {
 	id: string;
 	index: number;
 	tmuxSession: string;
 	task: string;
 	cwd: string;
+	git?: GitSnapshot;
+	worktree?: WorkerWorktree;
 	createdAt: string;
 	updatedAt: string;
 	state: WorkerState;
@@ -57,6 +66,57 @@ export function workerDisplayName(worker: WorkerStatus, max = 34): string {
 	return workerSummaryName(worker, max);
 }
 
+const STARTING_CHIP_FRAMES = ["[o  ]", "[ o ]", "[  o]"];
+const THINKING_CHIP_FRAMES = ["(._.)", "(o_o)", "(._.)"];
+const FRAME_INTERVAL_MS = 400;
+
+function workerStatusText(worker: WorkerStatus, fallback: string): string {
+	const text = worker.summary ?? worker.lastError ?? worker.question ?? fallback;
+	return text.split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? fallback;
+}
+
+function truncateWorkerStatus(text: string, max = 42): string {
+	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function workerMascotFrame(worker: WorkerStatus | undefined, options: { now?: number } = {}): string {
+	if (!worker) return "(._.)";
+	const state = deriveWorkerState(worker, options.now);
+	if (state === "starting" || state === "thinking") {
+		const frames = state === "starting" ? STARTING_CHIP_FRAMES : THINKING_CHIP_FRAMES;
+		const frameTime = Number.isFinite(options.now) ? options.now! : Date.now();
+		return frames[Math.floor(frameTime / FRAME_INTERVAL_MS) % frames.length]!;
+	}
+	if (state === "needs_input") return "(?_?)";
+	if (state === "ready") return "(^_^)";
+	if (state === "failed") return "(x_x)";
+	if (state === "stale") return "(-_-)";
+	if (state === "empty") return "(-.-)";
+	return "(._.)";
+}
+
+export function workerMascotLines(worker: WorkerStatus | undefined, options: { now?: number } = {}): string[] {
+	const label = worker ? workerSourceLabel(worker) : "trail";
+	return [
+		`  ${workerMascotFrame(worker, options)}`,
+		`  /|\\  ${label}`,
+		"  / \\",
+	];
+}
+
+export function workerActivityChip(worker: WorkerStatus, options: { verbose?: boolean; now?: number } = {}): string {
+	const state = deriveWorkerState(worker, options.now);
+	const label = workerSourceLabel(worker);
+	let chip = `${label}${workerMascotFrame(worker, options)}`;
+	if (!options.verbose) return chip;
+	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
+	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
+	if (state === "ready") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "ready"))}`;
+	if (state === "stale") return `${chip} stale`;
+	if (state === "empty") return `${chip} done`;
+	return `${chip} ${workerDisplayName(worker, 28)}`;
+}
+
 export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	if (worker.questions?.length) return worker.questions;
 	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
@@ -91,20 +151,22 @@ export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): bool
 	return deriveWorkerState(worker, now) !== "empty";
 }
 
-export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string }): string {
+export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string }): string {
 	return [
 		`You are Trail worker ${input.label} (${input.id}).`,
 		"Your task is recorded in:",
 		`  ${input.taskFile}`,
 		"",
 		`Read it, then begin. Your artifacts are auto-snapshotted to ${input.artifactsFile}.`,
+		"Default to read-only investigation. Do not edit files unless the task explicitly asks for edits; if you do edit, summarize changed files and conflict risks.",
+		input.worktreePath ? `You are running in an isolated git worktree: ${input.worktreePath}` : undefined,
 		"Use Trail worker protocol tools for parent coordination:",
 		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
 		"- When finished with useful output, call `trail_done` with a concise summary.",
 		"- If unable to continue, call `trail_fail` with the reason.",
 		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
 		"The parent reviews worker attention in `/trail` and sends follow-up with `/trail tell w<N> <message>`.",
-	].join("\n");
+	].filter((line): line is string => line !== undefined).join("\n");
 }
 
 export function appendWorkerQuestionPatch(worker: WorkerStatus, text: string, question: WorkerQuestion): Partial<WorkerStatus> | undefined {
@@ -172,6 +234,7 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 	const questions = workerQuestions(worker);
 	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
 	const text = state === "needs_input" ? questionText : state === "ready" ? worker.summary : worker.lastError;
+	const git = gitSnapshotLabel(worker.git);
 	const title = state === "needs_input"
 		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
 		: state === "ready"
@@ -184,9 +247,9 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		kind: state === "failed" ? "error" : "response",
 		title,
 		subtitle: workerDisplayName(worker),
-		body: [`worker: ${label}`, `state: ${state}`, `task: ${worker.task}`, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
+		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, git: worker.git },
 	};
 }
 

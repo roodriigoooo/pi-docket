@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, workerHeartbeatPatch, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, workerActivityChip, workerHeartbeatPatch, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -54,6 +54,16 @@ test("Background Work protocol patch clears questions for ready and failed state
 test("Background Work heartbeat preserves sticky attention states", () => {
 	assert.equal(workerHeartbeatPatch(worker({ state: "needs_input" }), { pid: 123, artifactCount: 4 }).state, "needs_input");
 	assert.equal(workerHeartbeatPatch(worker({ state: "idle" }), { pid: 123, artifactCount: 4 }).state, "active");
+});
+
+test("Background Work formats compact activity chips", () => {
+	assert.equal(workerActivityChip(worker({ state: "starting" }), { now: 0 }), "w2[o  ]");
+	assert.equal(workerActivityChip(worker({ state: "active" }), { now: 400 }), "w2(o_o)");
+	assert.equal(workerActivityChip(worker({ state: "needs_input", questions: [question("One?"), question("Two?")] })), "w2(?_?)");
+	assert.equal(workerActivityChip(worker({ state: "ready" }), { verbose: true }), "w2(^_^) ready");
+	assert.equal(workerActivityChip(worker({ state: "ready", summary: "mascot viable" }), { verbose: true }), "w2(^_^) mascot viable");
+	assert.equal(workerMascotFrame(worker({ state: "failed" })), "(x_x)");
+	assert.deepEqual(workerMascotLines(worker({ state: "ready" })).slice(0, 2), ["  (^_^)", "  /|\\  w2"]);
 });
 
 test("Background Work projects worker status into synthetic Review Artifact", () => {

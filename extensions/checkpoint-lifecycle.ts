@@ -3,9 +3,10 @@ import { createArtifactCatalog, buildReferenceList, truncateText, type ArtifactC
 import { showCheckpointSelector } from "./checkpoint-selector.js";
 import { createCheckpointStore, type CheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizer } from "./checkpoint-summarizer.js";
+import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { loadConfig, type TrailConfig } from "./trail-config.js";
 import type { CheckpointCreateOptions } from "./trail-command-grammar.js";
-import type { Artifact, CheckpointIndexEntry, CheckpointMode } from "./types.js";
+import type { Artifact, CheckpointIndexEntry, CheckpointMode, GitSnapshot } from "./types.js";
 
 export type CheckpointLifecycle = {
 	create(options: CheckpointCreateOptions): Promise<void>;
@@ -37,6 +38,7 @@ function buildRawCheckpointMarkdown(
 	note: string,
 	consumeOnUse: boolean,
 	artifacts: Artifact[],
+	git?: GitSnapshot,
 ): string {
 	const usage = ctx.getContextUsage();
 	const files = [...new Set(artifacts.filter((a) => a.kind === "file").map((a) => a.title.replace(/^(read|write|edit|grep|find|ls)\s+/, "")))];
@@ -50,6 +52,8 @@ function buildRawCheckpointMarkdown(
 	lines.push(`cwd: ${ctx.cwd}`);
 	lines.push(`created: ${new Date().toISOString()}`);
 	if (ctx.sessionManager.getSessionFile()) lines.push(`sourceSession: ${ctx.sessionManager.getSessionFile()}`);
+	const gitLabel = gitSnapshotLabel(git);
+	if (gitLabel) lines.push(`git: ${gitLabel}`);
 	if (usage && usage.tokens !== null) lines.push(`context: ~${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`);
 	if (note) lines.push(`note: ${note}`);
 	if (consumeOnUse) lines.push("consumeOnUse: true");
@@ -102,9 +106,9 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 		return showCheckpointSelector(ctx, artifacts, options.mode);
 	};
 
-	const draftMarkdown = async (id: string, options: CheckpointCreateOptions, artifacts: Artifact[]): Promise<string> => {
+	const draftMarkdown = async (id: string, options: CheckpointCreateOptions, artifacts: Artifact[], git?: GitSnapshot): Promise<string> => {
 		if (options.raw || !config.summarizer.enabled) {
-			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts);
+			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts, git);
 		}
 		if (ctx.hasUI) ctx.ui.notify("Trail summarizing checkpoint...", "info");
 		try {
@@ -115,6 +119,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 				consumeOnUse: options.consumeOnUse,
 				cwd: ctx.cwd,
 				sourceSession: ctx.sessionManager.getSessionFile(),
+				git,
 				artifactsFile: store.artifactsFile(id),
 				payload: catalog.checkpointPayload(artifacts, options.mode),
 				references: buildReferenceList(artifacts, ctx.cwd),
@@ -125,7 +130,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 			});
 		} catch (err) {
 			notify(`Trail summarizer failed; using raw checkpoint: ${String(err)}`, "warning");
-			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts);
+			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts, git);
 		}
 	};
 
@@ -137,7 +142,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 		return edited;
 	};
 
-	const persistCheckpoint = async (id: string, options: CheckpointCreateOptions, markdown: string, artifacts: Artifact[]): Promise<CheckpointIndexEntry> => {
+	const persistCheckpoint = async (id: string, options: CheckpointCreateOptions, markdown: string, artifacts: Artifact[], git?: GitSnapshot): Promise<CheckpointIndexEntry> => {
 		return store.save({
 			id,
 			mode: options.mode,
@@ -145,6 +150,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 			artifacts,
 			cwd: ctx.cwd,
 			sourceSession: ctx.sessionManager.getSessionFile(),
+			git,
 			note: options.note,
 			consumeOnUse: options.consumeOnUse,
 		});
@@ -175,14 +181,15 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 			}
 
 			const id = (deps.makeId ?? makeCheckpointId)();
-			const draft = await draftMarkdown(id, options, artifacts);
+			const git = readGitSnapshot(ctx.cwd);
+			const draft = await draftMarkdown(id, options, artifacts, git);
 			const markdown = await reviewMarkdown(draft);
 			if (markdown === null) {
 				notify("Trail checkpoint cancelled", "info");
 				return;
 			}
 
-			const entry = await persistCheckpoint(id, options, markdown, artifacts);
+			const entry = await persistCheckpoint(id, options, markdown, artifacts, git);
 			labelSession(id, entry);
 			notify(`Trail checkpoint saved: ${id}${options.consumeOnUse ? " (once)" : ""}`, "info");
 		},
