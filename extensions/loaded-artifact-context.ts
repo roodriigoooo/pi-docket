@@ -25,6 +25,21 @@ export type CarryoverSlot = {
 	checkpoint?: CheckpointIndexEntry;
 };
 
+export type LoadableSource =
+	| { kind: "checkpoint"; checkpoint: CheckpointIndexEntry }
+	| { kind: "worker"; worker: WorkerStatus };
+
+export type LoadableSourceCandidates = {
+	checkpoints: CheckpointIndexEntry[];
+	workers: WorkerStatus[];
+};
+
+export type LoadResult = {
+	source: LoadableSource;
+	slot: CarryoverSlot;
+	queuedConsume: boolean;
+};
+
 export type ChipExpansion = {
 	text: string;
 	expanded: number;
@@ -43,6 +58,8 @@ export type LoadedArtifactContext = {
 	slots(): CarryoverSlot[];
 	carryoverArtifacts(): Artifact[];
 	reset(): void;
+	defaultLoadSource(candidates: LoadableSourceCandidates): LoadableSource | undefined;
+	loadSource(source: LoadableSource): Promise<LoadResult>;
 	loadCheckpoint(checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot>;
 	loadWorker(worker: WorkerStatus): Promise<CarryoverSlot>;
 	unloadSlot(slot: string): CarryoverSlot | undefined;
@@ -94,6 +111,33 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		return entry;
 	};
 
+	const loadCheckpoint = async (checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("checkpoint", checkpoint.id);
+		if (existing) return existing;
+		const raw = await deps.readCheckpointArtifacts(checkpoint);
+		const slot = `c${nextCheckpointSlotIndex++}`;
+		const entry: CarryoverSlot = { slot, kind: "checkpoint", sourceId: checkpoint.id, artifacts: namespaceCarryover(raw, slot), checkpoint };
+		carryover.set(slot, entry);
+		return entry;
+	};
+
+	const loadWorker = async (worker: WorkerStatus): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("worker", worker.id);
+		if (existing) return existing;
+		const raw = await deps.readWorkerArtifacts(worker);
+		const slot = workerShortLabel(worker.index);
+		const entry: CarryoverSlot = { slot, kind: "worker", sourceId: worker.id, artifacts: namespaceCarryover(raw, slot) };
+		carryover.set(slot, entry);
+		return entry;
+	};
+
+	const loadSource = async (source: LoadableSource): Promise<LoadResult> => {
+		const slot = source.kind === "checkpoint" ? await loadCheckpoint(source.checkpoint) : await loadWorker(source.worker);
+		const queuedConsume = source.kind === "checkpoint" && source.checkpoint.consumeOnUse === true;
+		if (queuedConsume) pendingCheckpointConsumes.set(source.checkpoint.id, source.checkpoint);
+		return { source, slot, queuedConsume };
+	};
+
 	return {
 		chips() {
 			return [...chips];
@@ -108,23 +152,18 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 			pendingCheckpointConsumes = new Map();
 			nextCheckpointSlotIndex = 1;
 		},
-		async loadCheckpoint(checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> {
-			const existing = findSlotForSource("checkpoint", checkpoint.id);
-			if (existing) return existing;
-			const raw = await deps.readCheckpointArtifacts(checkpoint);
-			const slot = `c${nextCheckpointSlotIndex++}`;
-			const entry: CarryoverSlot = { slot, kind: "checkpoint", sourceId: checkpoint.id, artifacts: namespaceCarryover(raw, slot), checkpoint };
-			carryover.set(slot, entry);
-			return entry;
+		defaultLoadSource(candidates: LoadableSourceCandidates): LoadableSource | undefined {
+			const checkpoint = candidates.checkpoints[candidates.checkpoints.length - 1];
+			if (checkpoint) return { kind: "checkpoint", checkpoint };
+			const worker = candidates.workers[candidates.workers.length - 1];
+			return worker ? { kind: "worker", worker } : undefined;
 		},
-		async loadWorker(worker: WorkerStatus): Promise<CarryoverSlot> {
-			const existing = findSlotForSource("worker", worker.id);
-			if (existing) return existing;
-			const raw = await deps.readWorkerArtifacts(worker);
-			const slot = workerShortLabel(worker.index);
-			const entry: CarryoverSlot = { slot, kind: "worker", sourceId: worker.id, artifacts: namespaceCarryover(raw, slot) };
-			carryover.set(slot, entry);
-			return entry;
+		loadSource,
+		loadCheckpoint(checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot> {
+			return loadSource({ kind: "checkpoint", checkpoint }).then((result) => result.slot);
+		},
+		loadWorker(worker: WorkerStatus): Promise<CarryoverSlot> {
+			return loadSource({ kind: "worker", worker }).then((result) => result.slot);
 		},
 		unloadSlot,
 		unloadSource(kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined {

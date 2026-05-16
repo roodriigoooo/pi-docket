@@ -51,9 +51,11 @@ function deps(workers = [worker]) {
 	const commands = createWorkerCommands({
 		store,
 		loadedArtifacts: {
-			loadWorker: async (worker) => {
-				loaded.push(worker.id);
-				return { slot: `w${worker.index}`, kind: "worker", sourceId: worker.id, artifacts: [{ id: "a1", displayId: "a1", ref: "command:t:0", kind: "command", title: "cmd", subtitle: "ok", body: "body" }] };
+			loadSource: async (source) => {
+				if (source.kind !== "worker") throw new Error("expected worker");
+				loaded.push(source.worker.id);
+				const slot = { slot: `w${source.worker.index}`, kind: "worker" as const, sourceId: source.worker.id, artifacts: [{ id: "a1", displayId: "a1", ref: "command:t:0", kind: "command" as const, title: "cmd", subtitle: "ok", body: "body" }] };
+				return { source, slot, queuedConsume: false };
 			},
 			unloadSource: (_kind, sourceId) => {
 				unloaded.push(sourceId);

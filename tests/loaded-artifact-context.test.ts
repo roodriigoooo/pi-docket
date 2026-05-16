@@ -127,10 +127,27 @@ test("Loaded Artifact context mounts checkpoint and worker artifacts with stable
 	assert.deepEqual(loaded.carryoverArtifacts().map((artifact) => artifact.displayId), ["c1.f1"]);
 });
 
+test("Loaded Artifact context selects default load source", () => {
+	const loaded = context();
+	assert.deepEqual(loaded.defaultLoadSource({ checkpoints: [checkpoint], workers: [worker] }), { kind: "checkpoint", checkpoint });
+	assert.deepEqual(loaded.defaultLoadSource({ checkpoints: [], workers: [worker] }), { kind: "worker", worker });
+	assert.equal(loaded.defaultLoadSource({ checkpoints: [], workers: [] }), undefined);
+});
+
+test("Loaded Artifact context load source queues consume-on-use checkpoints", async () => {
+	const loaded = context();
+	const result = await loaded.loadSource({ kind: "checkpoint", checkpoint });
+
+	assert.equal(result.slot.slot, "c1");
+	assert.equal(result.queuedConsume, true);
+	const consumed: string[] = [];
+	await loaded.drainCheckpointConsumes(async (entry) => { consumed.push(entry.id); });
+	assert.deepEqual(consumed, ["ck-1"]);
+});
+
 test("Loaded Artifact context drops pending consume when checkpoint unloads", async () => {
 	const loaded = context();
 	await loaded.loadCheckpoint(checkpoint);
-	loaded.queueCheckpointConsume(checkpoint);
 	loaded.unloadSlot("c1");
 
 	const consumed: string[] = [];

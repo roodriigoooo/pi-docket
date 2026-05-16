@@ -43,7 +43,7 @@ import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactC
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
-import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
+import { createLoadedArtifactContext, type Chip, type ChipToggleResult, type LoadableSource, type LoadResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
 import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
@@ -1676,7 +1676,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const workers = await createWorkerStore().list();
 			await Promise.all(workers.map(async (worker) => {
 				loadedArtifacts.unloadSource("worker", worker.id);
-				await loadedArtifacts.loadWorker(worker);
+				await loadedArtifacts.loadSource({ kind: "worker", worker });
 			}));
 		} catch {
 			// best-effort; the review inbox should still open for current-session artifacts
@@ -1898,6 +1898,22 @@ export default function trailExtension(pi: ExtensionAPI) {
 				await workerCommands.tell(ref, message);
 				await refreshWorkerDockWidget();
 			};
+			const announceLoadResult = (result: LoadResult): void => {
+				const slot = result.slot;
+				if (result.source.kind === "worker") {
+					announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`, "success");
+					return;
+				}
+				const checkpoint = result.source.checkpoint;
+				const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} checkpoint`;
+				announceAction(
+					pi,
+					ctx,
+					`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
+					`${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`,
+					"success",
+				);
+			};
 			if (intent.kind === "help") {
 				emitText(pi, ctx, trailUsage(), "help", "trail · help");
 				return;
@@ -1970,8 +1986,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						continue;
 					}
 					if (result.action === "load") {
-						const slot = await loadedArtifacts.loadWorker(result.worker);
-						announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerDisplayName(result.worker)}\nrefs: @${slot.slot}.<id>`, "success");
+						announceLoadResult(await loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
 						await refreshWorkerDockWidget();
 						return;
 					}
@@ -1986,9 +2001,9 @@ export default function trailExtension(pi: ExtensionAPI) {
 						return;
 					}
 					if (result.action === "answers") {
-						const slot = await loadedArtifacts.loadWorker(result.worker);
+						const loadResult = await loadedArtifacts.loadSource({ kind: "worker", worker: result.worker });
 						await refreshWorkerDockWidget();
-						const answers = slot.artifacts.filter((artifact) => artifact.kind === "response");
+						const answers = loadResult.slot.artifacts.filter((artifact) => artifact.kind === "response");
 						if (answers.length === 0) {
 							notifyTrail(pi, ctx, `No answers yet for ${workerSourceLabel(result.worker)}`, "info");
 							return;
@@ -2010,13 +2025,14 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 				const store = createCheckpointStore();
 				const opts = { includeConsumed: intent.includeConsumed === true };
-				let checkpoint: CheckpointIndexEntry | undefined;
+				let source: LoadableSource | undefined;
 				if (intent.ref) {
-					checkpoint = await store.find(intent.ref, opts);
+					const checkpoint = await store.find(intent.ref, opts);
 					if (!checkpoint) {
 						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
 						return;
 					}
+					source = { kind: "checkpoint", checkpoint };
 				} else {
 					const [summaries, workers] = await Promise.all([
 						store.listSummaries(opts),
@@ -2027,14 +2043,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						return;
 					}
 					if (!ctx.hasUI) {
-						if (summaries.length > 0) checkpoint = summaries[summaries.length - 1]!.entry;
-						else {
-							const worker = workers[workers.length - 1]!;
-							const slot = await loadedArtifacts.loadWorker(worker);
-							announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(worker)}\nrefs: @${slot.slot}.<id>`, "success");
-							await refreshWorkerDockWidget();
-							return;
-						}
+						source = loadedArtifacts.defaultLoadSource({ checkpoints: summaries.map((summary) => summary.entry), workers });
 					} else {
 						const initial: LoadPickerMode = summaries.length > 0 ? "checkpoint" : "worker";
 						while (true) {
@@ -2044,37 +2053,24 @@ export default function trailExtension(pi: ExtensionAPI) {
 								return;
 							}
 							if (selected.kind === "worker") {
-								try {
-									const slot = await loadedArtifacts.loadWorker(selected.worker);
-									announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(selected.worker)}\nrefs: @${slot.slot}.<id>`, "success");
-									await refreshWorkerDockWidget();
-								} catch (err) {
-									notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
-								}
-								return;
+								source = { kind: "worker", worker: selected.worker };
+								break;
 							}
 							if (selected.action === "preview") {
 								const md = await store.readMarkdown(selected.summary.entry);
 								await showTextViewer(ctx, `Trail checkpoint ${selected.summary.entry.id}`, md);
 								continue;
 							}
-							checkpoint = selected.summary.entry;
+							source = { kind: "checkpoint", checkpoint: selected.summary.entry };
 							break;
 						}
 					}
 				}
+				if (!source) return;
 				try {
-					if (!checkpoint) return;
-					const slot = await loadedArtifacts.loadCheckpoint(checkpoint);
-					if (checkpoint.consumeOnUse) queueShutdownConsume(checkpoint);
-					const tag = checkpoint.consumeOnUse ? "consume on session end" : `${checkpoint.mode} checkpoint`;
-					announceAction(
-						pi,
-						ctx,
-						`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
-						`${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`,
-						"success",
-					);
+					const result = await loadedArtifacts.loadSource(source);
+					announceLoadResult(result);
+					if (source.kind === "worker") await refreshWorkerDockWidget();
 				} catch (err) {
 					notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
 				}

@@ -133,6 +133,8 @@ Leverage:
 
 Interface:
 
+- `defaultLoadSource(candidates)`
+- `loadSource(source)`
 - `loadCheckpoint(checkpoint)`
 - `loadWorker(worker)`
 - `unloadSlot(slot)`
@@ -141,9 +143,16 @@ Interface:
 - `expandChipsForSubmit(ctx, userText)`
 - `drainCheckpointConsumes(markConsumed)`
 
+Owned flow:
+1. Choose the default load source when `/trail load` has no explicit id.
+2. Mount Checkpoint and worker Artifacts into stable carryover slots.
+3. Queue consume-on-use Checkpoints when they are loaded.
+4. Drop pending consume-on-use work when a mounted Checkpoint unloads.
+5. Expand Reference/full chips on submit against current and mounted Artifacts.
+
 Leverage:
-- Trail command flow does not manage chip arrays, carryover maps, slot names, or stale Reference expansion.
-- Mounted Checkpoint and worker Artifacts share one slot and Reference expansion policy.
+- Trail command flow does not manage chip arrays, carryover maps, slot names, load defaults, or stale Reference expansion.
+- Mounted Checkpoint and worker Artifacts share one source loading Interface and Reference expansion policy.
 - Consume-on-use queueing stays local to mounted Checkpoint state while persistence remains a store adapter.
 
 ### Background Work

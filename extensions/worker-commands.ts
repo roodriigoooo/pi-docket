@@ -10,7 +10,7 @@ type TrailMessageKind = "list" | "success" | "action";
 
 type WorkerCommandsDeps = {
 	store: WorkerStore;
-	loadedArtifacts: Pick<LoadedArtifactContext, "loadWorker" | "unloadSource">;
+	loadedArtifacts: Pick<LoadedArtifactContext, "loadSource" | "unloadSource">;
 	cwd: string;
 	parentSession?: string;
 	notify(text: string, level: NotifyLevel): void;
@@ -73,10 +73,10 @@ function formatWorkerList(workers: WorkerStatus[]): string {
 
 export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	const loadWorker = async (worker: WorkerStatus): Promise<void> => {
-		const slot = await deps.loadedArtifacts.loadWorker(worker);
+		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
 		deps.announce(
-			`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
-			`${workerSummaryName(worker)}\nrefs: @${slot.slot}.<id>`,
+			`loaded ${result.slot.slot} · ${result.slot.artifacts.length} artifact${result.slot.artifacts.length === 1 ? "" : "s"}`,
+			`${workerSummaryName(worker)}\nrefs: @${result.slot.slot}.<id>`,
 			"success",
 		);
 	};
