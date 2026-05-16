@@ -43,9 +43,10 @@ import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactC
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
-import { createLoadedArtifactContext, type Chip, type ChipToggleResult, type LoadableSource, type LoadResult } from "./loaded-artifact-context.js";
+import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
+import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection, type ParallelWorkAction, type ParallelWorkEntry, type TrailBrowserAction } from "./trail-command-router.js";
 import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
@@ -339,8 +340,6 @@ function sourceBar(theme: any, sources: NavigatorSource[], active: NavigatorSour
 		.join(" ");
 }
 
-type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker"; artifact?: Artifact };
-
 function modeBar(theme: any, active: NavigatorMode): string {
 	const modes: Array<{ value: NavigatorMode; label: string }> = [
 		{ value: "review", label: "review" },
@@ -357,12 +356,6 @@ function artifactMeta(artifact: Artifact): Record<string, unknown> {
 function artifactHasDiff(artifact: Artifact): boolean {
 	const diff = artifactMeta(artifact).diff;
 	return typeof diff === "string" && diff.length > 0;
-}
-
-function artifactWorkerRef(artifact: Artifact): string | undefined {
-	const label = artifactMeta(artifact).workerLabel;
-	if (typeof label === "string" && label.length > 0) return label;
-	return artifact.source;
 }
 
 function bucketName(bucket: ReviewBucket | undefined, mode: NavigatorMode): string {
@@ -428,11 +421,6 @@ function selectedActionHints(item: ReviewItem, pinned: boolean, done: boolean): 
 	if (item.actions.includes("openFile")) hints.push("o open");
 	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", done ? "x restore" : "x done", "v preview");
 	return artifact ? hints : [];
-}
-
-function trailMetaString(artifact: Artifact, key: string): string | undefined {
-	const value = artifactMeta(artifact)[key];
-	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function bucketCounts(items: ReviewItem[]): Record<ReviewBucket, number> {
@@ -835,16 +823,6 @@ async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summar
 type ParallelKindFilter = ArtifactKind | "all";
 type ParallelSource = "all" | string;
 
-type ParallelWorkEntry = {
-	worker: WorkerStatus;
-	artifact: Artifact;
-};
-
-type ParallelWorkAction =
-	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "load" | "copyAttach" | "answers" | "tell"; worker: WorkerStatus }
-	| null;
-
 const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
 
 function workerStateGlyph(state: WorkerDerivedState): string {
@@ -1160,12 +1138,6 @@ async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: 
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
 }
-
-type LoadPickerMode = "checkpoint" | "worker";
-type LoadPickerSelection =
-	| { kind: "checkpoint"; action: "load" | "preview"; summary: CheckpointSummary }
-	| { kind: "worker"; action: "load"; worker: WorkerStatus }
-	| null;
 
 class TrailLoadPicker implements Component {
 	private container: Container | Box = new Container();
@@ -1858,8 +1830,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 
 			const intent = parsed.intent;
+			const workerStore = createWorkerStore();
+			const checkpointStore = createCheckpointStore();
 			const workerCommands = createWorkerCommands({
-				store: createWorkerStore(),
+				store: workerStore,
 				loadedArtifacts,
 				cwd: ctx.cwd,
 				parentSession: ctx.sessionManager.getSessionFile?.(),
@@ -1868,7 +1842,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 			});
 			const checkpointCommands = createCheckpointCommands({
-				store: createCheckpointStore(),
+				store: checkpointStore,
 				hasUI: ctx.hasUI,
 				notify: (text, level) => notifyTrail(pi, ctx, text, level),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
@@ -1878,343 +1852,54 @@ export default function trailExtension(pi: ExtensionAPI) {
 				editText: (title, text) => ctx.hasUI ? ctx.ui.editor(title, text) : Promise.resolve(undefined),
 				startSession: (checkpoint, content) => startCheckpointSession(pi, ctx, checkpoint, content, queueShutdownConsume),
 			});
-			const tellWorker = async (ref: string, text?: string, artifact?: Artifact): Promise<void> => {
-				const trimmed = text?.trim();
-				if (trimmed) {
-					await workerCommands.tell(ref, trimmed);
-					await refreshWorkerDockWidget();
-					return;
-				}
-				if (!ctx.hasUI) {
-					notifyTrail(pi, ctx, "Usage: /trail tell w<N> <text>", "error");
-					return;
-				}
-				const worker = await createWorkerStore().find(ref);
-				const label = worker ? workerSourceLabel(worker) : ref;
-				const questions = worker ? workerQuestions(worker).map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
-				const placeholder = artifact ? trailMetaString(artifact, "question") ?? artifact.title : questions;
-				const message = (await ctx.ui.input(`Tell ${label}`, placeholder ?? "instruction, answer, or follow-up"))?.trim();
-				if (!message) return;
-				await workerCommands.tell(ref, message);
-				await refreshWorkerDockWidget();
-			};
-			const announceLoadResult = (result: LoadResult): void => {
-				const slot = result.slot;
-				if (result.source.kind === "worker") {
-					announceAction(pi, ctx, `loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`, `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`, "success");
-					return;
-				}
-				const checkpoint = result.source.checkpoint;
-				const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} checkpoint`;
-				announceAction(
-					pi,
-					ctx,
-					`loaded ${slot.slot} · ${slot.artifacts.length} artifact${slot.artifacts.length === 1 ? "" : "s"}`,
-					`${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`,
-					"success",
-				);
-			};
-			if (intent.kind === "help") {
-				emitText(pi, ctx, trailUsage(), "help", "trail · help");
-				return;
-			}
-
-			if (intent.kind === "clear") {
-				const had = loadedArtifacts.clearChips();
-				refreshChipWidget();
-				notifyTrail(pi, ctx, had ? "Trail chips cleared" : "Trail had no chips", "info");
-				return;
-			}
-
-			if (intent.kind === "tell") {
-				await tellWorker(intent.worker, intent.text);
-				return;
-			}
-
-			if (intent.kind === "worker-state") {
-				if (!workerId) {
-					notifyTrail(pi, ctx, "Worker state commands only run inside a Trail worker", "warning");
-					return;
-				}
-				await applyWorkerState(ctx, intent.state, intent.text);
-				return;
-			}
-
-			if (intent.kind === "checkpoint") {
-				const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-				await checkpointLifecycle.create(intent.options);
-				return;
-			}
-
-			if (intent.kind === "continue") {
-				await checkpointCommands.continue(intent.idOrLast);
-				return;
-			}
-
-			if (intent.kind === "delete") {
-				if (intent.targetKind === "worker") {
-					await workerCommands.delete(intent.target);
-					await refreshWorkerDockWidget();
-				} else await checkpointCommands.delete(intent.target);
-				return;
-			}
-
-			if (intent.kind === "list") {
-				if (intent.workers === true) await workerCommands.list();
-				else await checkpointCommands.list(intent.includeConsumed === true);
-				return;
-			}
-
-			if (intent.kind === "spawn") {
-				await workerCommands.spawn(intent.task);
-				await refreshWorkerDockWidget();
-				return;
-			}
-
-			if (intent.kind === "workers") {
-				const store = createWorkerStore();
-				const { workers, artifactsByWorker } = await readWorkersWithArtifacts(store);
-				if (!ctx.hasUI) {
-					emitText(pi, ctx, renderParallelWorkList(workers, artifactsByWorker), "list", "trail · parallel work");
-					return;
-				}
-				while (true) {
-					const result = await showParallelWorkDashboard(ctx, workers, artifactsByWorker);
-					if (!result) return;
-					if (result.action === "peek") {
-						await showTextViewer(ctx, `${workerSourceLabel(result.entry.worker)} · ${parallelKindLabel(result.entry.artifact.kind)}`, formatArtifact(result.entry.artifact));
-						continue;
-					}
-					if (result.action === "load") {
-						announceLoadResult(await loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
-						await refreshWorkerDockWidget();
-						return;
-					}
-					if (result.action === "copyAttach") {
-						const command = `tmux attach -t ${result.worker.tmuxSession}`;
-						const copied = await copyToClipboard(command);
-						notifyTrail(pi, ctx, copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
-						return;
-					}
-					if (result.action === "tell") {
-						await tellWorker(workerSourceLabel(result.worker));
-						return;
-					}
-					if (result.action === "answers") {
-						const loadResult = await loadedArtifacts.loadSource({ kind: "worker", worker: result.worker });
-						await refreshWorkerDockWidget();
-						const answers = loadResult.slot.artifacts.filter((artifact) => artifact.kind === "response");
-						if (answers.length === 0) {
-							notifyTrail(pi, ctx, `No answers yet for ${workerSourceLabel(result.worker)}`, "info");
-							return;
-						}
-						const config = await loadConfig(ctx.cwd);
-						const catalog = createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
-						await showTrailBrowser(ctx, catalog, answers, pinnedRefs, completedRefs, "answers");
-						return;
-					}
-				}
-			}
-
-			if (intent.kind === "load") {
-				if (intent.refKind === "worker") {
-					await workerCommands.load(intent.ref);
-					await refreshWorkerDockWidget();
-					return;
-				}
-
-				const store = createCheckpointStore();
-				const opts = { includeConsumed: intent.includeConsumed === true };
-				let source: LoadableSource | undefined;
-				if (intent.ref) {
-					const checkpoint = await store.find(intent.ref, opts);
-					if (!checkpoint) {
-						notifyTrail(pi, ctx, "Trail checkpoint not found", "error");
-						return;
-					}
-					source = { kind: "checkpoint", checkpoint };
-				} else {
-					const [summaries, workers] = await Promise.all([
-						store.listSummaries(opts),
-						createWorkerStore().list(),
-					]);
-					if (summaries.length === 0 && workers.length === 0) {
-						notifyTrail(pi, ctx, "Trail has nothing to load — try /trail checkpoint or /trail spawn", "error");
-						return;
-					}
-					if (!ctx.hasUI) {
-						source = loadedArtifacts.defaultLoadSource({ checkpoints: summaries.map((summary) => summary.entry), workers });
-					} else {
-						const initial: LoadPickerMode = summaries.length > 0 ? "checkpoint" : "worker";
-						while (true) {
-							const selected = await showLoadPicker(ctx, summaries, workers, initial);
-							if (!selected) {
-								notifyTrail(pi, ctx, "Trail load cancelled", "info");
-								return;
-							}
-							if (selected.kind === "worker") {
-								source = { kind: "worker", worker: selected.worker };
-								break;
-							}
-							if (selected.action === "preview") {
-								const md = await store.readMarkdown(selected.summary.entry);
-								await showTextViewer(ctx, `Trail checkpoint ${selected.summary.entry.id}`, md);
-								continue;
-							}
-							source = { kind: "checkpoint", checkpoint: selected.summary.entry };
-							break;
-						}
-					}
-				}
-				if (!source) return;
-				try {
-					const result = await loadedArtifacts.loadSource(source);
-					announceLoadResult(result);
-					if (source.kind === "worker") await refreshWorkerDockWidget();
-				} catch (err) {
-					notifyTrail(pi, ctx, `Trail load failed: ${String(err)}`, "error");
-				}
-				return;
-			}
-
-			if (intent.kind === "unload") {
-				if (intent.targetKind === "all") {
-					const slots = loadedArtifacts.slots().map((entry) => entry.slot);
-					for (const slot of slots) loadedArtifacts.unloadSlot(slot);
-					if (slots.length) announceAction(pi, ctx, `unloaded ${slots.length} slot${slots.length === 1 ? "" : "s"}`, slots.join(", "));
-					else notifyTrail(pi, ctx, "Trail had no loaded slots", "info");
-					return;
-				}
-				if (intent.targetKind === "worker") {
-					await workerCommands.unload(intent.target);
-					await refreshWorkerDockWidget();
-					return;
-				}
-				const store = createCheckpointStore();
-				const checkpoint = await store.find(intent.target, { includeConsumed: true });
-				const targetId = checkpoint?.id ?? intent.target;
-				const removed = loadedArtifacts.unloadSource("checkpoint", targetId);
-				if (removed) announceAction(pi, ctx, `unloaded ${removed.slot}`, removed.sourceId);
-				else notifyTrail(pi, ctx, "Trail checkpoint not loaded", "warning");
-				return;
-			}
-
-			const config = await loadConfig(ctx.cwd);
-			if (intent.kind === "browse" || intent.kind === "answers" || intent.kind === "search") await refreshWorkerCarryoverForReview();
-			const catalog = createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
-			let artifacts = catalog.list();
-			let initialMode: NavigatorMode = intent.kind === "browse" && intent.mode ? intent.mode : "review";
-
-			if (intent.kind === "answers") {
-				initialMode = "answers";
-				if (intent.query) artifacts = (await catalog.search(intent.query)).filter((artifact) => artifact.kind === "response");
-				else artifacts = artifacts.filter((artifact) => artifact.kind === "response");
-				if (artifacts.length === 0) {
-					notifyTrail(pi, ctx, intent.query ? `Trail answers found no matches for: ${intent.query}` : "Trail has no answers yet", "info");
-					return;
-				}
-				if (!ctx.hasUI) {
-					emitText(pi, ctx, renderArtifactList(artifacts), "list", intent.query ? `trail · answers "${intent.query}"` : "trail · answers");
-					return;
-				}
-			}
-
-			if (intent.kind === "search") {
-				initialMode = "all";
-				artifacts = await catalog.search(intent.query);
-				if (artifacts.length === 0) {
-					notifyTrail(pi, ctx, `Trail search found no artifacts for: ${intent.query}`, "info");
-					return;
-				}
-				if (!ctx.hasUI) {
-					emitText(pi, ctx, renderArtifactList(artifacts), "list", `trail · search "${intent.query}"`);
-					return;
-				}
-			}
-
-			if (intent.kind === "artifact") {
-				const artifact = catalog.find(intent.idOrRef);
-				if (!artifact) {
-					notifyTrail(pi, ctx, "Trail artifact not found", "error");
-					return;
-				}
-				completedRefs.add(artifact.ref);
-				if (intent.action === "ref" || intent.action === "inject") {
-					const r = loadedArtifacts.toggleChip(artifact, "ref");
-					refreshChipWidget();
-					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "ref", kind: artifact.kind, title: artifact.title }, r);
-				} else if (intent.action === "inject-full") {
-					const r = loadedArtifacts.toggleChip(artifact, "full");
-					refreshChipWidget();
-					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, r);
-				} else {
-					const ok = await copyToClipboard(catalog.fullText(artifact));
-					notifyTrail(pi, ctx, ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
-				}
-				return;
-			}
-
-			if (!ctx.hasUI) {
-				emitText(pi, ctx, renderArtifactList(artifacts), "list", `trail · ${navigatorModeLabel(initialMode)}`);
-				return;
-			}
-
-			while (true) {
-				const result = await showTrailBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode);
-				if (!result) return;
-				if (result.action === "checkpoint") {
+			await createTrailCommandRouter({
+				hasUI: ctx.hasUI,
+				workerId,
+				workerCommands,
+				checkpointCommands,
+				loadedArtifacts,
+				workerStore,
+				checkpointStore,
+				notify: (text, level) => notifyTrail(pi, ctx, text, level),
+				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
+				announce: (subject, detail, kind) => announceAction(pi, ctx, subject, detail, kind),
+				trailUsage,
+				renderArtifactList,
+				renderParallelWorkList,
+				formatArtifact,
+				refreshChipWidget,
+				refreshWorkerDockWidget,
+				refreshWorkerCarryoverForReview,
+				markArtifactDone: (artifact) => completedRefs.add(artifact.ref),
+				applyWorkerState: (state, text) => applyWorkerState(ctx, state, text),
+				createCheckpoint: async (options) => {
+					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
+					await checkpointLifecycle.create(options);
+				},
+				createHandoffCheckpoint: async () => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
 					await checkpointLifecycle.create({ mode: "handoff", note: "", consumeOnUse: false, raw: false });
-					return;
-				}
-				if (result.action === "search") {
-					const query = (await ctx.ui.input("Search Trail", "commands, errors, files, answers..."))?.trim();
-					if (!query) continue;
-					const matches = await catalog.search(query);
-					if (matches.length === 0) {
-						notifyTrail(pi, ctx, `Trail search found no artifacts for: ${query}`, "info");
-						continue;
-					}
-					artifacts = matches;
-					initialMode = "all";
-					continue;
-				}
-				if (result.action === "tellWorker" && result.artifact) {
-					const workerRef = artifactWorkerRef(result.artifact);
-					if (!workerRef) {
-						notifyTrail(pi, ctx, "Trail worker not found for this item", "error");
-						continue;
-					}
-					await tellWorker(workerRef, undefined, result.artifact);
-					return;
-				}
-				if (!result.artifact) return;
-				completedRefs.add(result.artifact.ref);
-				if (result.action === "inspect") {
-					await showArtifactViewer(ctx, catalog, result.artifact);
-					continue;
-				}
-				if (result.action === "openFile") {
-					const filePath = artifactFilePath(result.artifact, ctx.cwd);
+				},
+				catalog: async () => {
+					const config = await loadConfig(ctx.cwd);
+					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
+				},
+				readWorkersWithArtifacts: () => readWorkersWithArtifacts(workerStore),
+				showParallelWorkDashboard: (workers, artifactsByWorker) => showParallelWorkDashboard(ctx, workers, artifactsByWorker),
+				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
+				showText: (title, text) => showTextViewer(ctx, title, text),
+				showTrailBrowser: (catalog, artifacts, initialMode) => showTrailBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
+				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),
+				openFileOrArtifact: async (catalog, artifact) => {
+					const filePath = artifactFilePath(artifact, ctx.cwd);
 					if (filePath) await showFileViewer(ctx, filePath);
-					else await showArtifactViewer(ctx, catalog, result.artifact);
-					continue;
-				}
-				const artifact = result.artifact;
-				if (result.action === "reference") {
-					const r = loadedArtifacts.toggleChip(artifact, "ref");
-					refreshChipWidget();
-					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "ref", kind: artifact.kind, title: artifact.title }, r);
-				} else if (result.action === "injectFull") {
-					const r = loadedArtifacts.toggleChip(artifact, "full");
-					refreshChipWidget();
-					announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, r);
-				} else if (result.action === "copy") {
-					const ok = await copyToClipboard(catalog.fullText(artifact));
-					notifyTrail(pi, ctx, ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
-				}
-				return;
-			}
+					else await showArtifactViewer(ctx, catalog, artifact);
+				},
+				input: (title, placeholder) => ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined),
+				copyText: copyToClipboard,
+				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),
+				parallelKindLabel,
+			}).handle(intent);
 		},
 	});
 }

@@ -28,6 +28,8 @@ Trail is a Pi extension for session artifacts and fresh-session checkpoints.
 
 **Background Work**: Module that owns worker state transitions, worker protocol semantics, worker attention ranking, and synthetic status Artifacts. Workers are provenance for inbox rows, not a primary navigation axis unless the user opens the worker power/debug view. Waiting, ready, and failed worker states are represented as synthetic status Artifacts so Review can rank them with ordinary errors/files.
 
+**Command Router**: Module that owns execution policy for parsed Trail intents. Pi command registration, TUI prompts, clipboard, tmux, and session creation are adapters.
+
 **Navigator**: interactive Trail view for Review, Answers, All, search, inspection, referencing, copying, pinning, done/restore queue control, and checkpointing.
 
 ## UI principles
@@ -224,5 +226,21 @@ Leverage:
 - TUI views render Review Items and map keys/labels; they do not own Review ranking or action eligibility.
 - Review queue tests cross the same seam as the TUI Adapter.
 - Background Work reaches Review through synthetic status Artifacts, so Navigator does not depend on worker storage or tmux.
+
+### Command Router
+
+Interface:
+
+- `createTrailCommandRouter(deps).handle(intent)`
+
+Owned flow:
+1. Route parsed Trail intents to Checkpoint Commands, Worker Commands, Loaded Artifact Context, Background Work, Artifact Catalog, and Navigator flows.
+2. Decide command ordering: refresh worker carryover before browsing, mark Artifacts done before attachment/copy, and refresh worker dock after worker operations.
+3. Keep load, unload, search, answers, artifact reference, and Review browser command policy in one Module.
+
+Leverage:
+- Pi command registration only parses arguments, builds adapters, and delegates one intent.
+- Command behavior tests cross one seam without Pi UI, tmux, clipboard, or session creation.
+- TUI prompts and renderers stay adapters; command policy stays local.
 
 ## Planned deepening opportunities
