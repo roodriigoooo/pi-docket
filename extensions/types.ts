@@ -1,6 +1,15 @@
 export type ArtifactKind = "command" | "error" | "file" | "code" | "prompt" | "response" | "checkpoint";
 export type CheckpointMode = "handoff" | "compact" | "debug" | "review";
 
+export type GitSnapshot = {
+	branch?: string;
+	head?: string;
+	dirty?: number;
+	staged?: number;
+	unstaged?: number;
+	untracked?: number;
+};
+
 export type Artifact = {
 	id: string; // displayId alias, kept for command compatibility
 	displayId: string;
@@ -27,4 +36,5 @@ export type CheckpointIndexEntry = {
 	note?: string;
 	consumeOnUse?: boolean;
 	consumedAt?: string;
+	git?: GitSnapshot;
 };

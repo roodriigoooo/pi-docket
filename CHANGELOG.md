@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+Included:
+- README rewrite with a more direct, personal tone
+- note that current GIFs are outdated and need refreshing
+
 ## 0.2.0
 
 Included:

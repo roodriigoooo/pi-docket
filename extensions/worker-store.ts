@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
-import type { Artifact } from "./types.js";
+import type { Artifact, GitSnapshot } from "./types.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
@@ -34,6 +35,8 @@ export type WorkerStore = {
 export type SpawnInput = {
 	task: string;
 	cwd: string;
+	git?: GitSnapshot;
+	worktree?: boolean;
 	parentSession?: string;
 	extensionArgs?: string[];
 	idHint?: string;
@@ -60,6 +63,37 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+const WORKER_EXIT_PATCH_SCRIPT = [
+	`const fs = require("fs");`,
+	`const file = process.argv[1];`,
+	`const rawCode = process.argv[2] ?? "";`,
+	`let status;`,
+	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(0); }`,
+	`if (!status || ["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) process.exit(0);`,
+	`const code = Number(rawCode);`,
+	`status.updatedAt = new Date().toISOString();`,
+	`if (code === 0) status.state = "ended";`,
+	`else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; }`,
+	`fs.writeFileSync(file, JSON.stringify(status, null, 2) + "\\n", "utf8");`,
+].join("");
+
+export function currentPiCommandParts(argv: string[] = process.argv, execPath = process.execPath): string[] {
+	const script = argv[1];
+	if (script && path.isAbsolute(script) && (path.basename(script) === "pi" || script.includes("pi-coding-agent"))) return [execPath, script];
+	return ["pi"];
+}
+
+function workerExitPatchCommand(statusFile: string): string {
+	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code"`;
+}
+
+export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[] }): string {
+	const piParts = [`${TRAIL_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
+	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
+	piParts.push(shellQuote(input.initialPrompt));
+	return `${piParts.join(" ")}; code=$?; ${workerExitPatchCommand(input.statusFile)}`;
+}
+
 function ensureTmux(): void {
 	const result = spawnSync("tmux", ["-V"], { encoding: "utf8" });
 	if (result.error || result.status !== 0) throw new Error("tmux not found. Install tmux and try again.");
@@ -73,6 +107,24 @@ function killTmux(name: string): boolean {
 	if (!tmuxSessionExists(name)) return false;
 	const result = spawnSync("tmux", ["kill-session", "-t", name], { stdio: "ignore" });
 	return result.status === 0;
+}
+
+function gitOutput(cwd: string, args: string[]): string | undefined {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+	if (result.error || result.status !== 0) return undefined;
+	return result.stdout.trim() || undefined;
+}
+
+function addGitWorktree(baseCwd: string, target: string): { path: string; baseCwd: string; baseHead?: string } {
+	if (gitOutput(baseCwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") throw new Error("--worktree requires running inside a git repo");
+	const baseHead = gitOutput(baseCwd, ["rev-parse", "HEAD"]);
+	const result = spawnSync("git", ["worktree", "add", "--detach", target, baseHead ?? "HEAD"], { cwd: baseCwd, encoding: "utf8" });
+	if (result.error || result.status !== 0) throw new Error(result.stderr.trim() || result.error?.message || "git worktree add failed");
+	return { path: target, baseCwd, ...(baseHead ? { baseHead } : {}) };
+}
+
+function removeGitWorktree(worktree: { path: string; baseCwd: string }): void {
+	spawnSync("git", ["worktree", "remove", "--force", worktree.path], { cwd: worktree.baseCwd, stdio: "ignore" });
 }
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
@@ -96,6 +148,16 @@ async function writeJsonAtomic(file: string, payload: unknown): Promise<void> {
 	}
 }
 
+export function readWorkerStatusSync(id: string): WorkerStatus | undefined {
+	if (!/^[a-z0-9_-]+$/i.test(id)) return undefined;
+	try {
+		const status = JSON.parse(fsSync.readFileSync(path.join(workerDir(id), "status.json"), "utf8")) as WorkerStatus;
+		return status?.id ? status : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function makeWorkerId(task: string, hint?: string): string {
 	const base = hint ?? task.split(/\s+/).slice(0, 4).join("-");
 	const slug = tmuxSafeId(base);
@@ -103,12 +165,13 @@ function makeWorkerId(task: string, hint?: string): string {
 	return `${slug}-${suffix}`.slice(0, 80);
 }
 
-export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string }): string {
+export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string }): string {
 	return buildBackgroundWorkerInitialPrompt({
 		label: workerShortLabel(input.index),
 		id: input.id,
 		taskFile: path.join(input.dir, "task.md"),
 		artifactsFile: path.join(input.dir, "artifacts.json"),
+		worktreePath: input.worktreePath,
 	});
 }
 
@@ -116,7 +179,9 @@ export function explicitExtensionArgs(): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < process.argv.length; i++) {
 		const arg = process.argv[i] ?? "";
-		if ((arg === "-e" || arg === "--extension") && process.argv[i + 1]) {
+		if (arg === "--no-extensions") {
+			out.push(arg);
+		} else if ((arg === "-e" || arg === "--extension") && process.argv[i + 1]) {
 			out.push(arg, process.argv[++i]!);
 		} else if (arg.startsWith("--extension=")) {
 			out.push("--extension", arg.slice("--extension=".length));
@@ -221,6 +286,8 @@ export function createWorkerStore(): WorkerStore {
 
 			const tmuxName = tmuxSessionName(id);
 			if (tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${tmuxName} already exists`);
+			const worktree = input.worktree ? addGitWorktree(input.cwd, path.join(dir, "worktree")) : undefined;
+			const workerCwd = worktree?.path ?? input.cwd;
 
 			const sessionDir = path.join(dir, "session");
 			await fs.mkdir(sessionDir, { recursive: true });
@@ -228,18 +295,7 @@ export function createWorkerStore(): WorkerStore {
 			const existing = await this.list();
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 
-			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir });
-
-			const extensionArgs = input.extensionArgs ?? explicitExtensionArgs();
-			const piParts = ["exec env", `${TRAIL_WORKER_ENV}=${shellQuote(id)}`, "pi", "--session-dir", shellQuote(sessionDir)];
-			for (const arg of extensionArgs) piParts.push(shellQuote(arg));
-			piParts.push(shellQuote(initialPrompt));
-
-			const command = piParts.join(" ");
-			const result = spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "-c", input.cwd, command], { encoding: "utf8" });
-			if (result.error || result.status !== 0) {
-				throw new Error(result.stderr.trim() || result.error?.message || `tmux failed for ${id}`);
-			}
+			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path });
 
 			const now = new Date().toISOString();
 			const status: WorkerStatus = {
@@ -247,12 +303,23 @@ export function createWorkerStore(): WorkerStore {
 				index,
 				tmuxSession: tmuxName,
 				task: input.task,
-				cwd: input.cwd,
+				cwd: workerCwd,
+				git: input.git,
+				worktree,
 				createdAt: now,
 				updatedAt: now,
 				state: "starting",
 			};
 			await this.writeStatus(status);
+
+			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs() });
+			const result = spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "-c", workerCwd, command], { encoding: "utf8" });
+			if (result.error || result.status !== 0) {
+				if (worktree) removeGitWorktree(worktree);
+				await fs.rm(dir, { recursive: true, force: true });
+				throw new Error(result.stderr.trim() || result.error?.message || `tmux failed for ${id}`);
+			}
+
 			return status;
 		},
 
@@ -268,6 +335,7 @@ export function createWorkerStore(): WorkerStore {
 			const status = await this.find(id);
 			if (!status) return;
 			killTmux(status.tmuxSession);
+			if (status.worktree) removeGitWorktree(status.worktree);
 			await fs.rm(workerDir(status.id), { recursive: true, force: true });
 		},
 	};

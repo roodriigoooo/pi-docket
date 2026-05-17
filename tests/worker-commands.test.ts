@@ -34,7 +34,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		writeArtifacts: async () => {},
 		addQuestion: async () => undefined,
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
-		spawn: async (input) => { spawned.push(input); return worker; },
+		spawn: async (input) => { spawned.push(input); return { ...worker, state: "starting" }; },
 		kill: async () => true,
 		purge: async (id) => { purged.push(id); },
 	};
@@ -44,7 +44,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 function deps(workers = [worker]) {
 	const { store, spawned, purged, sent } = fakeStore(workers);
 	const notifications: string[] = [];
-	const announcements: Array<{ subject: string; detail?: string; kind?: string }> = [];
+	const announcements: Array<{ subject: string; detail?: string; kind?: string; meta?: { workerId: string } }> = [];
 	const emitted: string[] = [];
 	const loaded: string[] = [];
 	const unloaded: string[] = [];
@@ -65,7 +65,7 @@ function deps(workers = [worker]) {
 		cwd: "/repo",
 		parentSession: "/session.json",
 		notify: (text) => notifications.push(text),
-		announce: (subject, detail, kind) => announcements.push({ subject, detail, kind }),
+		announce: (subject, detail, kind, _trail, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
 	});
 	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded };
@@ -77,9 +77,19 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	await commands.spawn("inspect bug");
 
 	assert.deepEqual(spawned, [{ task: "inspect bug", cwd: "/repo", parentSession: "/session.json" }]);
-	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
-	assert.match(announcements[0]?.detail ?? "", /review: \/trail/);
+	assert.equal(announcements[0]?.subject, "spawned w2[o  ] · starting");
+	assert.match(announcements[0]?.detail ?? "", /status: w2\[o  \] inspect bug now please/);
+	assert.match(announcements[0]?.detail ?? "", /inbox:  \/trail/);
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/trail workers/);
+	assert.deepEqual(announcements[0]?.meta, { workerId: "worker-1" });
+});
+
+test("Worker Commands passes worktree spawn option", async () => {
+	const { commands, spawned } = deps();
+
+	await commands.spawn("edit bug", { worktree: true });
+
+	assert.deepEqual(spawned, [{ task: "edit bug", cwd: "/repo", parentSession: "/session.json", worktree: true }]);
 });
 
 test("Worker Commands sends parent messages to workers", async () => {
@@ -113,6 +123,7 @@ test("Worker Commands loads and unloads worker artifacts", async () => {
 	assert.deepEqual(loaded, ["worker-1"]);
 	assert.deepEqual(unloaded, ["worker-1"]);
 	assert.equal(announcements[0]?.subject, "loaded w2 · 1 artifact");
+	assert.match(announcements[0]?.detail ?? "", /attach: @w2\.<id>/);
 	assert.equal(announcements[1]?.subject, "unloaded w2");
 });
 

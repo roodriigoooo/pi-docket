@@ -1,6 +1,7 @@
 import { complete, type Message } from "@mariozechner/pi-ai";
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import type { CheckpointMode } from "./types.js";
+import { gitSnapshotLabel } from "./git-context.js";
+import type { CheckpointMode, GitSnapshot } from "./types.js";
 
 export type CheckpointSummarizerConfig = {
 	enabled: boolean;
@@ -19,6 +20,7 @@ type CheckpointSummarizerInput = {
 	consumeOnUse: boolean;
 	cwd: string;
 	sourceSession?: string;
+	git?: GitSnapshot;
 	artifactsFile: string;
 	payload: Array<Record<string, unknown>>;
 	references: string;
@@ -66,6 +68,7 @@ function checkpointInput(input: CheckpointSummarizerInput): string {
 	return truncate([
 		`cwd: ${input.cwd}`,
 		input.sourceSession ? `sourceSession: ${input.sourceSession}` : undefined,
+		gitSnapshotLabel(input.git) ? `git: ${gitSnapshotLabel(input.git)}` : undefined,
 		`mode: ${input.mode}`,
 		input.note ? `userNote: ${input.note}` : undefined,
 		"",
@@ -122,6 +125,8 @@ export function createCheckpointSummarizer(): CheckpointSummarizer {
 			lines.push(`cwd: ${input.cwd}`);
 			lines.push(`created: ${new Date().toISOString()}`);
 			if (input.sourceSession) lines.push(`sourceSession: ${input.sourceSession}`);
+			const gitLabel = gitSnapshotLabel(input.git);
+			if (gitLabel) lines.push(`git: ${gitLabel}`);
 			if (input.note) lines.push(`note: ${input.note}`);
 			if (input.consumeOnUse) lines.push("consumeOnUse: true");
 			lines.push(`artifacts: ${input.artifactsFile}`);

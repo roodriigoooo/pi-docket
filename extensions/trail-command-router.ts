@@ -1,4 +1,5 @@
 import { workerQuestions, workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { workerResultArtifact, workerResultText } from "./worker-result.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
@@ -18,7 +19,7 @@ export type ParallelWorkEntry = {
 
 export type ParallelWorkAction =
 	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "load" | "copyAttach" | "answers" | "tell"; worker: WorkerStatus }
+	| { action: "details" | "load" | "copyAttach" | "answers" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
 export type LoadPickerMode = "checkpoint" | "worker";
@@ -48,6 +49,8 @@ export type TrailCommandRouterDeps = {
 	refreshChipWidget(): void;
 	refreshWorkerDockWidget(): Promise<void>;
 	refreshWorkerCarryoverForReview(): Promise<void>;
+	showWorkerResult(worker: WorkerStatus, artifacts: Artifact[], expanded: boolean): void;
+	clearWorkerResult(): boolean;
 	markArtifactDone(artifact: Artifact): void;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
@@ -84,7 +87,7 @@ function loadResultSubject(result: LoadResult): string {
 
 function loadResultDetail(result: LoadResult): string {
 	const slot = result.slot;
-	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`;
+	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nattach: @${slot.slot}.<id>`;
 	const checkpoint = result.source.checkpoint;
 	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} checkpoint`;
 	return `${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`;
@@ -92,6 +95,31 @@ function loadResultDetail(result: LoadResult): string {
 
 export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 	const announceLoadResult = (result: LoadResult): void => deps.announce(loadResultSubject(result), loadResultDetail(result), "success");
+
+	const showWorkerResult = async (ref: string, action: "show" | "use"): Promise<void> => {
+		const worker = await deps.workerStore.find(ref);
+		if (!worker) {
+			deps.notify("Trail worker not found", "error");
+			return;
+		}
+		if (action === "show") {
+			const artifacts = await deps.workerStore.readArtifacts(worker.id);
+			if (deps.hasUI) deps.showWorkerResult(worker, artifacts, true);
+			else deps.emitText(workerResultText(worker, artifacts), "list", `trail · ${workerSourceLabel(worker)}`);
+			return;
+		}
+		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
+		const artifact = workerResultArtifact(worker, result.slot.artifacts);
+		if (!artifact) {
+			deps.notify(`No result yet for ${workerSourceLabel(worker)}`, "warning");
+			return;
+		}
+		const chipResult = deps.loadedArtifacts.toggleChip(artifact, "ref");
+		deps.refreshChipWidget();
+		deps.showWorkerResult(worker, result.slot.artifacts, false);
+		deps.announceChipChange(artifact, "ref", chipResult);
+		await deps.refreshWorkerDockWidget();
+	};
 
 	const tellWorker = async (ref: string, text?: string, artifact?: Artifact): Promise<void> => {
 		const trimmed = text?.trim();
@@ -124,7 +152,13 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			if (intent.kind === "clear") {
 				const had = deps.loadedArtifacts.clearChips();
 				deps.refreshChipWidget();
-				deps.notify(had ? "Trail chips cleared" : "Trail had no chips", "info");
+				const hadWorkerResult = deps.clearWorkerResult();
+				deps.notify(had || hadWorkerResult ? "Trail cleared" : "Trail had no chips", "info");
+				return;
+			}
+
+			if (intent.kind === "worker-result") {
+				await showWorkerResult(intent.worker, intent.action);
 				return;
 			}
 
@@ -167,7 +201,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "spawn") {
-				await deps.workerCommands.spawn(intent.task);
+				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true });
 				await deps.refreshWorkerDockWidget();
 				return;
 			}
@@ -185,6 +219,10 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						await deps.showText(`${workerSourceLabel(result.entry.worker)} · ${deps.parallelKindLabel(result.entry.artifact.kind)}`, deps.formatArtifact(result.entry.artifact));
 						continue;
 					}
+					if (result.action === "details") {
+						await deps.showText(`${workerSourceLabel(result.worker)} · details`, workerResultText(result.worker, artifactsByWorker.get(result.worker.id) ?? []));
+						continue;
+					}
 					if (result.action === "load") {
 						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
 						await deps.refreshWorkerDockWidget();
@@ -198,6 +236,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					}
 					if (result.action === "tell") {
 						await tellWorker(workerSourceLabel(result.worker));
+						return;
+					}
+					if (result.action === "stop") {
+						await deps.workerCommands.delete(workerSourceLabel(result.worker));
+						await deps.refreshWorkerDockWidget();
 						return;
 					}
 					if (result.action === "answers") {
@@ -316,7 +359,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "search") {
-				initialMode = "all";
+				initialMode = "log";
 				artifacts = await catalog.search(intent.query);
 				if (artifacts.length === 0) {
 					deps.notify(`Trail search found no artifacts for: ${intent.query}`, "info");
@@ -371,7 +414,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						continue;
 					}
 					artifacts = matches;
-					initialMode = "all";
+					initialMode = "log";
 					continue;
 				}
 				if (result.action === "tellWorker" && result.artifact) {

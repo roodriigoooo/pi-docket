@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { createEventLog, type EventLog, replayEvents } from "./event-log.js";
-import type { Artifact, CheckpointIndexEntry, CheckpointMode } from "./types.js";
+import type { Artifact, CheckpointIndexEntry, CheckpointMode, GitSnapshot } from "./types.js";
 
 type CheckpointSaveInput = {
 	id: string;
@@ -11,6 +11,7 @@ type CheckpointSaveInput = {
 	artifacts: Artifact[];
 	cwd: string;
 	sourceSession?: string;
+	git?: GitSnapshot;
 	note?: string;
 	consumeOnUse?: boolean;
 };
@@ -149,6 +150,7 @@ export function createCheckpointStore(): CheckpointStore {
 				createdAt: new Date().toISOString(),
 				cwd: input.cwd,
 				sourceSession: input.sourceSession,
+				git: input.git,
 				note: input.note,
 				consumeOnUse: input.consumeOnUse,
 			};

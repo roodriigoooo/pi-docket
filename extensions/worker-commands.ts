@@ -1,4 +1,5 @@
-import { workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { workerLaunchDetail, workerLaunchSubject, workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
 import type { WorkerStore } from "./worker-store.js";
@@ -14,12 +15,12 @@ type WorkerCommandsDeps = {
 	cwd: string;
 	parentSession?: string;
 	notify(text: string, level: NotifyLevel): void;
-	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }): void;
+	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
 export type WorkerCommands = {
-	spawn(task: string): Promise<void>;
+	spawn(task: string, options?: { worktree?: boolean }): Promise<void>;
 	tell(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
@@ -76,24 +77,23 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
 		deps.announce(
 			`loaded ${result.slot.slot} · ${result.slot.artifacts.length} artifact${result.slot.artifacts.length === 1 ? "" : "s"}`,
-			`${workerSummaryName(worker)}\nrefs: @${result.slot.slot}.<id>`,
+			`${workerSummaryName(worker)}\nattach: @${result.slot.slot}.<id>`,
 			"success",
 		);
 	};
 
 	return {
-		async spawn(task: string): Promise<void> {
+		async spawn(task: string, options: { worktree?: boolean } = {}): Promise<void> {
 			try {
-				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession });
-				const label = workerShortLabel(worker.index);
+				const git = readGitSnapshot(deps.cwd);
+				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession, ...(options.worktree ? { worktree: true } : {}), ...(git ? { git } : {}) });
+				const now = Date.parse(worker.createdAt);
 				deps.announce(
-					`spawned ${label} · starting`,
-					[
-						`◌ ${label} ${workerSummaryName(worker)}`,
-						"Trail will surface worker output in /trail.",
-						`review: /trail`,
-						`debug:  /trail workers`,
-					].join("\n"),
+					workerLaunchSubject(worker, { now }),
+					workerLaunchDetail(worker, { now }),
+					"action",
+					undefined,
+					{ workerId: worker.id },
 				);
 			} catch (err) {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
@@ -129,7 +129,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			}
 			deps.loadedArtifacts.unloadSource("worker", worker.id);
 			await deps.store.purge(worker.id);
-			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}`);
+			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved worktree: ${worker.worktree.path}` : ""}`);
 		},
 		async load(ref: string | undefined): Promise<void> {
 			if (!ref) {
