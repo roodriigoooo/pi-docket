@@ -16,15 +16,24 @@ function latestArtifact(artifacts: Artifact[], kinds: Artifact["kind"][]): Artif
 		.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))[0];
 }
 
+export function isWorkerStatusArtifact(artifact: Artifact | undefined): boolean {
+	if (!artifact) return false;
+	return artifact.meta?.workerStatus !== undefined || artifact.ref.startsWith("worker-status:") || artifact.displayId === "status" || artifact.id === "status";
+}
+
+function workerAnswerArtifacts(artifacts: Artifact[]): Artifact[] {
+	return artifacts.filter((artifact) => !isWorkerStatusArtifact(artifact));
+}
+
 export function workerResultSummary(worker: WorkerStatus, artifacts: Artifact[] = []): string {
 	const state = deriveWorkerState(worker);
 	const question = workerQuestions(worker).map((item, index) => `${index + 1}. ${item.text}`).join(" ");
-	const answer = latestArtifact(artifacts, ["response", "code"]);
-	const failure = latestArtifact(artifacts, ["error"]);
+	const answer = latestArtifact(workerAnswerArtifacts(artifacts), ["response", "code"]);
+	const failure = latestArtifact(workerAnswerArtifacts(artifacts), ["error"]);
 	return firstLine(
 		state === "needs_input" ? question :
 		state === "failed" ? worker.lastError ?? failure?.title ?? failure?.body :
-		worker.summary ?? workerTodoSummary(worker) ?? answer?.title ?? answer?.body ?? workerDisplayName(worker),
+		worker.summary ?? answer?.title ?? answer?.body ?? workerTodoSummary(worker) ?? workerDisplayName(worker),
 	) ?? workerDisplayName(worker);
 }
 
@@ -34,24 +43,27 @@ export function workerResultHeadline(worker: WorkerStatus, artifacts: Artifact[]
 
 export function workerResultArtifact(worker: WorkerStatus, artifacts: Artifact[] = []): Artifact | undefined {
 	const label = workerSourceLabel(worker);
-	return artifacts.find((artifact) => artifact.meta?.workerId === worker.id && artifact.meta?.workerStatus)
+	const answer = latestArtifact(workerAnswerArtifacts(artifacts), ["response", "code", "error"]);
+	const status = artifacts.find((artifact) => artifact.meta?.workerId === worker.id && artifact.meta?.workerStatus)
 		?? artifacts.find((artifact) => artifact.displayId === `${label}.status` || artifact.id === `${label}.status` || artifact.id === "status")
-		?? latestArtifact(artifacts, ["response", "code", "error"])
 		?? workerStatusArtifact(worker);
+	return answer ?? status;
 }
 
 export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [], maxBodyLines = 8): string {
+	const label = workerSourceLabel(worker);
 	const result = workerResultArtifact(worker, artifacts);
+	const resultIsStatus = isWorkerStatusArtifact(result);
 	const summary = workerResultSummary(worker, artifacts);
-	const body = result?.body?.split(/\r?\n/).slice(0, maxBodyLines).join("\n");
+	const body = !resultIsStatus ? result?.body?.split(/\r?\n/).slice(0, maxBodyLines).join("\n") : undefined;
+	const questions = workerQuestions(worker).map((item, index) => `${index + 1}. ${item.text}`).join("\n");
 	const todos = workerTodoBoardLines(worker, { includeHeader: true, maxItems: 8 });
 	return [
-		`${workerActivityChip(worker, { verbose: true })}`,
-		`task: ${worker.task}`,
-		`summary: ${summary}`,
+		`${workerActivityChip(worker, { verbose: true })} ${summary}`,
+		body && body !== summary ? `answer:\n${body}` : undefined,
+		questions ? `needs input:\n${questions}` : undefined,
 		todos.length ? `progress:\n${todos.join("\n")}` : undefined,
-		result ? `ref: @${result.displayId}` : undefined,
-		body && body !== summary ? "" : undefined,
-		body && body !== summary ? body : undefined,
+		`actions: /trail use ${label} · /trail ask ${label}`,
+		result && !resultIsStatus ? `ref: @${result.displayId}` : undefined,
 	].filter((line): line is string => line !== undefined).join("\n");
 }

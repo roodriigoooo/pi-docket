@@ -72,7 +72,7 @@ export function trailUsage(): string {
 		"/trail wait <question>         worker prompt fallback: ask parent for input",
 		"/trail done [summary]          worker prompt fallback: mark output ready",
 		"/trail fail <reason>           worker prompt fallback: mark work failed",
-		"/trail workers                 open worker inbox (power/debug view)",
+		"/trail workers                 open navigable worker inbox",
 		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (advanced)",
 		"/trail unload <id|w<N>|all>   drop a loaded slot from session",
 		"/trail delete [id|last|w<N>]",

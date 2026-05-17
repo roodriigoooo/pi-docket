@@ -2,7 +2,7 @@ import { gitSnapshotLabel } from "./git-context.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "empty" | "failed" | "idle";
+export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
 export type WorkerTodoState = "pending" | "in_progress" | "completed";
 
@@ -104,6 +104,7 @@ export function workerMascotFrame(worker: WorkerStatus | undefined, options: { n
 		return frames[Math.floor(frameTime / FRAME_INTERVAL_MS) % frames.length]!;
 	}
 	if (state === "needs_input") return "(?_?)";
+	if (state === "ready_open_todos") return "(^_?)";
 	if (state === "ready") return "(^_^)";
 	if (state === "failed") return "(x_x)";
 	if (state === "stale") return "(-_-)";
@@ -127,6 +128,7 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	if (!options.verbose) return chip;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
+	if (state === "ready_open_todos") return `${chip} ready · open todos ${workerTodoSummary(worker) ?? ""}`.trim();
 	if (state === "ready") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "ready") ?? workerTodoSummary(worker) ?? "ready")}`;
 	if (state === "stale") return `${chip} stale`;
 	if (state === "empty") return `${chip} done`;
@@ -188,6 +190,11 @@ export function workerTodoProgress(worker: WorkerStatus): { total: number; compl
 	}, { total: 0, completed: 0, inProgress: 0, pending: 0 });
 }
 
+export function workerHasOpenTodos(worker: WorkerStatus): boolean {
+	const progress = workerTodoProgress(worker);
+	return progress.total > 0 && progress.completed < progress.total;
+}
+
 export function workerTodoSummary(worker: WorkerStatus): string | undefined {
 	const todos = worker.todos ?? [];
 	if (todos.length === 0) return undefined;
@@ -234,8 +241,11 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	if (worker.state === "needs_input") return "needs_input";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
-	if (worker.state === "ready") return "ready";
-	if (worker.state === "ended") return (worker.artifactCount ?? 0) > 0 ? "ready" : "empty";
+	if (worker.state === "ready") return workerHasOpenTodos(worker) ? "ready_open_todos" : "ready";
+	if (worker.state === "ended") {
+		if ((worker.artifactCount ?? 0) === 0) return "empty";
+		return workerHasOpenTodos(worker) ? "ready_open_todos" : "ready";
+	}
 	const ageMs = now - Date.parse(worker.updatedAt);
 	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
 	if (worker.state === "active") return "thinking";
@@ -248,11 +258,12 @@ export function workerStateRank(worker: WorkerStatus, now = Date.now()): number 
 	const state = deriveWorkerState(worker, now);
 	if (state === "needs_input") return 0;
 	if (state === "failed") return 1;
-	if (state === "ready") return 2;
-	if (state === "thinking") return 3;
-	if (state === "starting") return 4;
-	if (state === "stale") return 5;
-	return 6;
+	if (state === "ready_open_todos") return 2;
+	if (state === "ready") return 3;
+	if (state === "thinking") return 4;
+	if (state === "starting") return 5;
+	if (state === "stale") return 6;
+	return 7;
 }
 
 export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): boolean {
@@ -338,17 +349,20 @@ export function workerProtocolMessage(state: WorkerProtocolState, text?: string)
 
 export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Artifact | undefined {
 	const state = deriveWorkerState(worker, now);
-	if (state !== "needs_input" && state !== "ready" && state !== "failed") return undefined;
+	if (state !== "needs_input" && state !== "ready_open_todos" && state !== "ready" && state !== "failed") return undefined;
 	const label = workerSourceLabel(worker);
 	const questions = workerQuestions(worker);
 	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
-	const text = state === "needs_input" ? questionText : state === "ready" ? worker.summary : worker.lastError;
+	const ready = state === "ready" || state === "ready_open_todos";
+	const text = state === "needs_input" ? questionText : ready ? worker.summary : worker.lastError;
 	const todoLines = workerTodoBoardLines(worker, { includeHeader: true });
+	const progress = workerTodoProgress(worker);
+	const openTodos = Math.max(0, progress.total - progress.completed);
 	const git = gitSnapshotLabel(worker.git);
 	const title = state === "needs_input"
 		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
-		: state === "ready"
-			? `${label} ready${text ? `: ${text}` : ""}`
+		: ready
+			? `${label} ${state === "ready_open_todos" ? `ready · open todos ${openTodos}/${progress.total}` : "ready"}${text ? `: ${text}` : ""}`
 			: `${label} failed${text ? `: ${text}` : ""}`;
 	return {
 		id: "status",
@@ -359,7 +373,7 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		subtitle: workerDisplayName(worker),
 		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, git: worker.git },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, git: worker.git },
 	};
 }
 

@@ -28,10 +28,20 @@ const status: Artifact = {
 	meta: { workerId: "worker-1", workerStatus: "ready" },
 };
 
-test("Worker Result prefers worker status artifact and summary", () => {
-	assert.equal(workerResultHeadline(worker, [status]), "mascot viable for subtle worker status");
+test("Worker Result presents latest answer before status metadata", () => {
+	const response: Artifact = { id: "r1", displayId: "r1", ref: "response:1", kind: "response", title: "final answer", subtitle: "", body: "Final answer body", timestamp: 2 };
+	const text = workerResultText(worker, [status, response]);
+
+	assert.equal(workerResultHeadline(worker, [status, response]), "mascot viable for subtle worker status");
+	assert.equal(workerResultArtifact(worker, [status, response])?.displayId, "r1");
+	assert.match(text, /answer:\nFinal answer body/);
+	assert.match(text, /ref: @r1/);
+	assert.doesNotMatch(text, /worker: w1/);
+});
+
+test("Worker Result falls back to status artifact when no answer exists", () => {
 	assert.equal(workerResultArtifact(worker, [status])?.displayId, "w1.status");
-	assert.match(workerResultText(worker, [status]), /ref: @w1\.status/);
+	assert.match(workerResultText(worker, [status]), /actions: \/trail use w1 · \/trail ask w1/);
 });
 
 test("Worker Result falls back to latest response artifact", () => {
