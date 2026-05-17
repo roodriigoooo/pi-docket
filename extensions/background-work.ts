@@ -117,6 +117,21 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	return `${chip} ${workerDisplayName(worker, 28)}`;
 }
 
+export function workerLaunchSubject(worker: WorkerStatus, options: { now?: number } = {}): string {
+	return `spawned ${workerActivityChip(worker, options)} · ${deriveWorkerState(worker, options.now)}`;
+}
+
+export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number } = {}): string {
+	const git = gitSnapshotLabel(worker.git);
+	return [
+		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
+		git ? `git:    ${git}` : undefined,
+		worker.worktree ? `tree:   ${worker.worktree.path}` : undefined,
+		`inbox:  /trail`,
+		`debug:  /trail workers`,
+	].filter((line): line is string => line !== undefined).join("\n");
+}
+
 export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	if (worker.questions?.length) return worker.questions;
 	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];

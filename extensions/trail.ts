@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerHeartbeatPatch, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -52,7 +52,7 @@ import { availableSources, handleNavigatorIntent, initialNavigatorState, navigat
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { workerResultHeadline, workerResultText } from "./worker-result.js";
-import { createWorkerStore, TRAIL_WORKER_ENV } from "./worker-store.js";
+import { createWorkerStore, readWorkerStatusSync, TRAIL_WORKER_ENV } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -1423,7 +1423,7 @@ async function checkpointAndWorkerCandidates(subcommand: string): Promise<Comple
 
 type TrailMessageKind = "help" | "list" | "notice" | "action" | "success" | "warning" | "error" | "usage";
 
-type TrailMessageDetails = { kind: TrailMessageKind; heading?: string; subject?: string; trail?: { kind: ArtifactKind; title: string; subtitle?: string } };
+type TrailMessageDetails = { kind: TrailMessageKind; heading?: string; subject?: string; workerId?: string; trail?: { kind: ArtifactKind; title: string; subtitle?: string } };
 
 const KIND_GLYPH: Record<TrailMessageKind, string> = {
 	help: "?",
@@ -1459,13 +1459,13 @@ function notifyTrail(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: strin
 	else pi.sendMessage({ customType: "trail", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } satisfies TrailMessageDetails }, { triggerTurn: false });
 }
 
-function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: TrailMessageKind = "action", trail?: TrailMessageDetails["trail"]): void {
+function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: TrailMessageKind = "action", trail?: TrailMessageDetails["trail"], meta: Pick<TrailMessageDetails, "workerId"> = {}): void {
 	pi.sendMessage(
 		{
 			customType: "trail",
 			content: detail ?? "",
 			display: true,
-			details: { kind, subject, heading: `trail · ${kind}`, ...(trail ? { trail } : {}) } satisfies TrailMessageDetails,
+			details: { kind, subject, heading: `trail · ${kind}`, ...(trail ? { trail } : {}), ...meta } satisfies TrailMessageDetails,
 		},
 		{ triggerTurn: false },
 	);
@@ -1478,8 +1478,13 @@ function trailMessageRenderer(): MessageRenderer<TrailMessageDetails> {
 		const labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
 		const glyph = KIND_GLYPH[kind] ?? "·";
 		const headingText = details.heading ?? `trail · ${kind}`;
-		const subject = details.subject;
-		const content = typeof message.content === "string" ? message.content : "";
+		let subject = details.subject;
+		let content = typeof message.content === "string" ? message.content : "";
+		const liveWorker = details.workerId ? readWorkerStatusSync(details.workerId) : undefined;
+		if (liveWorker) {
+			subject = workerLaunchSubject(liveWorker);
+			content = workerLaunchDetail(liveWorker);
+		}
 		const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
 
 		const accent = (s: string) => theme.fg(labelColor, s);
@@ -1880,7 +1885,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				parentSession: ctx.sessionManager.getSessionFile?.(),
 				notify: (text, level) => notifyTrail(pi, ctx, text, level),
-				announce: (subject, detail, kind, trail) => announceAction(pi, ctx, subject, detail, kind, trail),
+				announce: (subject, detail, kind, trail, meta) => announceAction(pi, ctx, subject, detail, kind, trail, meta),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 			});
 			const checkpointCommands = createCheckpointCommands({

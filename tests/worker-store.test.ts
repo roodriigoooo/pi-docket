@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { buildWorkerInitialPrompt, createWorkerStore, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
+import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, currentPiCommandParts, explicitExtensionArgs, readWorkerStatusSync, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
 
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
@@ -55,6 +56,53 @@ test("worker initial prompt prefers protocol tools over bash slash commands", ()
 	assert.match(worktreePrompt, /isolated git worktree: \/tmp\/trail-worker-demo\/worktree/);
 });
 
+test("worker launch command reuses current pi binary and records process exit", () => {
+	const piCli = "/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
+	const parts = currentPiCommandParts(["/usr/local/bin/node", piCli], "/usr/local/bin/node");
+	assert.deepEqual(parts, ["/usr/local/bin/node", piCli]);
+	assert.deepEqual(currentPiCommandParts(["/usr/local/bin/node", "/repo/tests/worker-store.test.js"], "/usr/local/bin/node"), ["pi"]);
+
+	const command = buildWorkerLaunchCommand({
+		id: "worker-1",
+		sessionDir: "/tmp/session",
+		statusFile: "/tmp/status.json",
+		initialPrompt: "Read task, then say 'done'",
+		extensionArgs: ["--no-extensions", "-e", "./extensions/trail.ts"],
+		piCommandParts: parts,
+	});
+	assert.match(command, /TRAIL_WORKER_ID='worker-1' '\/usr\/local\/bin\/node' '\/opt\/homebrew\/lib\/node_modules\/\@earendil-works\/pi-coding-agent\/dist\/cli\.js'/);
+	assert.match(command, /--session-dir '\/tmp\/session'/);
+	assert.match(command, /'--no-extensions' '-e' '\.\/extensions\/trail\.ts'/);
+	assert.match(command, /; code=\$\?; /);
+	assert.match(command, /worker process exited before reporting ready/);
+});
+
+test("explicit extension args preserve no-extension isolation", () => {
+	const originalArgv = process.argv;
+	process.argv = ["node", "pi", "--no-extensions", "-e", "./extensions/trail.ts", "--extension=extra.ts", "--model", "sonnet"];
+	try {
+		assert.deepEqual(explicitExtensionArgs(), ["--no-extensions", "-e", "./extensions/trail.ts", "--extension", "extra.ts"]);
+	} finally {
+		process.argv = originalArgv;
+	}
+});
+
+test("worker launch command marks early process exits", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-worker-exit-test-"));
+	try {
+		const statusFile = path.join(tmp, "status.json");
+		await writeFile(statusFile, `${JSON.stringify({ id: "worker-1", index: 1, tmuxSession: "trail-worker-1", task: "test", cwd: tmp, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "starting" })}\n`, "utf8");
+		const command = buildWorkerLaunchCommand({ id: "worker-1", sessionDir: path.join(tmp, "session"), statusFile, initialPrompt: "prompt", piCommandParts: ["sh", "-c", "exit 7"] });
+		const result = spawnSync("sh", ["-c", command], { encoding: "utf8" });
+		assert.equal(result.status, 0);
+		const status = JSON.parse(await readFile(statusFile, "utf8")) as WorkerStatus;
+		assert.equal(status.state, "failed");
+		assert.equal(status.lastError, "worker process exited before reporting ready (exit 7)");
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+	}
+});
+
 test("worker store find resolves by short label, bare digits, and partial id", async () => {
 	await withTempHome(async () => {
 		const store = createWorkerStore();
@@ -71,6 +119,18 @@ test("worker store find resolves by short label, bare digits, and partial id", a
 		assert.equal(byPartial?.id, "middleware-audit-b912");
 		const missing = await store.find("w99");
 		assert.equal(missing, undefined);
+	});
+});
+
+test("worker status sync reader supports live spawn messages", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		await mkdir(root, { recursive: true });
+		await seedWorker(root, { id: "live-worker", index: 1, state: "ready" });
+
+		assert.equal(readWorkerStatusSync("live-worker")?.state, "ready");
+		assert.equal(readWorkerStatusSync("../live-worker"), undefined);
 	});
 });
 

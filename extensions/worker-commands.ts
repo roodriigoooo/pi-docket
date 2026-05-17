@@ -1,5 +1,5 @@
-import { workerActivityChip, workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
-import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
+import { workerLaunchDetail, workerLaunchSubject, workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
 import type { WorkerStore } from "./worker-store.js";
@@ -15,7 +15,7 @@ type WorkerCommandsDeps = {
 	cwd: string;
 	parentSession?: string;
 	notify(text: string, level: NotifyLevel): void;
-	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }): void;
+	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
@@ -87,17 +87,13 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			try {
 				const git = readGitSnapshot(deps.cwd);
 				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession, ...(options.worktree ? { worktree: true } : {}), ...(git ? { git } : {}) });
-				const startChip = workerActivityChip({ ...worker, state: "starting" }, { now: Date.parse(worker.createdAt) });
-				const gitLabel = gitSnapshotLabel(worker.git);
+				const now = Date.parse(worker.createdAt);
 				deps.announce(
-					`spawned ${startChip} · starting`,
-					[
-						`${workerActivityChip({ ...worker, state: "starting" }, { verbose: true, now: Date.parse(worker.createdAt) })}`,
-						gitLabel ? `git:    ${gitLabel}` : undefined,
-						worker.worktree ? `tree:   ${worker.worktree.path}` : undefined,
-						`inbox:  /trail`,
-						`debug:  /trail workers`,
-					].filter((line): line is string => line !== undefined).join("\n"),
+					workerLaunchSubject(worker, { now }),
+					workerLaunchDetail(worker, { now }),
+					"action",
+					undefined,
+					{ workerId: worker.id },
 				);
 			} catch (err) {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");

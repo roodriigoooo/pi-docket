@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, workerActivityChip, workerHeartbeatPatch, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, workerActivityChip, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -64,6 +64,13 @@ test("Background Work formats compact activity chips", () => {
 	assert.equal(workerActivityChip(worker({ state: "ready", summary: "mascot viable" }), { verbose: true }), "w2(^_^) mascot viable");
 	assert.equal(workerMascotFrame(worker({ state: "failed" })), "(x_x)");
 	assert.deepEqual(workerMascotLines(worker({ state: "ready" })).slice(0, 2), ["  (^_^)", "  /|\\  w2"]);
+});
+
+test("Background Work formats live worker launch banner", () => {
+	assert.equal(workerLaunchSubject(worker({ state: "active" }), { now: Date.parse("2026-01-01T00:00:00.400Z") }), "spawned w2(o_o) · thinking");
+	assert.equal(workerLaunchSubject(worker({ state: "ready", summary: "done" })), "spawned w2(^_^) · ready");
+	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done" })), /status: w2\(\^_\^\) done/);
+	assert.match(workerLaunchDetail(worker()), /inbox:  \/trail/);
 });
 
 test("Background Work projects worker status into synthetic Review Artifact", () => {
