@@ -4,6 +4,21 @@ import type { Artifact, GitSnapshot } from "./types.js";
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "empty" | "failed" | "idle";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
+export type WorkerTodoState = "pending" | "in_progress" | "completed";
+
+export type WorkerTodoInput = {
+	id?: string;
+	text: string;
+	state?: WorkerTodoState | "active" | "done" | "todo";
+	note?: string;
+};
+
+export type WorkerTodo = {
+	id: string;
+	text: string;
+	state: WorkerTodoState;
+	note?: string;
+};
 
 export type WorkerQuestion = {
 	id: string;
@@ -36,6 +51,7 @@ export type WorkerStatus = {
 	artifactCount?: number;
 	question?: string;
 	questions?: WorkerQuestion[];
+	todos?: WorkerTodo[];
 	summary?: string;
 	lastError?: string;
 };
@@ -111,10 +127,10 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	if (!options.verbose) return chip;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
-	if (state === "ready") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "ready"))}`;
+	if (state === "ready") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "ready") ?? workerTodoSummary(worker) ?? "ready")}`;
 	if (state === "stale") return `${chip} stale`;
 	if (state === "empty") return `${chip} done`;
-	return `${chip} ${workerDisplayName(worker, 28)}`;
+	return `${chip} ${truncateWorkerStatus(workerTodoSummary(worker) ?? workerDisplayName(worker, 28))}`;
 }
 
 export function workerLaunchSubject(worker: WorkerStatus, options: { now?: number } = {}): string {
@@ -123,13 +139,90 @@ export function workerLaunchSubject(worker: WorkerStatus, options: { now?: numbe
 
 export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number } = {}): string {
 	const git = gitSnapshotLabel(worker.git);
+	const todos = workerTodoSummary(worker);
 	return [
 		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
+		todos ? `todos:  ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
 		worker.worktree ? `tree:   ${worker.worktree.path}` : undefined,
 		`inbox:  /trail`,
 		`debug:  /trail workers`,
 	].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function normalizeWorkerTodoState(state: WorkerTodoInput["state"]): WorkerTodoState {
+	if (state === "completed" || state === "done") return "completed";
+	if (state === "in_progress" || state === "active") return "in_progress";
+	return "pending";
+}
+
+function workerTodoId(todo: WorkerTodoInput, index: number): string {
+	const id = todo.id?.trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+	return (id || `t${index + 1}`).slice(0, 32);
+}
+
+export function normalizeWorkerTodos(items: WorkerTodoInput[]): WorkerTodo[] {
+	return items
+		.map((item, index) => ({
+			id: workerTodoId(item, index),
+			text: item.text?.replace(/\s+/g, " ").trim() ?? "",
+			state: normalizeWorkerTodoState(item.state),
+			note: item.note?.replace(/\s+/g, " ").trim() || undefined,
+		}))
+		.filter((item) => item.text.length > 0)
+		.slice(0, 12);
+}
+
+export function workerTodosPatch(items: WorkerTodoInput[]): Partial<WorkerStatus> {
+	return { todos: normalizeWorkerTodos(items) };
+}
+
+export function workerTodoProgress(worker: WorkerStatus): { total: number; completed: number; inProgress: number; pending: number } {
+	const todos = worker.todos ?? [];
+	return todos.reduce((acc, todo) => {
+		acc.total++;
+		if (todo.state === "completed") acc.completed++;
+		else if (todo.state === "in_progress") acc.inProgress++;
+		else acc.pending++;
+		return acc;
+	}, { total: 0, completed: 0, inProgress: 0, pending: 0 });
+}
+
+export function workerTodoSummary(worker: WorkerStatus): string | undefined {
+	const todos = worker.todos ?? [];
+	if (todos.length === 0) return undefined;
+	const progress = workerTodoProgress(worker);
+	const current = todos.find((todo) => todo.state === "in_progress") ?? todos.find((todo) => todo.state === "pending");
+	const currentText = current ? `${current.text}${current.note ? ` (${current.note})` : ""}` : "done";
+	return `${progress.completed}/${progress.total} · ${currentText}`;
+}
+
+function workerTodoGlyph(state: WorkerTodoState): string {
+	if (state === "completed") return "✓";
+	if (state === "in_progress") return "◐";
+	return "○";
+}
+
+function truncatePlain(text: string, max: number): string {
+	return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text;
+}
+
+export function workerTodoBoardLines(worker: WorkerStatus, options: { includeHeader?: boolean; maxItems?: number; maxText?: number } = {}): string[] {
+	const todos = worker.todos ?? [];
+	if (todos.length === 0) return [];
+	const progress = workerTodoProgress(worker);
+	const maxItems = options.maxItems ?? todos.length;
+	const maxText = options.maxText ?? 72;
+	const shown = todos.slice(0, maxItems);
+	const lines = options.includeHeader ? [`Todos (${progress.completed}/${progress.total})`] : [];
+	for (let i = 0; i < shown.length; i++) {
+		const todo = shown[i]!;
+		const branch = i === shown.length - 1 && shown.length === todos.length ? "└" : "├";
+		const text = truncatePlain(`${todo.text}${todo.note ? ` (${todo.note})` : ""}`, maxText);
+		lines.push(`${branch} ${workerTodoGlyph(todo.state)} ${text}`);
+	}
+	if (shown.length < todos.length) lines.push(`└ … ${todos.length - shown.length} more`);
+	return lines;
 }
 
 export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
@@ -176,6 +269,7 @@ export function buildWorkerInitialPrompt(input: { label: string; id: string; tas
 		"Default to read-only investigation. Do not edit files unless the task explicitly asks for edits; if you do edit, summarize changed files and conflict risks.",
 		input.worktreePath ? `You are running in an isolated git worktree: ${input.worktreePath}` : undefined,
 		"Use Trail worker protocol tools for parent coordination:",
+		"- For multi-step work, optionally call `trail_todos` with a small ordered checklist (usually 3-8 items). It replaces the visible progress board; it is not a durable task manager.",
 		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
 		"- When finished with useful output, call `trail_done` with a concise summary.",
 		"- If unable to continue, call `trail_fail` with the reason.",
@@ -249,6 +343,7 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 	const questions = workerQuestions(worker);
 	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
 	const text = state === "needs_input" ? questionText : state === "ready" ? worker.summary : worker.lastError;
+	const todoLines = workerTodoBoardLines(worker, { includeHeader: true });
 	const git = gitSnapshotLabel(worker.git);
 	const title = state === "needs_input"
 		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
@@ -262,9 +357,9 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		kind: state === "failed" ? "error" : "response",
 		title,
 		subtitle: workerDisplayName(worker),
-		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
+		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, git: worker.git },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, git: worker.git },
 	};
 }
 

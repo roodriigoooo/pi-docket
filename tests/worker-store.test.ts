@@ -46,6 +46,7 @@ test("workerShortLabel + workerSummaryName format consistently", () => {
 
 test("worker initial prompt prefers protocol tools over bash slash commands", () => {
 	const prompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo" });
+	assert.match(prompt, /call `trail_todos`/);
 	assert.match(prompt, /call `trail_wait`/);
 	assert.match(prompt, /call `trail_done`/);
 	assert.match(prompt, /call `trail_fail`/);

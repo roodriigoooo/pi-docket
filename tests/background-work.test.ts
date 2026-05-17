@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, workerActivityChip, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -73,14 +73,35 @@ test("Background Work formats live worker launch banner", () => {
 	assert.match(workerLaunchDetail(worker()), /inbox:  \/trail/);
 });
 
+test("Background Work normalizes and summarizes worker todos", () => {
+	const todos = normalizeWorkerTodos([
+		{ text: "Read current worker flow", state: "completed" },
+		{ id: "ui", text: "Render board in dock", state: "in_progress", note: "wiring UI" },
+		{ text: "Document protocol", state: "pending" },
+	]);
+	const status = worker({ todos });
+
+	assert.deepEqual(workerTodoProgress(status), { total: 3, completed: 1, inProgress: 1, pending: 1 });
+	assert.equal(workerTodoSummary(status), "1/3 · Render board in dock (wiring UI)");
+	assert.deepEqual(workerTodoBoardLines(status, { includeHeader: true }), [
+		"Todos (1/3)",
+		"├ ✓ Read current worker flow",
+		"├ ◐ Render board in dock (wiring UI)",
+		"└ ○ Document protocol",
+	]);
+	assert.deepEqual(workerTodosPatch([{ text: "Done", state: "done" }]), { todos: [{ id: "t1", text: "Done", state: "completed", note: undefined }] });
+});
+
 test("Background Work projects worker status into synthetic Review Artifact", () => {
-	const status = worker({ state: "needs_input", questions: [question("Choose target?")], updatedAt: "2026-01-01T00:01:00.000Z" });
+	const status = worker({ state: "needs_input", questions: [question("Choose target?")], updatedAt: "2026-01-01T00:01:00.000Z", todos: normalizeWorkerTodos([{ text: "Pick target", state: "in_progress" }]) });
 	const artifact = workerStatusArtifact(status);
 
 	assert.equal(artifact?.ref, "worker-status:worker-1:0");
 	assert.equal(artifact?.kind, "response");
 	assert.equal(artifact?.meta?.workerStatus, "needs_input");
+	assert.equal(artifact?.meta?.todoCount, 1);
 	assert.match(artifact?.title ?? "", /w2 needs input/);
+	assert.match(artifact?.body ?? "", /progress:\nTodos \(0\/1\)/);
 });
 
 test("Background Work namespaces worker artifacts by worker label", () => {

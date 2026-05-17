@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { normalizeWorkerTodos } from "../extensions/background-work.js";
 import { workerResultArtifact, workerResultHeadline, workerResultText } from "../extensions/worker-result.js";
 import type { Artifact } from "../extensions/types.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
@@ -37,4 +38,20 @@ test("Worker Result falls back to latest response artifact", () => {
 	const response: Artifact = { id: "r1", displayId: "r1", ref: "response:1", kind: "response", title: "answer title", subtitle: "", body: "answer body", timestamp: 2 };
 	assert.equal(workerResultArtifact({ ...worker, summary: undefined }, [response])?.displayId, "r1");
 	assert.equal(workerResultHeadline({ ...worker, summary: undefined }, [response]), "answer title");
+});
+
+test("Worker Result includes lightweight progress board", () => {
+	const withTodos: WorkerStatus = {
+		...worker,
+		state: "active",
+		summary: undefined,
+		todos: normalizeWorkerTodos([
+			{ text: "Inspect current dock", state: "completed" },
+			{ text: "Render worker todo board", state: "in_progress" },
+		]),
+	};
+
+	assert.equal(workerResultHeadline(withTodos), "1/2 · Render worker todo board");
+	assert.match(workerResultText(withTodos), /progress:\nTodos \(1\/2\)/);
+	assert.match(workerResultText(withTodos), /├ ✓ Inspect current dock/);
 });

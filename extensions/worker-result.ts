@@ -1,4 +1,4 @@
-import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStatusArtifact, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStatusArtifact, workerTodoBoardLines, workerTodoSummary, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 
 function firstLine(text: string | undefined): string | undefined {
@@ -24,7 +24,7 @@ export function workerResultSummary(worker: WorkerStatus, artifacts: Artifact[] 
 	return firstLine(
 		state === "needs_input" ? question :
 		state === "failed" ? worker.lastError ?? failure?.title ?? failure?.body :
-		worker.summary ?? answer?.title ?? answer?.body ?? workerDisplayName(worker),
+		worker.summary ?? workerTodoSummary(worker) ?? answer?.title ?? answer?.body ?? workerDisplayName(worker),
 	) ?? workerDisplayName(worker);
 }
 
@@ -44,10 +44,12 @@ export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [
 	const result = workerResultArtifact(worker, artifacts);
 	const summary = workerResultSummary(worker, artifacts);
 	const body = result?.body?.split(/\r?\n/).slice(0, maxBodyLines).join("\n");
+	const todos = workerTodoBoardLines(worker, { includeHeader: true, maxItems: 8 });
 	return [
 		`${workerActivityChip(worker, { verbose: true })}`,
 		`task: ${worker.task}`,
 		`summary: ${summary}`,
+		todos.length ? `progress:\n${todos.join("\n")}` : undefined,
 		result ? `ref: @${result.displayId}` : undefined,
 		body && body !== summary ? "" : undefined,
 		body && body !== summary ? body : undefined,
