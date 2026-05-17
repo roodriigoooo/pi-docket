@@ -11,7 +11,7 @@ export type CheckpointCreateOptions = {
 
 export type TrailIntent =
 	| { kind: "help" }
-	| { kind: "browse"; mode?: "review" | "answers" | "all" }
+	| { kind: "browse"; mode?: "review" | "answers" | "log" }
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
 	| { kind: "continue"; idOrLast?: string }
@@ -32,7 +32,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["answers", "all", "search", "checkpoint", "continue", "resume", "spawn", "result", "use", "ask", "tell", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "result", "use", "ask", "tell", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -58,7 +58,7 @@ export function trailUsage(): string {
 		"Trail commands:",
 		"/trail                         open inbox",
 		"/trail answers [query]         browse assistant/worker answers",
-		"/trail all                     browse everything captured",
+		"/trail log                     audit timeline grouped by episode",
 		"/trail search <query>          search ranked artifacts, then browse matches",
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
@@ -210,7 +210,7 @@ export function parseTrailCommand(args: string): ParseResult {
 
 	if (WORKER_SHORT.test(command) && rest.length === 0) return { ok: true, intent: { kind: "worker-result", worker: command, action: "show" } };
 	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "review" } };
-	if (command === "all") return { ok: true, intent: { kind: "browse", mode: "all" } };
+	if (command === "log") return { ok: true, intent: { kind: "browse", mode: "log" } };
 	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
 	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
 	if (command === "continue" || command === "resume" || command === "r") return parseContinueCommand(rest);

@@ -6,7 +6,7 @@ Session artifacts as first-class objects for Pi.
 
 - `/trail` — open inbox
 - `/trail answers [query]` — browse assistant and worker answers
-- `/trail all` — browse everything captured
+- `/trail log` — audit timeline grouped by episode
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
 - `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
 - `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
@@ -44,41 +44,37 @@ Worker status appears in a compact activity dock above the prompt while workers 
 
 ## Parallel work inbox keys
 
-- `j/k` or arrows — move
-- `tab` — switch selected worker
-- `enter` — open selected worker details
-- `l` — load selected worker refs
-- `c` or `t` — continue/tell selected worker
+Primary:
+- `↑↓` / `j/k` — move
+- `Enter` — open selected worker details
+- `c` — continue/tell selected worker
 - `a` — copy tmux attach command
-- `x` — stop/delete selected worker
-- `?` — show full shortcut help
-- `q` or `esc` — close
+- `l` — load selected worker refs
+- `?` — show advanced shortcuts
+- `q` or `Esc` — close
+
+Advanced (revealed by `?`):
+- `tab` switch worker · `t` tell alias · `x` stop/delete worker (destructive)
 
 ## Navigator keys
 
-Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. Preview is off by default.
+Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. Footer follows a primary-action model — only the common keys appear; press `?` for the rest.
 
-- `j/k` or arrows — move
-- `g/G` — top/bottom
-- `/` — search Trail
-- `tab` — cycle Inbox → Answers → All
-- `1` — Inbox
-- `2` — Answers
-- `3` — All
-- `f` — cycle artifact kind filter
-- `s` — cycle source when needed (`current`, loaded checkpoints, workers)
-- `enter` — primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
-- `o` — open current file for file artifacts
-- `t` — tell selected worker
-- `a` or `i` — attach compact artifact reference chip
-- `I` — attach full artifact text chip
+Primary:
+- `↑↓` / `j/k` — move
+- `Enter` — review primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
+- `c` — continue conversation with the selected worker (falls back to handoff checkpoint when nothing is worker-bound)
+- `Space` — mark item done / restore it
+- `a` — attach compact reference chip
 - `y` — copy selected artifact
-- `p` — pin/unpin item in Inbox
-- `x` — mark item done / restore it to the queue
-- `c` — create handoff checkpoint
-- `v` — toggle preview
-- `?` — show full shortcut help
-- `q` or `esc` — close
+- `/` — search Trail
+- `s` — switch source (always visible above the list when multiple sources exist)
+- `tab` / `1` / `2` / `3` — cycle Inbox → Answers → Log
+- `?` — show advanced shortcuts
+- `q` or `Esc` — close
+
+Advanced (revealed by `?`):
+- `o` open file · `I` inject full chip · `p` pin · `v` preview · `f` cycle artifact kind · `t` tell (alias for `c`) · `x` done (alias for `Space`) · `g/G` top/bottom
 
 ## Inspect view keys
 

@@ -273,19 +273,10 @@ export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): bool
 export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string }): string {
 	return [
 		`You are Trail worker ${input.label} (${input.id}).`,
-		"Your task is recorded in:",
-		`  ${input.taskFile}`,
-		"",
-		`Read it, then begin. Your artifacts are auto-snapshotted to ${input.artifactsFile}.`,
-		"Default to read-only investigation. Do not edit files unless the task explicitly asks for edits; if you do edit, summarize changed files and conflict risks.",
-		input.worktreePath ? `You are running in an isolated git worktree: ${input.worktreePath}` : undefined,
-		"Use Trail worker protocol tools for parent coordination:",
-		"- For multi-step work, optionally call `trail_todos` with a small ordered checklist (usually 3-8 items). It replaces the visible progress board; it is not a durable task manager.",
-		"- If blocked or needing clarification, call `trail_wait` with a concise question, then stop and wait for a parent reply.",
-		"- When finished with useful output, call `trail_done` with a concise summary.",
-		"- If unable to continue, call `trail_fail` with the reason.",
-		"Do not run `/trail wait`, `/trail done`, or `/trail fail` in bash; those are Pi prompt fallbacks, not shell commands.",
-		"The parent reviews worker attention in `/trail` and sends follow-up with `/trail tell w<N> <message>`.",
+		`Your task is in ${input.taskFile}. Read it, then begin.`,
+		`Artifacts are auto-snapshotted to ${input.artifactsFile}.`,
+		input.worktreePath ? `Isolated git worktree: ${input.worktreePath}` : undefined,
+		"Operating rules and tool contracts live in <trail_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`trail_wait`, `trail_done`, `trail_fail`, `trail_todos`).",
 	].filter((line): line is string => line !== undefined).join("\n");
 }
 
@@ -304,7 +295,7 @@ export function workerInputAcceptedPatch(): Partial<WorkerStatus> {
 }
 
 export function workerHeartbeatPatch(current: WorkerStatus | undefined, input: { pid: number; sessionFile?: string; artifactCount: number }): Partial<WorkerStatus> {
-	const stickyState = current?.state === "needs_input" || current?.state === "ready" || current?.state === "failed";
+	const stickyState = current?.state === "needs_input" || current?.state === "ready" || current?.state === "failed" || current?.state === "idle";
 	return {
 		state: stickyState ? current.state : "active",
 		pid: input.pid,

@@ -54,7 +54,10 @@ test("Background Work protocol patch clears questions for ready and failed state
 
 test("Background Work heartbeat preserves sticky attention states", () => {
 	assert.equal(workerHeartbeatPatch(worker({ state: "needs_input" }), { pid: 123, artifactCount: 4 }).state, "needs_input");
-	assert.equal(workerHeartbeatPatch(worker({ state: "idle" }), { pid: 123, artifactCount: 4 }).state, "active");
+	assert.equal(workerHeartbeatPatch(worker({ state: "ready" }), { pid: 123, artifactCount: 4 }).state, "ready");
+	assert.equal(workerHeartbeatPatch(worker({ state: "failed" }), { pid: 123, artifactCount: 4 }).state, "failed");
+	assert.equal(workerHeartbeatPatch(worker({ state: "idle" }), { pid: 123, artifactCount: 4 }).state, "idle");
+	assert.equal(workerHeartbeatPatch(worker({ state: "active" }), { pid: 123, artifactCount: 4 }).state, "active");
 });
 
 test("Background Work formats compact activity chips", () => {

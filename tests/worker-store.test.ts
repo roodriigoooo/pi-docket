@@ -44,17 +44,28 @@ test("workerShortLabel + workerSummaryName format consistently", () => {
 	assert.match(trimmed, /investigate/);
 });
 
-test("worker initial prompt prefers protocol tools over bash slash commands", () => {
+test("packaged worker guardrails file ships with protocol contract", async () => {
+	const guardrailsPath = path.join(process.cwd(), "extensions", "worker-guardrails.md");
+	const text = await import("node:fs/promises").then((fs) => fs.readFile(guardrailsPath, "utf8"));
+	assert.match(text, /trail_wait/);
+	assert.match(text, /trail_done/);
+	assert.match(text, /trail_fail/);
+	assert.match(text, /trail_todos/);
+	assert.match(text, /Recommended:/);
+	assert.match(text, /Do not assume/i);
+	assert.match(text, /Read-only by default/);
+});
+
+test("worker initial prompt points at guardrails and names protocol tools", () => {
 	const prompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo" });
-	assert.match(prompt, /call `trail_todos`/);
-	assert.match(prompt, /call `trail_wait`/);
-	assert.match(prompt, /call `trail_done`/);
-	assert.match(prompt, /call `trail_fail`/);
-	assert.match(prompt, /Do not run `\/trail wait`/);
-	assert.match(prompt, /Default to read-only investigation/);
-	assert.match(prompt, /\/trail tell w<N>/);
+	assert.match(prompt, /<trail_worker_guardrails>/);
+	assert.match(prompt, /trail_wait/);
+	assert.match(prompt, /trail_done/);
+	assert.match(prompt, /trail_fail/);
+	assert.match(prompt, /trail_todos/);
+	assert.match(prompt, /task is in \/tmp\/trail-worker-demo\/task\.md/);
 	const worktreePrompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo", worktreePath: "/tmp/trail-worker-demo/worktree" });
-	assert.match(worktreePrompt, /isolated git worktree: \/tmp\/trail-worker-demo\/worktree/);
+	assert.match(worktreePrompt, /Isolated git worktree: \/tmp\/trail-worker-demo\/worktree/);
 });
 
 test("worker launch command reuses current pi binary and records process exit", () => {

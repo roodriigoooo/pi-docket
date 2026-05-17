@@ -4,6 +4,7 @@
  * Commands:
  *   /trail                         open inbox
  *   /trail answers [query]          browse assistant/worker answers
+ *   /trail log                      audit timeline grouped by episode
  *   /trail search <query>           ranked artifact search
  *   /trail checkpoint [flags] [note]
  *   /trail continue <id|last>
@@ -22,6 +23,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { StringEnum, Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, getLanguageFromPath, highlightCode, isToolCallEventType } from "@mariozechner/pi-coding-agent";
@@ -48,11 +50,11 @@ import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from ".
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
 import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection, type ParallelWorkAction, type ParallelWorkEntry, type TrailBrowserAction } from "./trail-command-router.js";
-import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
+import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type WorkerActivityRow } from "./worker-activity.js";
-import { workerResultHeadline, workerResultText } from "./worker-result.js";
+import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { createWorkerStore, readWorkerStatusSync, TRAIL_WORKER_ENV } from "./worker-store.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -90,23 +92,32 @@ class TrailTextViewer implements Component {
 	private lines: string[];
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private viewportHeight = 34;
 
 	constructor(private tui: TUI, private theme: any, private title: string, text: string, private done: () => void) {
 		this.lines = text.split("\n");
 	}
 
 	handleInput(data: string): void {
-		const maxOffset = Math.max(0, this.lines.length - 34);
+		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
+		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
+		const page = Math.max(1, this.viewportHeight - 2);
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
 			this.done();
 			return;
 		}
+		const before = this.offset;
 		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "d") this.offset = Math.min(maxOffset, this.offset + 17);
-		else if (data === "u") this.offset = Math.max(0, this.offset - 17);
+		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
+		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
+		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
+		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
+		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
+		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
 		else if (data === "g") this.offset = 0;
 		else if (data === "G") this.offset = maxOffset;
+		if (this.offset === before) return;
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -129,7 +140,7 @@ class TrailTextViewer implements Component {
 		for (const line of this.lines.slice(this.offset, this.offset + 34)) {
 			container.addChild(new Text(truncateToWidth(line, innerWidth - 2), 1, 0));
 		}
-		container.addChild(new Text(dim("j/k scroll · d/u half-page · g/G top/bottom · q close"), 1, 0));
+		container.addChild(new Text(dim("j/k line · J/K 5 · d/u half · Space/b page · g/G top/bottom · q close"), 1, 0));
 		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;
@@ -158,13 +169,20 @@ class TrailFileViewer implements Component {
 			this.done();
 			return;
 		}
-		const half = Math.floor(this.viewportHeight / 2);
+		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
+		const page = Math.max(1, this.viewportHeight - 2);
+		const before = this.offset;
 		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
 		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "d") this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u") this.offset = Math.max(0, this.offset - half);
+		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
+		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
+		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
+		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
+		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
+		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
 		else if (data === "g") this.offset = 0;
 		else if (data === "G") this.offset = maxOffset;
+		if (this.offset === before) return;
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -201,7 +219,7 @@ class TrailFileViewer implements Component {
 			container.addChild(new Text("", 1, 0));
 		}
 
-		container.addChild(new Text(dim("j/k scroll · d/u half-page · g/G top/bottom · q close"), 1, 0));
+		container.addChild(new Text(dim("j/k line · J/K 5 · d/u half · Space/b page · g/G top/bottom · q close"), 1, 0));
 		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;
@@ -337,7 +355,7 @@ function trailCardBg(theme: any): (s: string) => string {
 }
 
 function activePill(theme: any, label: string): string {
-	return theme.bg("selectedBg", theme.fg("text", ` ${theme.bold(label)} `));
+	return theme.fg("accent", theme.bold(` ${label} `));
 }
 
 function inactivePill(theme: any, label: string): string {
@@ -369,7 +387,7 @@ function modeBar(theme: any, active: NavigatorMode): string {
 	const modes: Array<{ value: NavigatorMode; label: string }> = [
 		{ value: "review", label: "inbox" },
 		{ value: "answers", label: "answers" },
-		{ value: "all", label: "all" },
+		{ value: "log", label: "log" },
 	];
 	return modes.map((mode) => mode.value === active ? activePill(theme, mode.label) : inactivePill(theme, mode.label)).join(" ");
 }
@@ -456,10 +474,61 @@ function bucketCounts(items: ReviewItem[]): Record<ReviewBucket, number> {
 	return counts;
 }
 
+function categoryCounts(items: ReviewItem[]): Map<ReviewCategory, number> {
+	const counts = new Map<ReviewCategory, number>();
+	for (const item of items) {
+		if (item.category) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+	}
+	return counts;
+}
+
+function categoryColor(theme: any, category: ReviewCategory | undefined, text: string): string {
+	if (category === "needs-decision") return theme.fg("warning", text);
+	if (category === "failed-blocked") return theme.fg("error", text);
+	if (category === "ready-for-review") return theme.fg("success", text);
+	if (category === "patch-proposed") return theme.fg("warning", text);
+	if (category === "checkpoint-available") return theme.fg("accent", text);
+	if (category === "pinned") return theme.fg("accent", text);
+	if (category === "recent") return theme.fg("success", text);
+	return theme.fg("muted", text);
+}
+
+function chipColor(theme: any, chip: string | undefined, text: string): string {
+	if (!chip) return theme.fg("muted", text);
+	if (chip === "needs reply") return theme.fg("warning", text);
+	if (chip === "failed" || chip === "error") return theme.fg("error", text);
+	if (chip === "ready" || chip === "ready · open todos") return theme.fg("success", text);
+	if (chip === "answer" || chip === "code") return theme.fg("accent", text);
+	if (chip === "changed" || chip === "new file") return theme.fg("toolDiffAdded", text);
+	if (chip === "stale") return theme.fg("dim", text);
+	return theme.fg("muted", text);
+}
+
+type InboxButton = { key: string; label: string };
+
+function inboxButtons(item: ReviewItem, done: boolean): InboxButton[] {
+	const primaryLabel = reviewActionLabel(item.primaryAction, item);
+	const buttons: InboxButton[] = [{ key: "Enter", label: primaryLabel }];
+	const seen = new Set<ReviewActionId>([item.primaryAction]);
+	const order: Array<{ id: ReviewActionId; key: string; label: string }> = [
+		{ id: "tellWorker", key: "c", label: "Continue" },
+		{ id: "attachReference", key: "a", label: "Attach" },
+		{ id: "copyArtifact", key: "y", label: "Copy" },
+		{ id: "markDone", key: "Space", label: done ? "Restore" : "Done" },
+	];
+	for (const entry of order) {
+		if (seen.has(entry.id)) continue;
+		if (!item.actions.includes(entry.id)) continue;
+		buttons.push({ key: entry.key, label: entry.label });
+		seen.add(entry.id);
+	}
+	return buttons;
+}
+
 function navigatorModeLabel(mode: NavigatorMode): string {
 	if (mode === "review") return "inbox";
 	if (mode === "answers") return "answers";
-	return "all";
+	return "log";
 }
 
 function plural(count: number, singular: string, pluralLabel = `${singular}s`): string {
@@ -469,7 +538,7 @@ function plural(count: number, singular: string, pluralLabel = `${singular}s`): 
 function trailStatusLine(mode: NavigatorMode, items: ReviewItem[], artifacts: Artifact[]): string {
 	if (artifacts.length === 0) return "quiet until something needs attention";
 	if (mode === "answers") return plural(items.length, "answer");
-	if (mode === "all") return plural(items.length, "artifact");
+	if (mode === "log") return plural(items.length, "artifact");
 	const counts = bucketCounts(items);
 	const parts: string[] = [];
 	if (counts.needs > 0) parts.push(`${counts.needs} needs attention`);
@@ -504,7 +573,7 @@ function emptyTrailMessage(state: NavigatorState, hasArtifacts: boolean): EmptyT
 		return {
 			title: "No answers yet",
 			body: "Answers stay quiet until assistant or worker conclusions exist for this source/filter.",
-			actions: ["press tab for all", "press / to search", "cycle filters with f"],
+			actions: ["press tab for log", "press / to search", "cycle filters with f"],
 		};
 	}
 	const filter = state.filter === "all" ? "" : `${kindLabel(state.filter)} `;
@@ -563,23 +632,29 @@ class TrailView implements Component {
 		if (data === "k" || matchesKey(data, Key.up)) return { kind: "move", by: -1 };
 		if (data === "g") return { kind: "top" };
 		if (data === "G") return { kind: "bottom" };
-		if (data === "v") return { kind: "toggleDetail" };
 		if (data === "/") return { kind: "search" };
 		if (data === "1") return { kind: "setMode", mode: "review" };
 		if (data === "2") return { kind: "setMode", mode: "answers" };
-		if (data === "3") return { kind: "setMode", mode: "all" };
+		if (data === "3") return { kind: "setMode", mode: "log" };
 		if (data === "\t" || matchesKey(data, Key.tab)) return { kind: "cycleMode" };
-		if (data === "f") return { kind: "cycleFilter" };
 		if (data === "s") return { kind: "cycleSource" };
 		if (matchesKey(data, Key.enter)) return { kind: "activatePrimary" };
-		if (data === "o") return { kind: "runAction", action: "openFile" };
-		if (data === "t") return { kind: "runAction", action: "tellWorker" };
-		if (data === "a" || data === "r" || data === "i") return { kind: "runAction", action: "attachReference" };
-		if (data === "I") return { kind: "runAction", action: "injectFull" };
+		if (data === " " || data === "x") return { kind: "runAction", action: "markDone" };
+		if (data === "c") {
+			const sel = navigatorViewModel(this.state, this.artifacts, this.queueState()).selectedItem;
+			if (sel && sel.actions.includes("tellWorker")) return { kind: "runAction", action: "tellWorker" };
+			return { kind: "createCheckpoint" };
+		}
+		if (data === "a") return { kind: "runAction", action: "attachReference" };
 		if (data === "y") return { kind: "runAction", action: "copyArtifact" };
+		// Advanced (in help): pin, preview, full inject, open file, filter, legacy aliases
+		if (data === "v") return { kind: "toggleDetail" };
 		if (data === "p") return { kind: "runAction", action: "pin" };
-		if (data === "x") return { kind: "runAction", action: "markDone" };
-		if (data === "c") return { kind: "createCheckpoint" };
+		if (data === "I") return { kind: "runAction", action: "injectFull" };
+		if (data === "o") return { kind: "runAction", action: "openFile" };
+		if (data === "f") return { kind: "cycleFilter" };
+		if (data === "t") return { kind: "runAction", action: "tellWorker" };
+		if (data === "r" || data === "i") return { kind: "runAction", action: "attachReference" };
 		return undefined;
 	}
 
@@ -624,6 +699,26 @@ class TrailView implements Component {
 		this.cachedLines = undefined;
 	}
 
+	private renderInboxCard(item: ReviewItem, width: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+		const artifact = item.artifact;
+		const chip = item.statusChip ? ` ${chipColor(this.theme, item.statusChip, `[${item.statusChip}]`)}` : "";
+		const headline = `${this.theme.fg("text", this.theme.bold(item.headline))}${chip}`;
+		this.container.addChild(new Text(truncateToWidth(headline, width), 1, 0));
+		const bullets = item.recommendations.slice(0, 3);
+		for (const bullet of bullets) {
+			for (const wrapped of wrapPlainText(`• ${bullet}`, width - 2, 2)) {
+				this.container.addChild(new Text(truncateToWidth(`  ${dim(wrapped)}`, width), 1, 0));
+			}
+		}
+		const done = this.completedRefs.has(artifact.ref);
+		const buttons = inboxButtons(item, done);
+		const buttonLine = buttons.map((button, index) => index === 0 ? accent(`[${button.key} ${button.label}]`) : muted(`[${button.key} ${button.label}]`)).join(" ");
+		this.container.addChild(new Text(truncateToWidth(buttonLine, width), 1, 0));
+		const time = relativeTime(artifact.timestamp);
+		const footer = [item.provenance, time, `@${artifact.id}`].filter(Boolean).join(" · ");
+		this.container.addChild(new Text(truncateToWidth(dim(footer), width), 1, 0));
+	}
+
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 		const artifacts = this.artifacts;
@@ -648,9 +743,7 @@ class TrailView implements Component {
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}`, innerWidth - 2), 1, 0));
 		if (this.state.filter !== "all") this.container.addChild(new Text(`${muted("filter")} ${filterBar(this.theme, this.state.filter)}`, 1, 0));
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
-		const defaultSource = sources.find((source) => source.kind === "all") ?? sources[0];
-		const sourceNarrowed = sources.length > 1 && !!defaultSource && !sameNavigatorSource(sourceLabel, defaultSource);
-		if ((sourceNarrowed || this.showHelp) && sourceLine) this.container.addChild(new Text(`${muted("source")} ${sourceLine}`, 1, 0));
+		if (sources.length > 1 && sourceLine) this.container.addChild(new Text(`${accent("s")} ${muted("source")} ${sourceLine}`, 1, 0));
 		this.container.addChild(new DynamicBorder(dividerBorder));
 
 		const listWidth = Math.max(30, innerWidth);
@@ -662,6 +755,57 @@ class TrailView implements Component {
 			this.container.addChild(new Text(truncateToWidth(` ${muted(empty.body)}`, emptyWidth), 1, 0));
 			this.container.addChild(new Text(truncateToWidth(` ${dim(`Try: ${empty.actions.join(" · ")}`)}`, emptyWidth), 1, 0));
 			this.container.addChild(new Spacer(1));
+		} else if (this.state.mode === "review") {
+			const catCounts = categoryCounts(view.items);
+			for (let i = 0; i < view.visible.length; i++) {
+				const item = view.visible[i];
+				if (!item) continue;
+				const absolute = view.visibleStart + i;
+				const selected = absolute === view.selected;
+				const previousCategory = absolute > 0 ? view.items[absolute - 1]?.category : undefined;
+				if (item.category && item.category !== previousCategory) {
+					const count = catCounts.get(item.category) ?? 0;
+					const label = `${reviewCategoryLabel(item.category)} · ${count}`;
+					this.container.addChild(new Text(` ${categoryColor(this.theme, item.category, this.theme.bold(label))}`, 1, 0));
+				}
+				const marker = selected ? accent("▸") : " ";
+				const chip = item.statusChip ? `  ${chipColor(this.theme, item.statusChip, `[${item.statusChip}]`)}` : "";
+				const headline = selected ? this.theme.bold(this.theme.fg("text", item.headline)) : this.theme.fg("text", item.headline);
+				const line = `${marker}  ${headline}${chip}`;
+				const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
+				this.container.addChild(new Text(row, 1, 0));
+			}
+		} else if (this.state.mode === "log") {
+			const episodes = episodesFromItems(view.items);
+			const episodeIndex = new Map<string, EpisodeSummary>();
+			for (const ep of episodes) episodeIndex.set(ep.id, ep);
+			for (let i = 0; i < view.visible.length; i++) {
+				const item = view.visible[i];
+				if (!item) continue;
+				const artifact = item.artifact;
+				const absolute = view.visibleStart + i;
+				const selected = absolute === view.selected;
+				const episodeId = artifact.source ?? "current";
+				const previousEpisodeId = absolute > 0 ? (view.items[absolute - 1]?.artifact.source ?? "current") : undefined;
+				if (episodeId !== previousEpisodeId) {
+					const ep = episodeIndex.get(episodeId);
+					if (ep) {
+						const task = ep.taskLabel ? ` · ${ep.taskLabel}` : "";
+						const head = ` ${accent(this.theme.bold(ep.label))}${dim(`${task} · ${ep.artifactCount} items`)}`;
+						this.container.addChild(new Text(truncateToWidth(head, listWidth - 2), 1, 0));
+					}
+				}
+				const marker = selected ? accent("▸") : " ";
+				const glyphText = bucketGlyph(item.bucket, this.state.mode);
+				const time = relativeTime(artifact.timestamp);
+				const meta = [kindLabel(artifact.kind), time, `@${artifact.id}`].filter(Boolean).join(" · ");
+				const indent = "   ";
+				const glyph = colorKind(this.theme, artifact.kind, glyphText);
+				const title = selected ? this.theme.bold(this.theme.fg("text", artifact.title)) : muted(artifact.title);
+				const line = `${marker}${indent}${glyph} ${title}  ${dim(meta)}`;
+				const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
+				this.container.addChild(new Text(row, 1, 0));
+			}
 		} else {
 			for (let i = 0; i < view.visible.length; i++) {
 				const item = view.visible[i];
@@ -670,41 +814,31 @@ class TrailView implements Component {
 				const absolute = view.visibleStart + i;
 				const selected = absolute === view.selected;
 				const bucket = item.bucket;
-				if (this.state.mode === "review") {
-					const previousBucket = absolute > 0 ? view.items[absolute - 1]?.bucket : undefined;
-					if (bucket && bucket !== previousBucket) {
-						const count = counts[bucket];
-						const label = `${bucketName(bucket, this.state.mode)} ${count}`;
-						this.container.addChild(new Text(` ${colorBucket(this.theme, bucket, this.state.mode, label)}`, 1, 0));
-					}
-				}
-				const marker = selected ? "▸" : " ";
+				const marker = selected ? accent("▸") : " ";
 				const glyphText = bucketGlyph(bucket, this.state.mode);
 				const provenance = artifact.source ? `from ${artifact.source}` : "current";
 				const meta = [kindLabel(artifact.kind), provenance, relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
-				if (selected) {
-					const plainLine = `${marker} ${glyphText} ${artifact.title} ${meta}`;
-					const row = padAnsi(truncateToWidth(plainLine, listWidth - 2), listWidth - 2);
-					this.container.addChild(new Text(this.theme.bg("selectedBg", this.theme.fg("text", row)), 1, 0));
-				} else {
-					const glyph = colorBucket(this.theme, bucket, this.state.mode, glyphText);
-					const title = muted(artifact.title);
-					const line = `${dim(marker)} ${glyph} ${title} ${dim(meta)}`;
-					const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
-					this.container.addChild(new Text(row, 1, 0));
-				}
+				const glyph = colorBucket(this.theme, bucket, this.state.mode, glyphText);
+				const title = selected ? this.theme.bold(this.theme.fg("text", artifact.title)) : muted(artifact.title);
+				const line = `${marker} ${glyph} ${title} ${dim(meta)}`;
+				const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
+				this.container.addChild(new Text(row, 1, 0));
 			}
 		}
 
 		if (sel) {
 			const artifact = sel.artifact;
-			const primary = reviewActionLabel(sel.primaryAction, sel);
-			const focusMeta = [kindLabel(artifact.kind), reviewReasonLabel(sel.reasonId), artifact.source ? `from ${artifact.source}` : "current", relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
 			this.container.addChild(new DynamicBorder(dividerBorder));
-			this.container.addChild(new Text(truncateToWidth(`${accent(primary)} ${dim("·")} ${muted(artifact.title)}`, listWidth - 2), 1, 0));
-			if (focusMeta) this.container.addChild(new Text(truncateToWidth(dim(focusMeta), listWidth - 2), 1, 0));
-			const hints = selectedActionHints(sel, this.pinnedRefs.has(artifact.ref), this.completedRefs.has(artifact.ref));
-			this.container.addChild(new Text(truncateToWidth(hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · "), listWidth - 2), 1, 0));
+			if (this.state.mode === "review") {
+				this.renderInboxCard(sel, listWidth - 2, accent, dim, muted);
+			} else {
+				const primary = reviewActionLabel(sel.primaryAction, sel);
+				const focusMeta = [kindLabel(artifact.kind), reviewReasonLabel(sel.reasonId), artifact.source ? `from ${artifact.source}` : "current", relativeTime(artifact.timestamp), `@${artifact.id}`].filter(Boolean).join(" · ");
+				this.container.addChild(new Text(truncateToWidth(`${accent(primary)} ${dim("·")} ${muted(artifact.title)}`, listWidth - 2), 1, 0));
+				if (focusMeta) this.container.addChild(new Text(truncateToWidth(dim(focusMeta), listWidth - 2), 1, 0));
+				const hints = selectedActionHints(sel, this.pinnedRefs.has(artifact.ref), this.completedRefs.has(artifact.ref));
+				this.container.addChild(new Text(truncateToWidth(hints.map((hint, index) => index === 0 ? accent(`[${hint}]`) : dim(hint)).join(" · "), listWidth - 2), 1, 0));
+			}
 		}
 
 		if (this.state.showDetail && view.selectedItem) {
@@ -716,12 +850,12 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const nextMode = this.state.mode === "review" ? "answers" : this.state.mode === "answers" ? "all" : "review";
-		this.container.addChild(new Text(dim(`↑↓ · enter · tab ${navigatorModeLabel(nextMode)} · / search · ? help · esc`), 1, 0));
+		this.container.addChild(new Text(dim(`↑↓ move · Enter review · c continue · Space done · a attach · y copy · / search · ? more · Esc close`), 1, 0));
 		if (this.showHelp) {
-			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 all")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Filters")} ${dim("f kind · s source")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Actions")} ${dim("o open file · i attach alias · I full · y copy · p pin · x done · c checkpoint · v preview")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 log · tab cycle")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Source")} ${dim("s switch source · pills above show available scopes")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Filters")} ${dim("f cycle artifact kind")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("o open file · I inject full · p pin · v preview · t tell (alias for c) · x done (alias for Space)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -885,43 +1019,42 @@ function parallelKindGlyph(kind: ArtifactKind): string {
 	return "·";
 }
 
-function workerProgressLabel(row: WorkerActivityRow): string {
-	return row.progress.total ? `${row.progress.completed}/${row.progress.total}` : "—";
-}
-
 function fitColumn(text: string, width: number): string {
 	return padAnsi(truncateToWidth(text, width, ""), width);
 }
 
-function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
+function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false, options: { hideAction?: boolean } = {}): string {
 	const marker = selected ? "▸" : "●";
-	const progress = workerProgressLabel(row);
-	if (width < 92) return truncateToWidth(`${marker} ${row.label} ${row.stateLabel} ${progress} ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}`, width, "");
-	const actionWidth = 16;
-	const outputWidth = 26;
-	const progressWidth = 8;
-	const statusWidth = 16;
+	if (width < 92) {
+		const tail = options.hideAction ? row.outputLabel : `${row.outputLabel} · ${row.actionHint}`;
+		return truncateToWidth(`${marker} ${row.label} ${row.stateLabel} ${row.taskLabel} · ${tail}`, width, "");
+	}
 	const labelWidth = 4;
-	const fixed = 2 + labelWidth + 2 + statusWidth + 2 + progressWidth + 2 + outputWidth + 2 + actionWidth;
-	const taskWidth = Math.max(14, width - fixed);
-	return truncateToWidth([
+	const statusWidth = 14;
+	const outputWidth = 32;
+	const actionWidth = options.hideAction ? 0 : row.actionHint.length;
+	const fixed = 2 + labelWidth + 2 + statusWidth + 2 + outputWidth + (options.hideAction ? 0 : 2);
+	const taskWidth = Math.max(14, Math.min(40, width - fixed - actionWidth));
+	const cells: string[] = [
 		marker,
 		fitColumn(row.label, labelWidth),
 		fitColumn(row.stateLabel, statusWidth),
 		fitColumn(row.taskLabel, taskWidth),
-		fitColumn(progress, progressWidth),
-		fitColumn(row.outputLabel, outputWidth),
-		fitColumn(row.actionHint, actionWidth),
-	].join("  "), width, "");
+		options.hideAction ? row.outputLabel : fitColumn(row.outputLabel, outputWidth),
+	];
+	if (!options.hideAction) cells.push(row.actionHint);
+	return truncateToWidth(cells.join("  "), width, "");
 }
 
-function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number): string[] {
+function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number, options: { hideAction?: boolean } = {}): string[] {
 	return rows.map((row, index) => {
-		const plain = workerActivityRowText(row, width, selectedIndex === index);
-		if (selectedIndex === index) return theme.bg("selectedBg", theme.fg("text", padAnsi(plain, width)));
+		const plain = workerActivityRowText(row, width, selectedIndex === index, options);
+		if (selectedIndex === index) return theme.bold(theme.fg("text", plain));
 		return workerStateColor(theme, row.state, plain);
 	});
 }
+
+const WORKER_PREVIEW_HEADINGS = new Set(["Outcome", "Evidence", "Next actions"]);
 
 function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number): void {
 	if (!row) return;
@@ -932,9 +1065,20 @@ function addWorkerActivityPreview(container: Container | Box, theme: any, row: W
 	const lines = workerActivityPreviewLines(row);
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i]!;
-		const color = i === 0 ? accent : raw.startsWith("Actions:") ? muted : dim;
-		const maxLines = i === 1 ? 3 : 1;
-		for (const line of wrapPlainText(raw, width, maxLines)) container.addChild(new Text(truncateToWidth(color(line), width), 1, 0));
+		if (WORKER_PREVIEW_HEADINGS.has(raw)) {
+			container.addChild(new Text(truncateToWidth(accent(theme.bold(raw)), width), 1, 0));
+			continue;
+		}
+		const isActionRow = raw.startsWith("[");
+		const maxLines = isActionRow ? 1 : 4;
+		for (const line of wrapPlainText(raw, width, maxLines)) {
+			if (isActionRow) {
+				const colored = line.replace(/\[([^\]]+)\]/g, (_, inner: string, offset: number) => offset === 0 ? accent(`[${inner}]`) : muted(`[${inner}]`));
+				container.addChild(new Text(truncateToWidth(colored, width), 1, 0));
+			} else {
+				container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, width), 1, 0));
+			}
+		}
 	}
 }
 
@@ -1097,16 +1241,16 @@ class TrailParallelWorkView implements Component {
 			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
 			this.container.addChild(new Spacer(1));
 		} else {
-			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 16)}  ${fitColumn("task", Math.max(14, listWidth - 78))}  ${fitColumn("progress", 8)}  ${fitColumn("output", 26)}  action`), 1, 0));
+			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 14)}  ${fitColumn("task", Math.max(14, Math.min(40, listWidth - 64)))}  ${fitColumn("result", 32)}  action`), 1, 0));
 			for (const line of renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected)) this.container.addChild(new Text(line, 1, 0));
 			addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Tab switch · Enter details · l load · c continue · a attach tmux · x stop · ? help · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("↑↓ move · Enter details · c continue · a attach · l load · ? more · Esc close"), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Safety")} ${dim("l mounts refs, c sends follow-up, a copies tmux attach command, x deletes worker")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("Tab switch worker · x stop worker (destructive)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1559,17 +1703,48 @@ export default function trailExtension(pi: ExtensionAPI) {
 				const dim = (s: string) => theme.fg("dim", s);
 				const muted = (s: string) => theme.fg("muted", s);
 				const success = (s: string) => theme.fg("success", s);
-				const label = workerSourceLabel(snapshot.worker);
-				const chip = workerActivityChip(snapshot.worker);
+				const warning = (s: string) => theme.fg("warning", s);
+				const errorColor = (s: string) => theme.fg("error", s);
+				const text = (s: string) => theme.fg("text", s);
+				const report = workerResultReport(snapshot.worker, snapshot.artifacts);
 				const headline = workerResultHeadline(snapshot.worker, snapshot.artifacts, 78);
 				const container = new Container();
-				container.addChild(new Text(`${accent(theme.bold("trail"))} ${dim("·")} ${success(chip)} ${muted(headline)}  ${dim(`/trail use ${label} · /trail ask ${label}`)}`, 0, 0));
-				if (snapshot.expanded) {
-					const text = workerResultText(snapshot.worker, snapshot.artifacts, 20).split("\n").slice(1);
-					for (const rawLine of text) {
-						for (const line of wrapPlainText(rawLine, 110)) container.addChild(new Text(dim(line), 2, 0));
+				const stateColor = report.state === "failed" ? errorColor : report.state === "needs_input" ? warning : success;
+				const headerLine = `${accent(theme.bold("trail"))} ${dim("·")} ${accent(report.label)} ${dim("·")} ${stateColor(report.stateLabel)}  ${muted(headline)}`;
+				container.addChild(new Text(headerLine, 0, 0));
+				if (!snapshot.expanded) return container;
+				const width = 110;
+				const indent = 2;
+				const factLine = (key: string, value: string) => `${muted(`${key}:`)} ${dim(value)}`;
+				container.addChild(new Text(factLine("Task", report.taskLabel), indent, 0));
+				container.addChild(new Text(factLine("Progress", report.progressLine), indent, 0));
+				container.addChild(new Text(factLine("Changes", report.changesLine), indent, 0));
+				const renderSection = (title: string, body: string) => {
+					container.addChild(new Text("", indent, 0));
+					container.addChild(new Text(accent(theme.bold(title)), indent, 0));
+					for (const raw of body.split(/\r?\n/)) {
+						for (const line of wrapPlainText(raw, width - 4, 4)) container.addChild(new Text(text(line), indent + 2, 0));
 					}
-					if (deriveWorkerState(snapshot.worker) === "needs_input") container.addChild(new Text(dim(`reply: /trail tell ${label} <answer>`), 2, 0));
+				};
+				const primaryTitle = report.primarySection === "question" ? "Question" : report.primarySection === "failure" ? "Failure" : "Outcome";
+				renderSection(primaryTitle, report.primaryBody);
+				if (report.recommendations.length > 0) {
+					container.addChild(new Text("", indent, 0));
+					container.addChild(new Text(accent(theme.bold("Recommendations")), indent, 0));
+					for (let i = 0; i < report.recommendations.length; i++) {
+						const bullet = `${i + 1}. ${report.recommendations[i]}`;
+						for (const line of wrapPlainText(bullet, width - 4, 3)) container.addChild(new Text(text(line), indent + 2, 0));
+					}
+				}
+				if (report.references.length > 0) {
+					container.addChild(new Text("", indent, 0));
+					container.addChild(new Text(accent(theme.bold("Useful references")), indent, 0));
+					for (const ref of report.references) {
+						const id = accent(`@${ref.displayId}`);
+						const tag = dim(`/${kindLabel(ref.kind)}`);
+						const label = muted(ref.label);
+						container.addChild(new Text(truncateToWidth(`${id}${tag}  ${label}`, width - 4), indent + 2, 0));
+					}
 				}
 				return container;
 			},
@@ -1631,6 +1806,28 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	const workerId = process.env[TRAIL_WORKER_ENV];
 
+	const extensionDir = path.dirname(fileURLToPath(import.meta.url));
+	const packagedGuardrails = path.join(extensionDir, "worker-guardrails.md");
+	let guardrailsCache: { path?: string; text?: string } | undefined;
+	async function loadWorkerGuardrails(cwd: string): Promise<string | undefined> {
+		if (guardrailsCache !== undefined) return guardrailsCache.text;
+		const config = await loadConfig(cwd).catch(() => undefined);
+		const override = config?.worker?.guardrailsPath;
+		const candidates = [override, packagedGuardrails].filter((value): value is string => typeof value === "string" && value.length > 0);
+		for (const candidate of candidates) {
+			const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
+			try {
+				const text = await fs.readFile(resolved, "utf8");
+				guardrailsCache = { path: resolved, text };
+				return text;
+			} catch {
+				// try next candidate
+			}
+		}
+		guardrailsCache = {};
+		return undefined;
+	}
+
 	const refreshWorkerDockWidget = async (): Promise<void> => {
 		const ctx = activeCtx;
 		if (!ctx?.hasUI || workerId) return;
@@ -1661,9 +1858,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 						].filter(Boolean).join(" · ") || plural(counts.workers, "worker");
 						const todoStatus = counts.todos ? ` ${muted(`todos ${counts.completedTodos}/${counts.todos}`)}` : "";
 						const heading = git ? `${accent(theme.bold("trail"))} ${dim("·")} ${dim(git)} ${dim("·")} ${muted(status)}${todoStatus}` : `${accent(theme.bold("trail"))} ${dim("·")} ${muted(status)}${todoStatus}`;
+						const rowWidth = Math.min(width, 110);
 						return [
-							truncateToWidth(`${heading}  ${dim("/trail workers · /trail w<N>")}`, width, ""),
-							...renderWorkerActivityRows(theme, rows, width),
+							truncateToWidth(heading, width, ""),
+							...renderWorkerActivityRows(theme, rows, rowWidth, undefined, { hideAction: true }),
 						];
 					},
 					invalidate() {},
@@ -1749,12 +1947,54 @@ export default function trailExtension(pi: ExtensionAPI) {
 	};
 
 	if (workerId) {
+		void loadWorkerGuardrails(activeCtx?.cwd ?? process.cwd());
+		pi.on("before_agent_start", async (event, ctx) => {
+			const text = await loadWorkerGuardrails(ctx.cwd);
+			if (!text) return;
+			return { systemPrompt: `${event.systemPrompt}\n\n<trail_worker_guardrails>\n${text.trim()}\n</trail_worker_guardrails>` };
+		});
+
+		let workerProtocolCalledThisTurn = false;
+		let workerNudgesThisSession = 0;
+		const MAX_WORKER_NUDGES = 1;
+		const markWorkerProtocolCalled = (): void => { workerProtocolCalledThisTurn = true; };
+
+		pi.on("turn_start", () => {
+			workerProtocolCalledThisTurn = false;
+		});
+
+		pi.on("agent_start", async () => {
+			try {
+				const store = createWorkerStore();
+				const current = await store.find(workerId);
+				if (current?.state === "idle") await store.patchStatus(workerId, { state: "active" });
+			} catch { /* best-effort */ }
+		});
+
+		pi.on("agent_end", async () => {
+			if (workerProtocolCalledThisTurn) return;
+			try {
+				const store = createWorkerStore();
+				const current = await store.find(workerId);
+				if (!current || current.state !== "active") return;
+				await store.patchStatus(workerId, { state: "idle" });
+				if (workerNudgesThisSession >= MAX_WORKER_NUDGES) return;
+				workerNudgesThisSession++;
+				pi.sendUserMessage("Trail: this turn ended without calling a protocol tool. If the task is complete with useful output, call `trail_done` with a summary (include a `Recommended:` bullet list if you have recommendations). If you are blocked or any non-trivial assumption is needed, call `trail_wait` with a concise question. If you cannot continue and have no useful partial output, call `trail_fail` with a one-sentence reason. Otherwise continue working.");
+			} catch { /* best-effort */ }
+		});
+
+		pi.on("input", (event) => {
+			if (event.source !== "extension") workerNudgesThisSession = 0;
+			return { action: "continue" };
+		});
+
 		pi.registerTool({
 			name: "trail_todos",
 			label: "Trail Todos",
-			description: "Trail worker only: publish a small ordered progress checklist visible to the parent session. This replaces the worker progress board; it is intentionally lighter than a dedicated todo extension.",
+			description: "Trail worker only: publish a small ordered progress checklist visible to the parent session.",
 			promptSnippet: "Publish a small worker progress checklist for the parent dock/dashboard.",
-			promptGuidelines: ["Use trail_todos for multi-step worker progress that helps the parent understand status at a glance. Keep it short (3-8 items), ordered, and replace the full list on each update. Use pending, in_progress, or completed."],
+			promptGuidelines: ["See <trail_worker_guardrails> for when to call trail_todos and how it differs from a durable task manager."],
 			parameters: Type.Object({
 				items: Type.Array(Type.Object({
 					id: Type.Optional(Type.String({ description: "Stable short id for this item, if useful" })),
@@ -1764,6 +2004,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				})),
 			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				markWorkerProtocolCalled();
 				const updated = await applyWorkerTodos(ctx, params.items as WorkerTodoInput[]);
 				const progress = updated ? workerTodoProgress(updated) : { completed: 0, total: 0 };
 				return { content: [{ type: "text", text: `Trail todos recorded (${progress.completed}/${progress.total}). Parent can see progress in the worker dock and /trail workers.` }], details: { todoCount: progress.total, completed: progress.completed } };
@@ -1774,10 +2015,11 @@ export default function trailExtension(pi: ExtensionAPI) {
 			name: "trail_wait",
 			label: "Trail Wait",
 			description: "Trail worker only: ask the parent session for input and mark this worker waiting.",
-			promptSnippet: "Ask parent for input when a Trail worker is blocked.",
-			promptGuidelines: ["Use trail_wait when you are a Trail worker and need parent clarification or a decision; do not run /trail wait via bash."],
+			promptSnippet: "Ask parent for input when a Trail worker is blocked or ambiguity is non-trivial.",
+			promptGuidelines: ["See <trail_worker_guardrails> for the full list of situations that require trail_wait. Do not assume; do not run /trail wait via bash."],
 			parameters: Type.Object({ question: Type.String({ description: "Concise question for the parent session" }) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				markWorkerProtocolCalled();
 				await applyWorkerState(ctx, "needs_input", params.question);
 				return { content: [{ type: "text", text: workerProtocolResultText("needs_input") }], details: { state: "needs_input", question: params.question } };
 			},
@@ -1786,11 +2028,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "trail_done",
 			label: "Trail Done",
-			description: "Trail worker only: mark this worker's useful output ready for parent review.",
-			promptSnippet: "Mark Trail worker output ready for parent review.",
-			promptGuidelines: ["Use trail_done when you are a Trail worker and have useful output ready; do not run /trail done via bash."],
+			description: "Trail worker only: mark this worker's useful output ready for parent review. Provide a concise summary; include a 'Recommended:' bullet list if you have recommendations.",
+			promptSnippet: "Mark Trail worker output ready for parent review with a concise summary.",
+			promptGuidelines: ["See <trail_worker_guardrails> for summary format (prose + optional Recommended: bullets) and when to use trail_done vs trail_fail. Do not run /trail done via bash."],
 			parameters: Type.Object({ summary: Type.Optional(Type.String({ description: "Concise summary of completed worker output" })) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				markWorkerProtocolCalled();
 				const updated = await applyWorkerState(ctx, "ready", params.summary);
 				const progress = updated ? workerTodoProgress(updated) : { completed: 0, total: 0 };
 				const open = Math.max(0, progress.total - progress.completed);
@@ -1802,11 +2045,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "trail_fail",
 			label: "Trail Fail",
-			description: "Trail worker only: mark this worker failed with a reason.",
-			promptSnippet: "Mark a Trail worker failed when it cannot continue.",
-			promptGuidelines: ["Use trail_fail when you are a Trail worker and cannot continue; do not run /trail fail via bash."],
+			description: "Trail worker only: mark this worker failed with a one-sentence reason. Use only when no partial output is useful; prefer trail_done with notes when partial output exists.",
+			promptSnippet: "Mark a Trail worker failed when it cannot continue and has no useful partial output.",
+			promptGuidelines: ["See <trail_worker_guardrails> for when to use trail_fail vs trail_done vs trail_wait. Do not run /trail fail via bash."],
 			parameters: Type.Object({ reason: Type.String({ description: "Reason this worker cannot continue" }) }),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				markWorkerProtocolCalled();
 				await applyWorkerState(ctx, "failed", params.reason);
 				return { content: [{ type: "text", text: workerProtocolResultText("failed") }], details: { state: "failed", reason: params.reason } };
 			},
@@ -1816,6 +2060,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			if (!isToolCallEventType("bash", event)) return;
 			const intent = parseTrailWorkerShellCommand(event.input.command);
 			if (!intent) return;
+			markWorkerProtocolCalled();
 			await applyWorkerState(ctx, intent.state, intent.text);
 			event.input.command = `printf '%s\n' ${shellSingleQuote(workerProtocolResultText(intent.state))}`;
 		});

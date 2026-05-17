@@ -359,7 +359,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "search") {
-				initialMode = "all";
+				initialMode = "log";
 				artifacts = await catalog.search(intent.query);
 				if (artifacts.length === 0) {
 					deps.notify(`Trail search found no artifacts for: ${intent.query}`, "info");
@@ -414,7 +414,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						continue;
 					}
 					artifacts = matches;
-					initialMode = "all";
+					initialMode = "log";
 					continue;
 				}
 				if (result.action === "tellWorker" && result.artifact) {

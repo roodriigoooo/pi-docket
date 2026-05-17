@@ -1,7 +1,7 @@
 import type { Artifact, ArtifactKind } from "./types.js";
 
 export type NavigatorFilter = ArtifactKind | "all";
-export type NavigatorMode = "review" | "answers" | "all";
+export type NavigatorMode = "review" | "answers" | "log";
 export type NavigatorSource =
 	| { kind: "current" }
 	| { kind: "all" }
@@ -28,7 +28,17 @@ export type ReviewReasonId =
 	| "failedCommand"
 	| "workerAnswer"
 	| "workerOutput"
-	| "assistantAnswer";
+	| "assistantAnswer"
+	| "checkpointAvailable";
+
+export type ReviewCategory =
+	| "needs-decision"
+	| "ready-for-review"
+	| "failed-blocked"
+	| "patch-proposed"
+	| "checkpoint-available"
+	| "pinned"
+	| "recent";
 
 export type ReviewQueueState = {
 	pinnedRefs: ReadonlySet<string>;
@@ -41,6 +51,11 @@ export type ReviewItem = {
 	reasonId?: ReviewReasonId;
 	primaryAction: ReviewActionId;
 	actions: ReviewActionId[];
+	headline: string;
+	recommendations: string[];
+	statusChip?: string;
+	provenance: string;
+	category?: ReviewCategory;
 };
 
 export type NavigatorState = {
@@ -152,11 +167,11 @@ function artifactHasDiff(artifact: Artifact): boolean {
 	return typeof diff === "string" && diff.length > 0;
 }
 
-type ArtifactWorkerStatus = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "empty" | "failed" | "idle";
+type ArtifactWorkerStatus = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "ready_open_todos" | "empty" | "failed" | "idle";
 
 function artifactWorkerStatus(artifact: Artifact): ArtifactWorkerStatus | undefined {
 	const status = artifactMeta(artifact).workerStatus;
-	if (status === "needs_input" || status === "ready" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
+	if (status === "needs_input" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
 	return undefined;
 }
 
@@ -180,11 +195,12 @@ export function reviewBucket(artifact: Artifact, queueState: ReviewQueueState = 
 	if (queueState.pinnedRefs.has(artifact.ref)) return "pinned";
 	if (queueState.doneRefs.has(artifact.ref)) return "recent";
 	const workerStatus = artifactWorkerStatus(artifact);
-	if (workerStatus === "needs_input" || workerStatus === "ready" || workerStatus === "failed") return "needs";
+	if (workerStatus === "needs_input" || workerStatus === "ready" || workerStatus === "ready_open_todos" || workerStatus === "failed") return "needs";
 	if (artifact.kind === "error") return "needs";
-	if (isChangedFileArtifact(artifact)) return "needs";
+	if (isChangedFileArtifact(artifact) && artifact.source) return "needs";
 	if (isFailedCommandArtifact(artifact)) return "needs";
 	if (artifact.source && (artifact.kind === "response" || artifact.kind === "code")) return "needs";
+	if (artifact.kind === "checkpoint") return "needs";
 	return undefined;
 }
 
@@ -207,20 +223,170 @@ function reviewReason(artifact: Artifact, bucket: ReviewBucket | undefined): Rev
 	if (bucket === "recent") return "done";
 	if (status === "needs_input") return "workerNeedsInput";
 	if (status === "failed") return "workerFailed";
-	if (status === "ready") return "workerReady";
+	if (status === "ready" || status === "ready_open_todos") return "workerReady";
 	if (artifact.kind === "error") return "error";
 	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changedFile" : "createdFile";
 	if (isFailedCommandArtifact(artifact)) return "failedCommand";
 	if (artifact.source && artifact.kind === "response") return "workerAnswer";
 	if (artifact.source && artifact.kind === "code") return "workerOutput";
+	if (artifact.kind === "checkpoint") return "checkpointAvailable";
 	if (artifact.kind === "response") return "assistantAnswer";
 	return undefined;
+}
+
+export function reviewCategory(reasonId: ReviewReasonId | undefined, bucket: ReviewBucket | undefined): ReviewCategory | undefined {
+	if (bucket === "pinned") return "pinned";
+	if (bucket === "recent") return "recent";
+	if (reasonId === "workerNeedsInput") return "needs-decision";
+	if (reasonId === "workerReady" || reasonId === "workerAnswer" || reasonId === "workerOutput") return "ready-for-review";
+	if (reasonId === "workerFailed" || reasonId === "error" || reasonId === "failedCommand") return "failed-blocked";
+	if (reasonId === "changedFile" || reasonId === "createdFile") return "patch-proposed";
+	if (reasonId === "checkpointAvailable") return "checkpoint-available";
+	return undefined;
+}
+
+export function reviewCategoryLabel(category: ReviewCategory | undefined): string {
+	if (category === "needs-decision") return "Needs decision";
+	if (category === "ready-for-review") return "Ready for review";
+	if (category === "failed-blocked") return "Failed / blocked";
+	if (category === "patch-proposed") return "Patch proposed";
+	if (category === "checkpoint-available") return "Checkpoint available";
+	if (category === "pinned") return "Pinned";
+	if (category === "recent") return "Recently reviewed";
+	return "Other";
 }
 
 function primaryAction(artifact: Artifact): ReviewActionId {
 	if (artifactWorkerStatus(artifact) === "needs_input") return "tellWorker";
 	if (artifact.kind === "file" && !artifactHasDiff(artifact)) return "openFile";
 	return "inspect";
+}
+
+function metaString(artifact: Artifact, key: string): string | undefined {
+	const value = artifactMeta(artifact)[key];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function workerLabelOf(artifact: Artifact): string | undefined {
+	return artifactWorkerRef(artifact);
+}
+
+function stripStatePrefix(text: string, label: string | undefined): string {
+	if (!label) return text;
+	const patterns = [
+		new RegExp(`^${label}\\s+ready(?:[\\/\\s][^:]*)?:\\s*`, "i"),
+		new RegExp(`^${label}\\s+failed(?:[^:]*)?:\\s*`, "i"),
+		new RegExp(`^${label}\\s+needs input(?:[^:]*)?:\\s*`, "i"),
+	];
+	for (const pattern of patterns) {
+		const next = text.replace(pattern, "");
+		if (next !== text) return next.trim();
+	}
+	return text;
+}
+
+function bodyMessageSection(body: string | undefined): string | undefined {
+	if (!body) return undefined;
+	const idx = body.indexOf("\nmessage:\n");
+	if (idx === -1) return undefined;
+	return body.slice(idx + "\nmessage:\n".length).trim() || undefined;
+}
+
+function workerSummaryText(artifact: Artifact): string | undefined {
+	const status = artifactWorkerStatus(artifact);
+	if (status === "needs_input") return metaString(artifact, "question") ?? bodyMessageSection(artifact.body);
+	if (status === "ready" || status === "ready_open_todos") return metaString(artifact, "summary") ?? bodyMessageSection(artifact.body);
+	if (status === "failed") return metaString(artifact, "lastError") ?? bodyMessageSection(artifact.body);
+	if (artifact.source) return bodyMessageSection(artifact.body) ?? stripStatePrefix(artifact.title, workerLabelOf(artifact));
+	return undefined;
+}
+
+function firstNonEmptyLine(text: string | undefined): string | undefined {
+	if (!text) return undefined;
+	for (const raw of text.split(/\r?\n/)) {
+		const line = raw.trim();
+		if (line) return line;
+	}
+	return undefined;
+}
+
+const BULLET_PREFIX = /^\s*(?:[-*•]|\d+[.)])\s+/;
+
+function extractBullets(text: string | undefined): string[] {
+	if (!text) return [];
+	const lines = text.split(/\r?\n/);
+	const bullets: string[] = [];
+	let inRecommended = false;
+	for (const raw of lines) {
+		const line = raw.trim();
+		if (!line) { if (inRecommended) break; continue; }
+		if (/^recommended:?$/i.test(line) || /^recommendations:?$/i.test(line) || /^suggested:?$/i.test(line)) { inRecommended = true; continue; }
+		const match = line.match(BULLET_PREFIX);
+		if (match) bullets.push(line.slice(match[0].length).trim());
+		else if (inRecommended) bullets.push(line);
+	}
+	return bullets.filter(Boolean).slice(0, 4);
+}
+
+function fallbackSentences(text: string | undefined, max = 2): string[] {
+	if (!text) return [];
+	const sentences = text.split(/(?<=[.!?])\s+/).map((sentence) => sentence.trim()).filter(Boolean);
+	return sentences.slice(0, max);
+}
+
+function cardRecommendations(artifact: Artifact): string[] {
+	const summary = workerSummaryText(artifact);
+	const bullets = extractBullets(summary);
+	if (bullets.length > 0) return bullets;
+	if (artifact.kind === "response" || artifact.kind === "code") return fallbackSentences(summary ?? artifact.body, 2);
+	return [];
+}
+
+function workerHeadline(artifact: Artifact, status: ArtifactWorkerStatus, label: string): string {
+	const subtitle = artifact.subtitle?.trim();
+	const task = subtitle && subtitle.length > 0 ? subtitle : undefined;
+	if (status === "needs_input") return task ? `${label} needs input · ${task}` : `${label} needs input`;
+	if (status === "failed") return task ? `${label} failed · ${task}` : `${label} failed`;
+	if (status === "ready" || status === "ready_open_todos") return task ? `${label} finished · ${task}` : `${label} finished`;
+	return task ? `${label} · ${task}` : label;
+}
+
+function cardHeadline(artifact: Artifact): string {
+	const status = artifactWorkerStatus(artifact);
+	const label = workerLabelOf(artifact);
+	if (status && label) return workerHeadline(artifact, status, label);
+	if (artifact.kind === "error") return firstNonEmptyLine(artifact.title) ?? "Error";
+	if (isChangedFileArtifact(artifact)) {
+		const verb = artifactHasDiff(artifact) ? "Edited" : "Created";
+		return `${verb} ${artifact.title}`;
+	}
+	if (isFailedCommandArtifact(artifact)) return `Command failed: ${artifact.title}`;
+	if (artifact.source && artifact.kind === "response" && label) {
+		const cleaned = stripStatePrefix(artifact.title, label);
+		return `${label} answered${cleaned ? ` · ${cleaned}` : ""}`;
+	}
+	return firstNonEmptyLine(artifact.title) ?? artifact.kind;
+}
+
+function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): string | undefined {
+	const status = artifactWorkerStatus(artifact);
+	if (status === "needs_input") return "needs reply";
+	if (status === "failed") return "failed";
+	if (status === "ready") return "ready";
+	if (status === "ready_open_todos") return "ready · open todos";
+	if (status === "stale") return "stale";
+	if (artifact.kind === "error") return "error";
+	if (isFailedCommandArtifact(artifact)) return "failed";
+	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changed" : "new file";
+	if (artifact.source && (artifact.kind === "response" || artifact.kind === "code")) return artifact.kind === "code" ? "code" : "answer";
+	if (bucket === "pinned") return "pinned";
+	if (bucket === "recent") return "done";
+	return undefined;
+}
+
+function cardProvenance(artifact: Artifact): string {
+	const label = workerLabelOf(artifact);
+	return label ? `worker ${label}` : "current session";
 }
 
 function reviewActions(artifact: Artifact): ReviewActionId[] {
@@ -235,12 +401,19 @@ export function reviewItemForArtifact(artifact: Artifact, queueState: ReviewQueu
 	const bucket = reviewBucket(artifact, queueState);
 	const action = primaryAction(artifact);
 	const actions = reviewActions(artifact);
+	const reason = reviewReason(artifact, bucket);
+	const category = reviewCategory(reason, bucket);
 	return {
 		artifact,
 		...(bucket ? { bucket } : {}),
-		...(reviewReason(artifact, bucket) ? { reasonId: reviewReason(artifact, bucket) } : {}),
+		...(reason ? { reasonId: reason } : {}),
 		primaryAction: action,
 		actions: actions.includes(action) ? actions : [action, ...actions],
+		headline: cardHeadline(artifact),
+		recommendations: cardRecommendations(artifact),
+		...(cardStatusChip(artifact, bucket) ? { statusChip: cardStatusChip(artifact, bucket) } : {}),
+		provenance: cardProvenance(artifact),
+		...(category ? { category } : {}),
 	};
 }
 
@@ -257,11 +430,66 @@ function sortReviewItems(items: ReviewItem[]): ReviewItem[] {
 }
 
 function applyModeFilter(items: ReviewItem[], mode: NavigatorMode): ReviewItem[] {
-	if (mode === "all") return items;
+	if (mode === "log") return sortLogItems(items);
 	if (mode === "answers") return items.filter((item) => item.artifact.kind === "response");
 	const queued = items.filter((item) => item.bucket !== undefined);
 	const active = queued.filter((item) => item.bucket !== "recent");
 	return sortReviewItems(active.length > 0 ? active : queued);
+}
+
+function episodeOrderKey(source: string | undefined): string {
+	return source ?? "";
+}
+
+function sortLogItems(items: ReviewItem[]): ReviewItem[] {
+	return [...items].sort((a, b) => {
+		const sa = episodeOrderKey(a.artifact.source);
+		const sb = episodeOrderKey(b.artifact.source);
+		if (sa !== sb) return sa.localeCompare(sb);
+		return (a.artifact.timestamp ?? 0) - (b.artifact.timestamp ?? 0);
+	});
+}
+
+export type EpisodeSummary = {
+	id: string;
+	source?: string;
+	label: string;
+	taskLabel?: string;
+	artifactCount: number;
+	firstTimestamp: number;
+	lastTimestamp: number;
+};
+
+export function episodesFromItems(items: ReviewItem[]): EpisodeSummary[] {
+	const map = new Map<string, EpisodeSummary>();
+	for (const item of items) {
+		const source = item.artifact.source;
+		const id = source ?? "current";
+		const existing = map.get(id);
+		const taskLabel = item.artifact.subtitle?.trim() || undefined;
+		const ts = item.artifact.timestamp ?? 0;
+		if (!existing) {
+			map.set(id, {
+				id,
+				...(source ? { source } : {}),
+				label: source ? `Worker ${source}` : "Current session",
+				...(taskLabel ? { taskLabel } : {}),
+				artifactCount: 1,
+				firstTimestamp: ts,
+				lastTimestamp: ts,
+			});
+		} else {
+			existing.artifactCount++;
+			existing.firstTimestamp = Math.min(existing.firstTimestamp, ts);
+			existing.lastTimestamp = Math.max(existing.lastTimestamp, ts);
+			if (!existing.taskLabel && taskLabel) existing.taskLabel = taskLabel;
+		}
+	}
+	return [...map.values()].sort((a, b) => {
+		if (!a.source && b.source) return -1;
+		if (a.source && !b.source) return 1;
+		return (a.source ?? "").localeCompare(b.source ?? "");
+	});
 }
 
 export function filteredReviewItems(state: NavigatorState, artifacts: Artifact[], queueState: ReviewQueueState = EMPTY_QUEUE): ReviewItem[] {
@@ -293,7 +521,7 @@ function cycleFilter(filter: NavigatorFilter): NavigatorFilter {
 
 function cycleMode(mode: NavigatorMode): NavigatorMode {
 	if (mode === "review") return "answers";
-	if (mode === "answers") return "all";
+	if (mode === "answers") return "log";
 	return "review";
 }
 

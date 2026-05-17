@@ -96,9 +96,10 @@ test("Trail grammar recognizes accidental worker protocol in bash", () => {
 	assert.equal(parseTrailWorkerShellCommand("echo before\n/trail wait hidden"), undefined);
 });
 
-test("Trail grammar parses answers, all, and remaining short aliases", () => {
+test("Trail grammar parses answers, log, and remaining short aliases", () => {
 	assert.deepEqual(parseTrailCommand("review"), { ok: true, intent: { kind: "browse", mode: "review" } });
-	assert.deepEqual(parseTrailCommand("all"), { ok: true, intent: { kind: "browse", mode: "all" } });
+	assert.deepEqual(parseTrailCommand("log"), { ok: true, intent: { kind: "browse", mode: "log" } });
+	assert.equal(parseTrailCommand("all").ok, false);
 	assert.deepEqual(parseTrailCommand("answers"), { ok: true, intent: { kind: "answers", query: undefined } });
 	assert.deepEqual(parseTrailCommand("answers worker auth plan"), { ok: true, intent: { kind: "answers", query: "worker auth plan" } });
 	assert.deepEqual(parseTrailCommand("s worker auth plan"), { ok: true, intent: { kind: "search", query: "worker auth plan" } });
