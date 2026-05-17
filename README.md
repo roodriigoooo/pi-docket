@@ -169,15 +169,15 @@ Typical flow:
 /trail
 ```
 
-An expanded worker activity stack stays above the prompt while workers are starting, active, waiting, ready, ready-with-open-todos, failed, idle, or stale. Every visible worker gets its own row, sorted by attention, with wrapped status/result text and its progress board when present. Starting/thinking workers animate at low FPS with at-a-glance chips (`w1[o  ]`, `w1(o_o)`, `w2(?_?)`, `w3(^_^)`) without adding context bytes.
+A compact worker activity dock stays above the prompt while workers are starting, active, waiting, ready, ready-with-open-todos, failed, idle, or stale. Every visible worker gets a one-line row, sorted by attention/recency, with identity, status, task, todo progress, output kind, and next action. Starting/thinking workers animate at low FPS with at-a-glance chips (`w1[o  ]`, `w1(o_o)`, `w2(?_?)`, `w3(^_^)`) without adding context bytes.
 
-Use `/trail w1` or `/trail result w1` to expand an answer-first worker result panel above the prompt. Use `/trail use w1` to attach the worker result as a compact Trail ref for the next agent message. Use `/trail ask w1 ...` or `/trail tell w1 ...` for follow-up.
+Use `/trail workers` to open the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w1` or `/trail result w1` to expand an answer-first worker result panel above the prompt. Use `/trail use w1` to attach the worker result as a compact Trail ref for the next agent message. Use `/trail ask w1 ...` or `/trail tell w1 ...` for follow-up.
 
-`/trail` is the unified inbox: worker output appears beside current-session errors, changed files, pinned items, and recent items. `/trail workers` opens the navigable worker inbox for reading worker answers/progress and choosing follow-up actions.
+`/trail` is the unified inbox: worker output appears beside current-session errors, changed files, pinned items, and recent items. `/trail workers` is the worker-focused reader/action view.
 
 Workers surface attention states with protocol tools: `trail_wait`, `trail_done`, and `trail_fail`. Workers can also call `trail_todos` with a short ordered checklist; Trail renders it as a lightweight progress board in the dock, `/trail w<N>`, and `/trail workers`. If a worker calls `trail_done` while todos remain open, Trail shows the separate `ready/open todos` state so the parent can see that mismatch. This is intentionally a visibility layer for worker progress, not a replacement for dedicated task-list extensions. The worker-side `/trail wait`, `/trail done`, and `/trail fail` commands remain Pi prompt fallbacks, but workers are told not to run them through bash. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions and recorded instead of failing as missing shell commands.
 
-Waiting, ready, and failed states appear as first-class Inbox rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Inbox row with a question count. Send input from the parent session with `/trail tell w<N> [text]` or by selecting the worker row in Inbox and pressing `t`. If you omit text, Trail opens a small input prompt instead of polluting the parent prompt box.
+Waiting, ready, and failed states appear as first-class Inbox rows ahead of ordinary artifacts. Multiple waits from one worker collapse into one Inbox row with a question count. Send input from the parent session with `/trail tell w<N> [text]` or by selecting the worker row in `/trail workers` and pressing `c`. If you omit text, Trail opens a small input prompt instead of polluting the parent prompt box.
 
 Worker artifacts cost zero model-context tokens until you attach a specific artifact reference (`a` or `i`), attach a worker result with `/trail use w<N>`, or full text (`I`).
 

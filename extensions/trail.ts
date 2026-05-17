@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStateRank, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -51,7 +51,7 @@ import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection
 import { availableSources, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, sameNavigatorSource, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { workerActivityRows, workerActivityStackLines, workerActivityTotals, type WorkerActivityRow, type WorkerActivityStackLine } from "./worker-activity.js";
+import { workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type WorkerActivityRow } from "./worker-activity.js";
 import { workerResultHeadline, workerResultText } from "./worker-result.js";
 import { createWorkerStore, readWorkerStatusSync, TRAIL_WORKER_ENV } from "./worker-store.js";
 
@@ -885,39 +885,57 @@ function parallelKindGlyph(kind: ArtifactKind): string {
 	return "·";
 }
 
-function workerAttentionLabel(worker: WorkerStatus): string {
-	return workerActivityChip(worker, { verbose: true });
+function workerProgressLabel(row: WorkerActivityRow): string {
+	return row.progress.total ? `${row.progress.completed}/${row.progress.total}` : "—";
 }
 
-function workerTodoLineColor(theme: any, line: string): string {
-	if (line.includes("✓")) return theme.fg("dim", line);
-	if (line.includes("◐")) return theme.fg("warning", line);
-	if (line.startsWith("Todos")) return theme.fg("accent", theme.bold(line));
-	return theme.fg("muted", line);
+function fitColumn(text: string, width: number): string {
+	return padAnsi(truncateToWidth(text, width, ""), width);
 }
 
-function workerActivityLineColor(theme: any, line: WorkerActivityStackLine, text: string): string {
-	if (line.kind === "todo") return workerTodoLineColor(theme, line.text).replace(line.text, text);
-	if (line.kind === "question") return theme.fg("warning", text);
-	if (line.kind === "answer") return theme.fg("muted", text);
-	return workerStateColor(theme, line.state, text);
+function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
+	const marker = selected ? "▸" : "●";
+	const progress = workerProgressLabel(row);
+	if (width < 92) return truncateToWidth(`${marker} ${row.label} ${row.stateLabel} ${progress} ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}`, width, "");
+	const actionWidth = 16;
+	const outputWidth = 26;
+	const progressWidth = 8;
+	const statusWidth = 16;
+	const labelWidth = 4;
+	const fixed = 2 + labelWidth + 2 + statusWidth + 2 + progressWidth + 2 + outputWidth + 2 + actionWidth;
+	const taskWidth = Math.max(14, width - fixed);
+	return truncateToWidth([
+		marker,
+		fitColumn(row.label, labelWidth),
+		fitColumn(row.stateLabel, statusWidth),
+		fitColumn(row.taskLabel, taskWidth),
+		fitColumn(progress, progressWidth),
+		fitColumn(row.outputLabel, outputWidth),
+		fitColumn(row.actionHint, actionWidth),
+	].join("  "), width, "");
 }
 
-function renderWorkerActivityStack(theme: any, rows: WorkerActivityRow[], width: number): string[] {
-	const out: string[] = [];
-	for (const line of workerActivityStackLines(rows)) {
-		const prefix = line.kind === "worker" ? "" : "  ";
-		const wrapped = wrapPlainText(line.text, Math.max(16, width - visibleWidth(prefix)));
-		for (let i = 0; i < wrapped.length; i++) {
-			const continuation = i === 0 ? prefix : `${prefix}  `;
-			out.push(truncateToWidth(`${continuation}${workerActivityLineColor(theme, line, wrapped[i]!)}`, width, ""));
-		}
+function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number): string[] {
+	return rows.map((row, index) => {
+		const plain = workerActivityRowText(row, width, selectedIndex === index);
+		if (selectedIndex === index) return theme.bg("selectedBg", theme.fg("text", padAnsi(plain, width)));
+		return workerStateColor(theme, row.state, plain);
+	});
+}
+
+function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number): void {
+	if (!row) return;
+	const dim = (s: string) => theme.fg("dim", s);
+	const muted = (s: string) => theme.fg("muted", s);
+	const accent = (s: string) => theme.fg("accent", s);
+	container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+	const lines = workerActivityPreviewLines(row);
+	for (let i = 0; i < lines.length; i++) {
+		const raw = lines[i]!;
+		const color = i === 0 ? accent : raw.startsWith("Actions:") ? muted : dim;
+		const maxLines = i === 1 ? 3 : 1;
+		for (const line of wrapPlainText(raw, width, maxLines)) container.addChild(new Text(truncateToWidth(color(line), width), 1, 0));
 	}
-	return out;
-}
-
-function addWorkerActivityStack(container: Container | Box, theme: any, rows: WorkerActivityRow[], width: number): void {
-	for (const line of renderWorkerActivityStack(theme, rows, width)) container.addChild(new Text(line, 1, 0));
 }
 
 async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
@@ -963,10 +981,7 @@ function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<
 class TrailParallelWorkView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
-	private source: ParallelSource = "all";
-	private filter: ParallelKindFilter = "all";
 	private showHelp = false;
-	private dismissed = new Set<string>();
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -979,33 +994,25 @@ class TrailParallelWorkView implements Component {
 	) {}
 
 	private entries(): ParallelWorkEntry[] {
-		return parallelEntries(this.workers, this.artifactsByWorker, this.source, this.filter, this.dismissed);
+		return parallelEntries(this.workers, this.artifactsByWorker, "all", "all", new Set());
 	}
 
-	private selectedEntry(): ParallelWorkEntry | undefined {
-		return this.entries()[this.selected];
+	private activityRows(): WorkerActivityRow[] {
+		return workerActivityRows(this.workers, this.artifactsByWorker);
 	}
 
 	private selectedWorker(): WorkerStatus | undefined {
-		return this.selectedEntry()?.worker ?? this.workers.find((worker) => worker.id === this.source);
+		return this.activityRows()[this.selected]?.worker;
 	}
 
-	private cycleSource(): void {
-		const sources: ParallelSource[] = ["all", ...this.workers.map((worker) => worker.id)];
-		const idx = sources.indexOf(this.source);
-		this.source = sources[(idx + 1) % sources.length] ?? "all";
-		this.selected = 0;
-	}
-
-	private cycleFilter(): void {
-		const idx = PARALLEL_KIND_FILTERS.indexOf(this.filter);
-		this.filter = PARALLEL_KIND_FILTERS[(idx + 1) % PARALLEL_KIND_FILTERS.length] ?? "all";
-		this.selected = 0;
+	private selectNext(): void {
+		const max = Math.max(0, this.activityRows().length - 1);
+		this.selected = Math.min(max, this.selected + 1);
 	}
 
 	handleInput(data: string): void {
-		const entries = this.entries();
-		const max = Math.max(0, entries.length - 1);
+		const rows = this.activityRows();
+		const max = Math.max(0, rows.length - 1);
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
 			this.done(null);
 			return;
@@ -1014,17 +1021,11 @@ class TrailParallelWorkView implements Component {
 		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
 		else if (data === "g") this.selected = 0;
 		else if (data === "G") this.selected = max;
-		else if (matchesKey(data, Key.tab)) this.cycleSource();
-		else if (data === "f") this.cycleFilter();
+		else if (matchesKey(data, Key.tab)) this.selectNext();
 		else if (data === "?") this.showHelp = !this.showHelp;
-		else if (data === "x") {
-			const entry = this.selectedEntry();
-			if (entry) this.dismissed.add(`${entry.worker.id}:${entry.artifact.ref}`);
-			this.selected = Math.min(this.selected, Math.max(0, this.entries().length - 1));
-		}
 		else if (matchesKey(data, Key.enter)) {
-			const entry = this.selectedEntry();
-			if (entry) this.done({ action: "peek", entry });
+			const worker = this.selectedWorker();
+			if (worker) this.done({ action: "details", worker });
 			return;
 		}
 		else if (data === "l") {
@@ -1032,19 +1033,19 @@ class TrailParallelWorkView implements Component {
 			if (worker) this.done({ action: "load", worker });
 			return;
 		}
-		else if (data === "c") {
+		else if (data === "c" || data === "t") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "copyAttach", worker });
+			if (worker) this.done({ action: "tell", worker });
 			return;
 		}
 		else if (data === "a") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "answers", worker });
+			if (worker) this.done({ action: "copyAttach", worker });
 			return;
 		}
-		else if (data === "t") {
+		else if (data === "x") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "tell", worker });
+			if (worker) this.done({ action: "stop", worker });
 			return;
 		}
 		this.invalidate();
@@ -1063,14 +1064,14 @@ class TrailParallelWorkView implements Component {
 		const innerWidth = Math.max(20, width - 4);
 		const listWidth = Math.max(30, innerWidth);
 		const entries = this.entries();
-		this.selected = Math.min(this.selected, Math.max(0, entries.length - 1));
-		const selected = entries[this.selected];
+		const activityRows = this.activityRows();
+		this.selected = Math.min(this.selected, Math.max(0, activityRows.length - 1));
+		const selectedRow = activityRows[this.selected];
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
 		const border = (s: string) => this.theme.fg("border", s);
 		const divider = (s: string) => this.theme.fg("borderMuted", s);
-		const activityRows = workerActivityRows(this.workers, this.artifactsByWorker);
 		const workerCounts = workerActivityTotals(activityRows);
 		const status = [
 			workerCounts.waiting ? `${workerCounts.waiting} waiting` : undefined,
@@ -1082,62 +1083,30 @@ class TrailParallelWorkView implements Component {
 
 		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("trail"))} ${dim("·")} ${accent("workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
 		const todoStatus = workerCounts.todos ? ` · todos ${workerCounts.completedTodos}/${workerCounts.todos}` : "";
-		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)} ${dim(entries.length ? `· ${entries.length} items` : "")}`, innerWidth - 2), 1, 0));
-		const mascotWorker = this.selectedWorker() ?? activityRows[0]?.worker ?? this.workers[0];
-		if (activityRows.length > 0) addWorkerActivityStack(this.container, this.theme, activityRows, innerWidth - 2);
-		if (this.source !== "all" || this.showHelp) this.container.addChild(new Text(`${muted("workers")} ${this.renderWorkerPills(innerWidth - 10)}`, 1, 0));
-		if (this.filter !== "all" || this.showHelp) this.container.addChild(new Text(`${muted("filter")}  ${activePill(this.theme, this.filter === "response" ? "answer" : this.filter)} ${dim("f kind · tab worker")}`, 1, 0));
+		const artifactStatus = entries.length ? ` · ${entries.length} items` : "";
+		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)}${dim(artifactStatus)}`, innerWidth - 2), 1, 0));
 		this.container.addChild(new DynamicBorder(divider));
 
-		if (entries.length === 0) {
-			const title = this.workers.length === 0 ? "No parallel work yet" : "No artifacts in this view";
-			const body = this.workers.length === 0
-				? "Spawn a side investigation when you want evidence without interrupting current flow."
-				: "Workers may still be starting, or this worker/kind filter has no matching artifacts yet.";
+		if (activityRows.length === 0) {
+			const mascotWorker = this.workers[0];
 			this.container.addChild(new Spacer(1));
 			for (const line of workerMascotLines(mascotWorker)) this.container.addChild(new Text(` ${accent(line)}`, 1, 0));
-			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold(title))} `, "", listWidth - 2, divider, TOP_CORNERS), 1, 0));
-			this.container.addChild(new Text(truncateToWidth(` ${muted(body)}`, listWidth - 2), 1, 0));
-			this.container.addChild(new Text(truncateToWidth(` ${dim("Try: /trail spawn <task> · f filter · tab worker")}`, listWidth - 2), 1, 0));
+			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("No parallel work yet"))} `, "", listWidth - 2, divider, TOP_CORNERS), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${muted("Spawn a side investigation when you want evidence without interrupting current flow.")}`, listWidth - 2), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${dim("Try: /trail spawn <task>")}`, listWidth - 2), 1, 0));
 			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
 			this.container.addChild(new Spacer(1));
 		} else {
-			const visible = entries.slice(Math.max(0, this.selected - 5), Math.max(0, this.selected - 5) + 11);
-			const start = entries.indexOf(visible[0]!);
-			for (let i = 0; i < visible.length; i++) {
-				const entry = visible[i];
-				if (!entry) continue;
-				const absolute = start + i;
-				const isSelected = absolute === this.selected;
-				const workerLabel = workerSourceLabel(entry.worker).padEnd(4);
-				const kind = parallelKindLabel(entry.artifact.kind).padEnd(8);
-				const age = relativeTime(entry.artifact.timestamp ?? Date.parse(entry.worker.updatedAt));
-				const plain = `${isSelected ? "▸" : " "} ${parallelKindGlyph(entry.artifact.kind)} ${workerLabel} ${kind} ${entry.artifact.title} ${age}`;
-				if (isSelected) {
-					this.container.addChild(new Text(this.theme.bg("selectedBg", this.theme.fg("text", padAnsi(truncateToWidth(plain, listWidth - 2), listWidth - 2))), 1, 0));
-				} else {
-					const marker = dim(" ");
-					const glyph = entry.artifact.kind === "error" ? this.theme.fg("error", "!") : colorKind(this.theme, entry.artifact.kind, parallelKindGlyph(entry.artifact.kind));
-					const line = `${marker} ${glyph} ${muted(workerLabel)} ${colorKind(this.theme, entry.artifact.kind, kind)} ${muted(entry.artifact.title)} ${dim(age)}`;
-					this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
-				}
-			}
-		}
-
-		if (selected) {
-			this.container.addChild(new DynamicBorder(divider));
-			this.container.addChild(new Text(`${muted(workerSourceLabel(selected.worker))} ${dim("·")} ${colorKind(this.theme, selected.artifact.kind, parallelKindLabel(selected.artifact.kind))}`, 1, 0));
-			this.container.addChild(new Text(truncateToWidth(this.theme.bold(this.theme.fg("text", selected.artifact.title)), listWidth - 2), 1, 0));
-			this.container.addChild(new Text(truncateToWidth(dim(`${workerDisplayName(selected.worker)} · ${workerAge(selected.worker.updatedAt)}`), listWidth - 2), 1, 0));
-			const actions = `${accent("[Enter open]")} ${dim("· t tell · a answers · l load refs · x dismiss")}`;
-			this.container.addChild(new Text(truncateToWidth(actions, listWidth - 2), 1, 0));
+			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 16)}  ${fitColumn("task", Math.max(14, listWidth - 78))}  ${fitColumn("progress", 8)}  ${fitColumn("output", 26)}  action`), 1, 0));
+			for (const line of renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected)) this.container.addChild(new Text(line, 1, 0));
+			addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Enter open · t tell · a answers · l load refs · f filter · ? help · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("↑↓ move · Tab switch · Enter details · l load · c continue · a attach tmux · x stop · ? help · Esc close"), 1, 0));
 		if (this.showHelp) {
-			this.container.addChild(new Text(`${muted("Worker debug")} ${dim("c copy tmux attach command · tab worker · g/G top/bottom")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Safety")} ${dim("reviewing workers mounts artifacts only; nothing enters context until attached")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Safety")} ${dim("l mounts refs, c sends follow-up, a copies tmux attach command, x deletes worker")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1145,16 +1114,6 @@ class TrailParallelWorkView implements Component {
 		return this.cachedLines;
 	}
 
-	private renderWorkerPills(maxWidth: number): string {
-		const parts = [this.source === "all" ? activePill(this.theme, "all") : inactivePill(this.theme, "all")];
-		const sorted = [...this.workers].sort((a, b) => workerStateRank(a) - workerStateRank(b) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-		for (const worker of sorted) {
-			const state = deriveWorkerState(worker);
-			const label = workerAttentionLabel(worker);
-			parts.push(this.source === worker.id ? activePill(this.theme, label) : workerStateColor(this.theme, state, ` ${label} `));
-		}
-		return truncateToWidth(parts.join(" "), maxWidth);
-	}
 }
 
 async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): Promise<ParallelWorkAction> {
@@ -1704,7 +1663,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						const heading = git ? `${accent(theme.bold("trail"))} ${dim("·")} ${dim(git)} ${dim("·")} ${muted(status)}${todoStatus}` : `${accent(theme.bold("trail"))} ${dim("·")} ${muted(status)}${todoStatus}`;
 						return [
 							truncateToWidth(`${heading}  ${dim("/trail workers · /trail w<N>")}`, width, ""),
-							...renderWorkerActivityStack(theme, rows, width),
+							...renderWorkerActivityRows(theme, rows, width),
 						];
 					},
 					invalidate() {},

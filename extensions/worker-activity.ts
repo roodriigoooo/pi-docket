@@ -8,9 +8,12 @@ export type WorkerActivityRow = {
 	chip: string;
 	state: WorkerDerivedState;
 	stateLabel: string;
+	taskLabel: string;
 	message: string;
 	answer?: Artifact;
 	answerLine?: string;
+	outputLabel: string;
+	actionHint: string;
 	questions: WorkerQuestion[];
 	progress: { total: number; completed: number; inProgress: number; pending: number };
 	todoLines: string[];
@@ -42,14 +45,38 @@ function firstLine(text: string | undefined): string | undefined {
 
 export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "needs_input") return "needs input";
-	if (state === "ready_open_todos") return "ready · open todos";
+	if (state === "ready_open_todos") return "ready/open todos";
 	if (state === "ready") return "ready";
 	if (state === "failed") return "failed";
 	if (state === "thinking") return "active";
 	if (state === "starting") return "starting";
 	if (state === "stale") return "stale";
-	if (state === "empty") return "done · empty";
+	if (state === "empty") return "done/empty";
 	return "idle";
+}
+
+function workerActivityOutputLabel(state: WorkerDerivedState, answer: Artifact | undefined): string {
+	if (state === "needs_input") return "needs reply";
+	if (state === "starting" || state === "thinking") return "working";
+	if (!answer || isWorkerStatusArtifact(answer)) return state === "ready" || state === "ready_open_todos" ? "summary only" : "no output";
+	if (answer.kind === "error") return "error";
+	if (answer.kind === "code") return "code output";
+	const text = `${answer.title}\n${answer.body}`;
+	const suggestionMatch = text.match(/\b(\d+)\s+suggestions?\b/i);
+	const noChanges = /no files? changed/i.test(text);
+	if (suggestionMatch && noChanges) return `no changes · ${suggestionMatch[1]} suggestions`;
+	if (suggestionMatch) return `${suggestionMatch[1]} suggestions`;
+	if (noChanges) return "no changes";
+	if (/```/.test(answer.body)) return "code block";
+	return "text output";
+}
+
+function workerActivityActionHint(state: WorkerDerivedState): string {
+	if (state === "needs_input") return "press c to reply";
+	if (state === "ready" || state === "ready_open_todos") return "press l to load";
+	if (state === "failed") return "Enter details";
+	if (state === "starting" || state === "thinking") return "working";
+	return "Enter details";
 }
 
 export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number } = {}): WorkerActivityRow[] {
@@ -68,9 +95,12 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			chip: workerActivityChip(worker, { now }),
 			state,
 			stateLabel: workerActivityStateLabel(state),
+			taskLabel: workerDisplayName(worker, 32),
 			message,
 			answer,
 			answerLine,
+			outputLabel: workerActivityOutputLabel(state, answer),
+			actionHint: workerActivityActionHint(state),
 			questions,
 			progress: workerTodoProgress(worker),
 			todoLines: workerTodoBoardLines(worker, { maxItems: options.maxTodoItems ?? 12, maxText: Number.POSITIVE_INFINITY }),
@@ -97,12 +127,20 @@ export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActiv
 	const lines: WorkerActivityStackLine[] = [];
 	for (const row of rows) {
 		const todoStatus = row.progress.total ? ` · todos ${row.progress.completed}/${row.progress.total}` : "";
-		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${todoStatus} · ${row.message}` });
-		if (row.answerLine && row.answerLine !== row.message) lines.push({ kind: "answer", state: row.state, worker: row.worker, text: `said: ${row.answerLine}` });
-		if (row.state === "needs_input" && row.questions.length > 1) {
-			for (const question of row.questions) lines.push({ kind: "question", state: row.state, worker: row.worker, text: `? ${question.text}` });
-		}
-		for (const todoLine of row.todoLines) lines.push({ kind: "todo", state: row.state, worker: row.worker, text: `  ${todoLine}` });
+		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${todoStatus} · ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}` });
 	}
 	return lines;
+}
+
+export function workerActivityPreviewLines(row: WorkerActivityRow): string[] {
+	const progress = row.progress.total ? `Progress: ${row.progress.completed}/${row.progress.total} todos` : undefined;
+	const question = row.questions.length ? `Needs input: ${row.questions.map((item, index) => `${index + 1}. ${item.text}`).join(" ")}` : undefined;
+	return [
+		`${row.label} summary`,
+		row.message,
+		row.answerLine && row.answerLine !== row.message ? `Said: ${row.answerLine}` : undefined,
+		progress,
+		question,
+		"Actions: Enter details · l load into prompt · c continue · a attach tmux · x stop",
+	].filter((line): line is string => line !== undefined && line.length > 0);
 }

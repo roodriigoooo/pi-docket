@@ -31,7 +31,7 @@ Session artifacts as first-class objects for Pi.
 
 Short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
 
-Worker status appears in an expanded activity stack above the prompt while workers are starting, active, waiting, ready, ready/open-todos, failed, idle, or stale. Every visible worker gets its own row, sorted by attention, with wrapped status/result text and its progress board when present. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. `/trail workers` opens the navigable worker inbox for reading worker answers/progress and choosing follow-up actions. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers default to read-only investigation unless explicitly asked to edit; use `/trail spawn --worktree <task>` for isolated parallel editing. Trail removes the worktree when deleting that worker, but does not auto-merge worker edits.
+Worker status appears in a compact activity dock above the prompt while workers are starting, active, waiting, ready, ready/open-todos, failed, idle, or stale. Every visible worker gets a one-line row, sorted by attention/recency, with identity, status, task, todo progress, output kind, and next action. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. `/trail workers` opens the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers default to read-only investigation unless explicitly asked to edit; use `/trail spawn --worktree <task>` for isolated parallel editing. Trail removes the worktree when deleting that worker, but does not auto-merge worker edits.
 
 ## Checkpoint resume keys
 
@@ -45,14 +45,12 @@ Worker status appears in an expanded activity stack above the prompt while worke
 ## Parallel work inbox keys
 
 - `j/k` or arrows — move
-- `tab` — cycle worker filter (`all`, `w1`, `w2`, ...)
-- `f` — cycle artifact kind filter
-- `enter` — peek selected artifact
-- `t` — tell selected worker
-- `a` — open Answers for selected worker
-- `c` — copy tmux attach command
-- `l` — load selected worker refs (debug)
-- `x` — dismiss selected inbox row locally
+- `tab` — switch selected worker
+- `enter` — open selected worker details
+- `l` — load selected worker refs
+- `c` or `t` — continue/tell selected worker
+- `a` — copy tmux attach command
+- `x` — stop/delete selected worker
 - `?` — show full shortcut help
 - `q` or `esc` — close
 

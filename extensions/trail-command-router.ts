@@ -19,7 +19,7 @@ export type ParallelWorkEntry = {
 
 export type ParallelWorkAction =
 	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "load" | "copyAttach" | "answers" | "tell"; worker: WorkerStatus }
+	| { action: "details" | "load" | "copyAttach" | "answers" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
 export type LoadPickerMode = "checkpoint" | "worker";
@@ -219,6 +219,10 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						await deps.showText(`${workerSourceLabel(result.entry.worker)} · ${deps.parallelKindLabel(result.entry.artifact.kind)}`, deps.formatArtifact(result.entry.artifact));
 						continue;
 					}
+					if (result.action === "details") {
+						await deps.showText(`${workerSourceLabel(result.worker)} · details`, workerResultText(result.worker, artifactsByWorker.get(result.worker.id) ?? []));
+						continue;
+					}
 					if (result.action === "load") {
 						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
 						await deps.refreshWorkerDockWidget();
@@ -232,6 +236,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					}
 					if (result.action === "tell") {
 						await tellWorker(workerSourceLabel(result.worker));
+						return;
+					}
+					if (result.action === "stop") {
+						await deps.workerCommands.delete(workerSourceLabel(result.worker));
+						await deps.refreshWorkerDockWidget();
 						return;
 					}
 					if (result.action === "answers") {
