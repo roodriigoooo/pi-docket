@@ -4,17 +4,17 @@
 
 # trail for pi
 
-a review queue for agent work in pi.
+trail is a small review queue for work done inside pi.
 
-an agent session produces lots of intermediate noise and a handful of things that actually need your judgment: a worker came back with three recommendations, a patch is sitting unreviewed, a command failed in a way that matters, a worker is blocked waiting for you. trail captures those moments as decision cards and ignores the rest.
+my goal with it is pretty simple: when i am working with agents, i do not want to keep scrolling through a long transcript to find the few things that actually matter. a worker may finish with useful recommendations, a command may fail in a way i should not lose, or a patch may be waiting for review. trail tries to pull those moments out and show them as cards.
 
-trail is not a transcript browser, not a memory store, not a task manager. it is the place you look between turns to find out **what needs you next**, and then act on it without scrolling.
+it is not meant to be a transcript browser, a memory system, or a full task manager. it is more like an inbox for agent work: what happened, what needs me, and what can i do with it.
 
-## the loop
+## the basic loop
 
-```
+```text
   spawn / ask          capture            review                 act
-  /trail spawn   →  artifacts +     →  /trail (inbox)   →   Enter   continue
+  /trail spawn   ->  artifacts +     ->  /trail (inbox)   ->   Enter   continue
   /trail            status.json        decision cards       c       reply
                                                             Space   dismiss
                                                             a       attach
@@ -22,50 +22,50 @@ trail is not a transcript browser, not a memory store, not a task manager. it is
                                                                     delegate
 ```
 
-four verbs, in order:
+roughly:
 
-1. **spawn or ask** — `/trail spawn <task>` runs a background pi worker in tmux. or just keep working in the current session; trail captures along the way.
-2. **capture** — file edits, failed commands, errors, worker results, checkpoints get snapshotted automatically. nothing enters model context until you say so.
-3. **review** — `/trail` opens an opinionated inbox. only the things that need a decision show up.
-4. **act** — `Enter` opens the answer, `c` continues with the worker, `Space` dismisses, `a` attaches the result to your next prompt, `/trail checkpoint` packages everything into a fresh session.
+1. **spawn or ask** — use `/trail spawn <task>` to run a background pi worker in tmux, or keep working in the current session.
+2. **capture** — trail snapshots file edits, failed commands, worker results, checkpoints, and other useful events.
+3. **review** — `/trail` opens an inbox with only the things that seem to need attention.
+4. **act** — open, continue, attach, dismiss, or checkpoint.
 
-trail has some other commands such as `/trail log`, `/trail workers`, `/trail search`, `/trail load`, but that is the core. everything else should support the four verbs above. 
+there are more commands, but this is the part i care about most. everything else is support for this loop.
 
-## why i made this
+## why i made it
 
-some of the situations that pushed it into existence:
+some situations kept repeating:
 
-- a worker finished with three useful recommendations and i had to skim a transcript to find them.
-- a command failed in a way that mattered, and i lost it under the next twenty successful commands.
-- i wanted to switch models or start a fresh session without re-typing the dead ends i had already ruled out.
-- i had three workers running in parallel and could not see at a glance which one was waiting on me.
-- i wanted to hand off a debugging session to my future self, with the failed paths included.
+- a worker finished with three good recommendations and i had to dig through a transcript to find them.
+- a command failed, then got buried under a bunch of successful commands.
+- i wanted to restart with a cleaner session without losing what i had already learned.
+- i had multiple workers running and could not tell which one was waiting on me.
+- i wanted to hand off a debugging session to future me, including the dead ends.
 
-claude code's `/compact` was a starting reference. trail is the opposite move: instead of compressing the conversation, it pulls out the few decisions hiding inside it.
+claude code's `/compact` was one reference point, but trail is almost the opposite shape. instead of compressing everything into a summary, it keeps the useful artifacts around and asks: which of these need a decision?
 
-## quickstart (60 seconds)
-
-install:
+## install
 
 ```bash
 pi install git:github.com/roodriigoooo/trail
 ```
 
-open the inbox in an active session:
+open the inbox:
 
 ```bash
 /trail
 ```
 
-spawn a background worker:
+spawn a worker:
 
 ```bash
 /trail spawn inspect the auth middleware token expiry edge case
 ```
 
-that is the loop. wait for the worker, press `/trail` again, review the card, press `c` to continue or `a` to attach the result. the rest of this readme is reference.
+when the worker finishes, open `/trail` again. review the card. continue, attach, or mark it done.
 
-## trail in motion
+## gifs
+
+these gifs are useful for getting a feel for the plugin, but they are a bit outdated. i need to make new ones that match the current UI and workflow more closely.
 
 <p align="center">
   <img src="./assets/compressed_gif1.gif" alt="Trail inbox and decision cards" width="100%" />
@@ -79,35 +79,37 @@ that is the loop. wait for the worker, press `/trail` again, review the card, pr
   <img src="./assets/trail_workers_tmux.gif" alt="Trail tmux worker spawn and load workflow" width="100%" />
 </p>
 
-## what enters the inbox
+## what shows up in the inbox
 
-trail is opinionated about what surfaces. an item must belong to one of these categories or it stays out:
+trail is intentionally picky. not every event becomes a card.
+
+cards usually come from one of these situations:
 
 - **needs decision** — a worker called `trail_wait` and is paused for your reply.
-- **ready for review** — a worker called `trail_done`; an assistant answer worth a second look.
-- **patch proposed** — a worker edited files; you have not reviewed them yet.
-- **failed / blocked** — a worker called `trail_fail`; an error artifact; a non-zero command in the current session.
-- **checkpoint available** — a checkpoint was created and is ready to continue from.
+- **ready for review** — a worker called `trail_done`, or an assistant answer is worth reviewing.
+- **patch proposed** — a worker edited files and you have not reviewed them yet.
+- **failed / blocked** — a worker called `trail_fail`, an error was captured, or a command failed.
+- **checkpoint available** — a checkpoint was created and can be continued from.
 
-category headers carry semantic color: amber for things asking for your attention, green for things waiting to be approved, red for things blocked.
+things that are just evidence stay in the log. things that probably need a decision go to the inbox.
 
-## what does *not* enter the inbox
+## what does not show up
 
-curation is half the product. these stay out by design:
+this part matters because otherwise the inbox becomes another transcript.
 
-- bare assistant file edits in the current session. they live in `/trail log`, not the inbox.
-- successful commands. those are evidence, not decisions.
-- intermediate worker chatter, reads, greps. those are part of an episode in the log.
-- prompts you typed yourself. not actionable; you typed them.
-- artifacts you already marked done with `Space`.
+these stay out by design:
 
-if everything entered the inbox, the inbox would be a transcript. it is not.
+- normal assistant file edits in the current session. they are in `/trail log` instead.
+- successful commands.
+- worker chatter, file reads, greps, and intermediate steps.
+- prompts you typed yourself.
+- anything you already marked done with `Space`.
 
-## decision card anatomy
+## decision cards
 
-selected inbox row expands into a card, not a longer log line:
+an inbox row expands into a card:
 
-```
+```text
 ▸ Worker w1 finished — README improvements review        [ready]
 
   • short workflow-oriented table of contents
@@ -118,30 +120,30 @@ selected inbox row expands into a card, not a longer log line:
   worker w1 · 31s ago · @status
 ```
 
-- bold headline = what happened, in plain english.
-- chip = current state (`ready`, `needs reply`, `failed`, `changed`).
-- bullets = parsed from the worker's summary `Recommended:` block, verbatim.
-- bracketed action row = the few keys that actually apply to this card.
-- faint footer = provenance, metadata, artifact id. secondary.
+card pieces:
 
-primary text is cream; status carries color; metadata is muted. nothing competes.
+- headline: plain english version of what happened.
+- status chip: `ready`, `needs reply`, `failed`, `changed`, etc.
+- bullets: usually parsed from the worker's `Recommended:` block.
+- actions: only the keys that make sense for that card.
+- footer: provenance and artifact id.
 
-## workers: the asking half of the loop
+## workers
 
-`/trail spawn [--worktree|-w] <task>` launches a pi worker in its own tmux session. it reads the task from `task.md`, snapshots its work to `artifacts.json`, and reports state via a small protocol.
+`/trail spawn [--worktree|-w] <task>` starts a pi worker in tmux. the worker gets a task file, writes artifacts, and reports status through a small protocol.
 
-while workers are running, a compact dock above the prompt shows one row per worker:
+while workers are running, trail can show a compact dock:
 
-```
+```text
 trail · feat/foo ±2 · 1 waiting · 2 ready
 ●  w1  ready          improve readme         3 recs · 1 file changed · 4/4 todos
 ●  w2  needs reply    audit migration order  needs reply
 ●  w3  failed         apply migration        error
 ```
 
-`/trail workers` opens the focused worker dashboard. `/trail w<N>` expands a structured mini-report for one worker:
+`/trail workers` opens the worker dashboard. `/trail w<N>` shows one worker:
 
-```
+```text
 trail · w1 · ready  Reviewed README for command accuracy
   Task: Improve main README
   Progress: 4/4 todos complete
@@ -161,57 +163,63 @@ trail · w1 · ready  Reviewed README for command accuracy
     @w1.c25/code    Markdown code block
 ```
 
-worker artifacts cost **zero model-context bytes** until you explicitly attach one. there is no auto-injection.
+worker artifacts do not enter model context automatically. they stay on disk until you attach or inject them.
 
-### worker protocol (deterministic)
+### worker protocol
 
-workers run with a `<trail_worker_guardrails>` block appended to their system prompt every turn. the contract is the single source of truth and lives in [`extensions/worker-guardrails.md`](./extensions/worker-guardrails.md). cheat sheet:
+workers run with guardrails appended to their system prompt. the contract lives in [`extensions/worker-guardrails.md`](./extensions/worker-guardrails.md).
+
+short version:
 
 | tool | when to call |
 |---|---|
-| `trail_todos` | multi-step work (3–8 ordered items). replaces the visible board each call. |
-| `trail_wait` | ambiguity that changes output, irreversible op not authorized in task, auth wall, contradiction in task. *do not assume.* |
-| `trail_done` | finished, output useful. summary in prose + `Recommended:` bullets surfaced verbatim in the parent's card. |
-| `trail_fail` | cannot continue, no useful partial output. one-sentence reason. |
+| `trail_todos` | multi-step work. replaces the visible todo board. |
+| `trail_wait` | ambiguity, blocked auth, irreversible action, or contradiction. |
+| `trail_done` | finished with useful output. `Recommended:` bullets surface in the parent card. |
+| `trail_fail` | cannot continue and no useful partial output remains. |
 
-override the file via `worker.guardrailsPath` in `~/.pi/agent/trail.json` or `<project>/.pi/trail.json`.
+workers default to read-only investigation. if you want a worker to edit freely without touching your branch, use:
 
-workers default to read-only investigation. `/trail spawn --worktree <task>` isolates the worker in a detached git worktree so it can edit freely without touching your branch. deleting the worker removes the worktree. trail does not auto-merge; you inspect and apply.
+```bash
+/trail spawn --worktree <task>
+```
 
-if the worker accidentally calls `/trail wait …` via bash, trail intercepts and records the intent. the tool path is still the contract.
+that creates a detached git worktree. trail does not merge anything automatically.
 
-## delegate: handoff checkpoints
+if a worker calls `/trail wait ...` through bash by mistake, trail tries to catch it and record the intent. the tool protocol is still the real path.
 
-when context is getting noisy or you want a fresh session with only the useful state:
+## checkpoints
+
+checkpoints are for handoff. they are useful when the session is noisy, context is getting full, or you want to continue from a smaller summary.
 
 ```bash
 /trail checkpoint --handoff finish the checkpoint store refactor
 /trail continue last
 ```
 
-checkpoint modes pick which artifacts to include automatically:
+modes:
 
 | mode | picks | use for |
 |---|---|---|
 | `--handoff` | decisions, files changed, dead ends, next steps | passing work to a new session or another model |
-| `--compact` | minimal recent state | compressing without losing the key references |
+| `--compact` | minimal recent state | continuing without the full conversation |
 | `--debug` | errors, failed commands, repro steps | reproducing a bug in a clean session |
 | `--review` | files changed, code blocks, commands | walking a reviewer through what happened |
 
 flags:
 
-- `--once` — checkpoint is soft-consumed after first `/trail continue` or `/trail load`. recoverable for `consumedRetentionDays` (default 7). `/trail unload <id>` cancels the consume contract.
-- `--raw` — skip the model summarizer, keep artifact excerpts as written.
+- `--once` — soft-consume after first `/trail continue` or `/trail load`.
+- `--raw` — skip model summarization and keep artifact excerpts as written.
 - `--model <provider/model>` — summarize with a specific model.
-- `--max-output <tokens>` — cap the summary length.
+- `--max-output <tokens>` — cap summary length.
 
-the checkpoint is plain markdown plus a sidecar `artifacts.json`. you can edit it before continuing.
+checkpoints are plain markdown with a sidecar `artifacts.json`. you can edit the markdown before continuing.
 
-## audit: /trail log
+## `/trail log`
 
-`/trail log` is the forensic view. episodes (one per worker, plus current session) grouped together with their child artifacts:
+`/trail log` is the forensic view. it groups events by episode:
 
-```
+```text
 Worker w1 · README review · 6 items
    f  read README.md                   12m ago  @f1
    f  edit README.md                   11m ago  @f2
@@ -223,96 +231,93 @@ Current session · 12 items
    ...
 ```
 
-use this when you are reconstructing what happened, not when you are deciding what to do next. for the latter, you want `/trail` (the inbox).
+use `/trail log` when you need to reconstruct what happened. use `/trail` when you need to decide what to do next.
 
 ## commands
 
-primary:
+primary commands:
 
 - `/trail` — open the inbox.
 - `/trail spawn [--worktree|-w] <task>` — launch a background worker.
 - `/trail tell w<N> [text]` — reply to a worker. omit text to open an input prompt.
-- `/trail w<N>` — show the worker mini-report above the prompt.
-- `/trail use w<N>` — attach the worker result to your next message.
-- `/trail checkpoint [flags] [note]` — package a handoff for a fresh session.
-- `/trail continue [id|last]` — start a fresh session from a checkpoint.
+- `/trail w<N>` — show one worker mini-report.
+- `/trail use w<N>` — attach worker result to your next message.
+- `/trail checkpoint [flags] [note]` — create a handoff checkpoint.
+- `/trail continue [id|last]` — start from a checkpoint.
 
-secondary:
+secondary commands:
 
-- `/trail answers [query]` — narrow the inbox to answers.
+- `/trail answers [query]` — filter inbox to answers.
 - `/trail log` — audit timeline grouped by episode.
 - `/trail search <query>` — ranked artifact search.
-- `/trail workers` — focused worker dashboard.
+- `/trail workers` — worker dashboard.
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers.
-- `/trail delete [id|last|w<N>]` — kill a worker or purge a checkpoint.
+- `/trail delete [id|last|w<N>]` — delete checkpoint or worker.
 
-advanced (plumbing for power flows and scripting):
+advanced commands:
 
 - `/trail load [id|last|w<N>] [--include-consumed]` — mount artifacts into the navigator without spending tokens.
-- `/trail unload <id|w<N>|all>` — drop a loaded slot.
+- `/trail unload <id|w<N>|all>` — unmount loaded artifacts.
 - `/trail ref <artifact-id-or-ref>` — attach a compact reference chip.
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`.
 - `/trail inject-full <artifact-id-or-ref>` — attach full artifact text.
 - `/trail copy <artifact-id-or-ref>` — copy to clipboard.
-- `/trail wait` / `/trail done` / `/trail fail` — worker-side prompt fallbacks. the protocol tools are the contract; these are intercepted as a safety net.
+- `/trail wait` / `/trail done` / `/trail fail` — worker-side fallbacks. protocol tools are preferred.
 
-short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`, `/trail ask w<N>` (alias for `tell`).
+short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`, `/trail ask w<N>`.
 
 ## keys
 
-`/trail` (inbox) footer follows a primary-action model — only the common keys appear; press `?` for the rest.
+in `/trail`:
 
-primary:
+- `↑↓` / `j/k` — move.
+- `Enter` — primary action for selected card.
+- `c` — continue or reply.
+- `Space` — mark done / restore.
+- `a` — attach compact reference chip.
+- `y` — copy selected artifact.
+- `/` — search.
+- `s` — switch source.
+- `tab` / `1` / `2` / `3` — cycle inbox, answers, log.
+- `?` — show advanced shortcuts.
+- `q` / `Esc` — close.
 
-- `↑↓` / `j/k` — move
-- `Enter` — review primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
-- `c` — continue (sends follow-up to selected worker; falls back to handoff checkpoint when nothing is worker-bound)
-- `Space` — mark done / restore
-- `a` — attach compact reference chip
-- `y` — copy selected artifact
-- `/` — search trail
-- `s` — switch source (pills above the list always show available scopes)
-- `tab` / `1` / `2` / `3` — cycle inbox → answers → log
-- `?` — show advanced shortcuts
-- `q` or `Esc` — close
+advanced keys shown with `?`:
 
-advanced (revealed by `?`):
+- `o` open file.
+- `I` inject full chip.
+- `p` pin.
+- `v` preview.
+- `f` cycle artifact kind.
+- `t` tell.
+- `x` mark done.
+- `g/G` top/bottom.
 
-- `o` open file · `I` inject full chip · `p` pin · `v` preview · `f` cycle artifact kind · `t` tell (alias for `c`) · `x` done (alias for `Space`) · `g/G` top/bottom
+in `/trail workers`:
 
-`/trail workers`:
+- `↑↓` / `j/k` — move.
+- `Enter` — open selected worker.
+- `c` — continue or tell selected worker.
+- `a` — copy tmux attach command.
+- `l` — load selected worker refs.
+- `?` — show advanced shortcuts.
+- `q` / `Esc` — close.
 
-primary:
+inspect views:
 
-- `↑↓` / `j/k` — move
-- `Enter` — open selected worker details
-- `c` — continue/tell selected worker
-- `a` — copy tmux attach command
-- `l` — load selected worker refs
-- `?` — show advanced shortcuts
-- `q` or `Esc` — close
+- `j/k` line.
+- `J/K` five lines.
+- `d/u` and `Ctrl+D/U` half-page.
+- `Space` / `Ctrl+F` / `PageDown` page.
+- `b` / `Ctrl+B` / `PageUp` page back.
+- `g/G` top/bottom.
+- `q` close.
 
-advanced (revealed by `?`):
-
-- `tab` switch worker · `t` tell alias · `x` stop/delete worker (destructive)
-
-inspect views (`Enter` from any row):
-
-- `j/k` line · `J/K` 5 · `d/u` and `Ctrl+D/U` half-page · `Space`/`Ctrl+F`/`PageDown` page · `b`/`Ctrl+B`/`PageUp` page back · `g/G` top/bottom · `q` close
-
-checkpoint resume (`/trail continue` with UI):
-
-- `j/k` move · `Enter` continue · `p` preview · `e` edit then continue · `d` delete after confirm · `q` close
-
-checkpoint review (`/trail checkpoint` with UI):
-
-- `j/k` move · `Space` include/exclude · `a` include all · `n` include none · `Enter` create from selection · `q` cancel
-
-checkpoint quality guidelines live in [docs/checkpoint-guidelines.md](./docs/checkpoint-guidelines.md).
+checkpoint review and resume have their own small keymaps. see [docs/checkpoint-guidelines.md](./docs/checkpoint-guidelines.md) for checkpoint quality notes.
 
 ## configuration
 
-trail merges config from:
+trail reads config from:
 
 1. `~/.pi/agent/trail.json`
 2. `<project>/.pi/trail.json`
@@ -339,7 +344,7 @@ example:
 }
 ```
 
-set `worker.guardrailsPath` to override the packaged worker contract with your own markdown file. absolute paths or paths relative to cwd both work. if unset, trail uses `extensions/worker-guardrails.md` shipped with the package.
+`worker.guardrailsPath` can point to a custom guardrail file. absolute paths and cwd-relative paths both work. if unset, trail uses `extensions/worker-guardrails.md` from this package.
 
 ## storage
 
@@ -356,15 +361,15 @@ workers live in:
 - `~/.pi/agent/trail/workers/<id>/status.json`
 - `~/.pi/agent/trail/workers/<id>/artifacts.json`
 
-checkpoint state is event-backed (`events.ndjson`) with a legacy `index.json` snapshot for compatibility. worker artifact snapshots are refreshed by the worker session heartbeat and mounted into the parent session as source slots like `w1`, `w2`, etc.
+checkpoint state is event-backed through `events.ndjson`, with `index.json` kept as a compatibility snapshot. worker artifact snapshots are refreshed by the worker heartbeat and mounted into the parent session as sources like `w1`, `w2`, etc.
 
-`--once` checkpoints are soft-consumed at the end of the session that used them. the index entry is marked `consumedAt`, hidden from default listings, and the underlying files stay on disk for `consumedRetentionDays` (default 7) so an accidental cancel is recoverable. `/trail unload <id>` cancels the pending consume contract. `/trail delete` always purges immediately. pass `--include-consumed` to `list` / `load` to see soft-consumed entries.
+`--once` checkpoints are soft-consumed after use. the index entry gets `consumedAt`, default lists hide it, and the files stay on disk for `consumedRetentionDays` so accidental cancels are recoverable. `/trail unload <id>` cancels a pending consume. `/trail delete` purges immediately. use `--include-consumed` to see soft-consumed entries.
 
-file-path references inside an injected checkpoint always survive consume — they point to your project's disk paths, not trail storage. only artifact-level lookups (`/trail ref c1.f12`, etc.) require the original `artifacts.json` to still exist; `/trail load` rehydrates them from the sidecar without spending any model-context tokens.
+file-path references inside a checkpoint point to project files, so they survive checkpoint consume. artifact-level refs need the sidecar `artifacts.json` to still exist. `/trail load` rehydrates those refs without spending model-context tokens.
 
-worker artifacts are similar carryover sources, but they come from `workers/<id>/artifacts.json`. `/trail load w<N>` mounts them into the navigator; `/trail delete w<N>` kills/purges the worker; `/trail unload w<N>` only removes the mounted source from the current session.
+worker artifacts work similarly, but come from `workers/<id>/artifacts.json`. `/trail load w<N>` mounts them. `/trail delete w<N>` kills and purges the worker. `/trail unload w<N>` only unmounts it from the current session.
 
-### example checkpoint markdown
+## example checkpoint markdown
 
 `~/.pi/agent/trail/checkpoints/20260502-184212Z.md`
 
@@ -401,9 +406,7 @@ Checkpoint store now writes durable markdown plus sidecar artifact JSON.
 - [command:c4] `npm run check`
 ```
 
-### example checkpoint artifacts
-
-`~/.pi/agent/trail/checkpoints/20260502-184212Z.artifacts.json`
+sidecar artifact example:
 
 ```json
 [
@@ -434,41 +437,19 @@ Checkpoint store now writes durable markdown plus sidecar artifact JSON.
 
 ## trail vs `/compact`
 
-claude code's `/compact` and trail solve different halves of the same problem. `/compact` compresses the conversation. trail extracts the decisions.
+`/compact` and trail solve related but different problems. `/compact` compresses the current conversation. trail preserves specific artifacts and surfaces decisions.
 
 | feature | `/compact` | trail |
 |---|---|---|
 | compress current conversation | yes | yes, optionally |
-| review what needs your decision next | no | yes (inbox + cards) |
+| review what needs a decision | no | yes |
 | select exact artifacts to preserve | limited | yes |
 | preserve exact commands/errors/files | not guaranteed | yes |
 | save durable checkpoints | not the main model | yes |
 | resume in another session/model/tool | limited | yes |
 | edit handoff before reuse | not the core workflow | yes |
 | track dead ends / already tried | not guaranteed | yes |
-| run parallel background investigations | no | yes (`/trail spawn`) |
-
-## install
-
-from github while trail is moving fast:
-
-```bash
-pi install git:github.com/roodriigoooo/trail
-```
-
-pinned github release:
-
-```bash
-pi install git:github.com/roodriigoooo/trail#v0.2.0
-```
-
-from npm:
-
-```bash
-pi install npm:@roodriigoooo/trail
-```
-
-if `/trail spawn` or `/trail workers` is unknown, you are running an older installed trail. install/pin current trail or run this repo locally with `pi --no-extensions -e ./extensions/trail.ts`.
+| run background investigations | no | yes |
 
 ## development
 
@@ -502,6 +483,10 @@ dry-run package contents:
 ```bash
 npm run pack:dry
 ```
+
+## credits
+
+this project comes from trying to understand and improve my own workflow with agents. pi gives extensions enough surface area to build this kind of thing, and trail is an experiment on top of that.
 
 ## security
 
