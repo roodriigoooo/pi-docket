@@ -123,6 +123,96 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 	return "text output";
 }
 
+export function shortModelLabel(id: string | undefined): string | undefined {
+	if (!id) return undefined;
+	const cleaned = id.replace(/^anthropic\//, "").replace(/^openai\//, "").replace(/^claude-/, "");
+	const stripped = cleaned.replace(/-\d{8}$/, "");
+	return stripped.length > 12 ? stripped.slice(0, 12) : stripped;
+}
+
+export function pickModelBadge(worker: WorkerStatus, allWorkers: WorkerStatus[], parentModelId: string | undefined): string | undefined {
+	const workerLabel = shortModelLabel(worker.model);
+	if (!workerLabel) return undefined;
+	const parentLabel = shortModelLabel(parentModelId);
+	if (parentLabel && parentLabel === workerLabel) {
+		const seen = new Set<string>();
+		for (const w of allWorkers) {
+			const l = shortModelLabel(w.model);
+			if (l) seen.add(l);
+		}
+		if (seen.size <= 1) return undefined;
+	}
+	return workerLabel;
+}
+
+export type DockRow = {
+	worker: WorkerStatus;
+	label: string;
+	state: WorkerDerivedState;
+	taskLabel: string;
+	progressLabel: string;
+	ageLabel: string;
+	attention: boolean;
+	chip?: string;
+	modelBadge?: string;
+};
+
+function relativeAgeLabel(updatedAtMs: number, now: number): string {
+	const ageMs = now - updatedAtMs;
+	if (!Number.isFinite(ageMs) || ageMs < 0) return "";
+	const seconds = Math.round(ageMs / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	return `${hours}h`;
+}
+
+function dockProgressLabel(row: WorkerActivityRow): string {
+	if (row.progress.total > 0) return `${row.progress.completed}/${row.progress.total} todos`;
+	if (row.state === "ready" || row.state === "ready_open_todos") {
+		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
+		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
+	}
+	if (row.state === "needs_input") return "needs reply";
+	if (row.state === "failed") return "error";
+	return "";
+}
+
+function dockChip(state: WorkerDerivedState): string | undefined {
+	if (state === "needs_input") return "← reply";
+	if (state === "failed") return "← inspect";
+	if (state === "ready" || state === "ready_open_todos") return "← review";
+	return undefined;
+}
+
+function isAttentionState(state: WorkerDerivedState): boolean {
+	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
+}
+
+export function dockRowsForRender(
+	rows: WorkerActivityRow[],
+	options: { parentModelId?: string; now?: number } = {},
+): DockRow[] {
+	const now = options.now ?? Date.now();
+	const workers = rows.map((row) => row.worker);
+	return rows.map((row) => {
+		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
+		const chip = dockChip(row.state);
+		return {
+			worker: row.worker,
+			label: row.label,
+			state: row.state,
+			taskLabel: row.taskLabel,
+			progressLabel: dockProgressLabel(row),
+			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
+			attention: isAttentionState(row.state),
+			...(chip ? { chip } : {}),
+			...(modelBadge ? { modelBadge } : {}),
+		};
+	});
+}
+
 export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "needs_input") return "needs input";
 	if (state === "ready_open_todos") return "ready/open todos";

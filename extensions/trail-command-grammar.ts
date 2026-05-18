@@ -10,7 +10,7 @@ export type CheckpointCreateOptions = {
 };
 
 export type TrailIntent =
-	| { kind: "help" }
+	| { kind: "help"; advanced?: boolean }
 	| { kind: "browse"; mode?: "review" | "answers" | "log" }
 	| { kind: "clear" }
 	| { kind: "checkpoint"; options: CheckpointCreateOptions }
@@ -19,7 +19,7 @@ export type TrailIntent =
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean }
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
-	| { kind: "spawn"; task: string; worktree?: boolean }
+	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean }
 	| { kind: "workers" }
 	| { kind: "worker-result"; worker: string; action: "show" | "use" }
 	| { kind: "tell"; worker: string; text?: string }
@@ -53,35 +53,44 @@ const MODE_FLAGS: Record<string, CheckpointMode> = {
 const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--raw", "--no-summary"]);
 const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
-export function trailUsage(): string {
-	return [
-		"Trail commands:",
+export function trailUsage(advanced = false): string {
+	const primary = [
+		"Trail · core loop:",
 		"/trail                         open inbox",
+		"/trail spawn [--fresh] <task>  start background worker (seeds parent session by default)",
+		"/trail tell w<N> [text]        reply to a worker",
+		"/trail w<N>                    show worker result above editor",
+		"/trail checkpoint [flags] [note]   create a handoff checkpoint",
+		"/trail continue [id|last]      resume from a checkpoint",
+		"",
+		"more: /trail help advanced",
+	];
+	if (!advanced) return primary.join("\n");
+	return [
+		...primary,
+		"",
+		"Trail · advanced:",
 		"/trail answers [query]         browse assistant/worker answers",
 		"/trail log                     audit timeline grouped by episode",
-		"/trail search <query>          search ranked artifacts, then browse matches",
-		CHECKPOINT_USAGE,
-		"/trail continue [id|last]",
-		"/trail resume [id|last]",
-		"/trail spawn <task>             start background work in a hidden workspace",
-		"/trail w<N>                    show worker result above editor",
-		"/trail result w<N>             show worker result above editor",
+		"/trail search <query>          ranked artifact search",
+		"/trail workers                 worker dashboard",
 		"/trail use w<N>                attach worker result to next prompt",
 		"/trail ask w<N> [text]         alias for tell",
-		"/trail tell w<N> [text]        send input/follow-up to a worker",
-		"/trail wait <question>         worker prompt fallback: ask parent for input",
-		"/trail done [summary]          worker prompt fallback: mark output ready",
-		"/trail fail <reason>           worker prompt fallback: mark work failed",
-		"/trail workers                 open navigable worker inbox",
-		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (advanced)",
-		"/trail unload <id|w<N>|all>   drop a loaded slot from session",
+		"/trail result w<N>             alias for /trail w<N>",
+		"/trail resume [id|last]        alias for continue",
+		CHECKPOINT_USAGE,
+		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (no model tokens)",
+		"/trail unload <id|w<N>|all>    drop a loaded slot",
 		"/trail delete [id|last|w<N>]",
 		"/trail list [--include-consumed] [--workers]",
-		"/trail ref <artifact-id>       add compact ref chip (@id) above editor",
+		"/trail ref <artifact-id>       attach compact chip (@id) above editor",
 		"/trail inject <artifact-id>    alias for ref",
-		"/trail inject-full <artifact-id>  add full chip (@id*) above editor",
+		"/trail inject-full <artifact-id>  attach full chip (@id*) above editor",
 		"/trail copy <artifact-id>      copy artifact to clipboard",
 		"/trail clear                   drop all pending chips",
+		"/trail wait <question>         worker fallback: ask parent for input",
+		"/trail done [summary]          worker fallback: mark output ready",
+		"/trail fail <reason>           worker fallback: mark work failed",
 	].join("\n");
 }
 
@@ -211,7 +220,10 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (WORKER_SHORT.test(command) && rest.length === 0) return { ok: true, intent: { kind: "worker-result", worker: command, action: "show" } };
 	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "review" } };
 	if (command === "log") return { ok: true, intent: { kind: "browse", mode: "log" } };
-	if (command === "help" || command === "--help" || command === "-h") return { ok: true, intent: { kind: "help" } };
+	if (command === "help" || command === "--help" || command === "-h") {
+		const advanced = rest.some((token) => token === "advanced" || token === "--advanced" || token === "all" || token === "--all");
+		return { ok: true, intent: { kind: "help", ...(advanced ? { advanced: true } : {}) } };
+	}
 	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
 	if (command === "continue" || command === "resume" || command === "r") return parseContinueCommand(rest);
 	if (command === "delete") return parseDeleteCommand(rest);
@@ -249,13 +261,15 @@ export function parseTrailCommand(args: string): ParseResult {
 	}
 	if (command === "spawn") {
 		let worktree = false;
+		let fresh = false;
 		const taskParts: string[] = [];
 		for (const token of rest) {
 			if (token === "--worktree" || token === "-w") worktree = true;
+			else if (token === "--fresh") fresh = true;
 			else taskParts.push(token);
 		}
-		if (taskParts.length === 0) return parseError("Usage: /trail spawn <task>");
-		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}) } };
+		if (taskParts.length === 0) return parseError("Usage: /trail spawn [--fresh] <task>");
+		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}) } };
 	}
 	if (command === "workers") {
 		if (rest.length > 0) return parseError("Usage: /trail workers");

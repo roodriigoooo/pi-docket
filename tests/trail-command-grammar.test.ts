@@ -25,7 +25,7 @@ test("Trail grammar parses bare wN as worker reference", () => {
 test("Trail grammar advertises checkpoint and worker delete", () => {
 	assert.ok(TRAIL_COMMANDS.includes("delete"));
 	assert.ok(TRAIL_COMMANDS.includes("spawn"));
-	assert.match(trailUsage(), /\/trail delete \[id\|last\|w<N>\]/);
+	assert.match(trailUsage(true), /\/trail delete \[id\|last\|w<N>\]/);
 });
 
 test("Trail grammar parses load and unload commands", () => {
@@ -55,13 +55,13 @@ test("Trail grammar parses spawn", () => {
 	assert.deepEqual(parseTrailCommand("spawn -w edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
 	const invalid = parseTrailCommand("spawn");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn .* <task>/);
 });
 
 test("Trail grammar parses workers dashboard", () => {
 	assert.deepEqual(parseTrailCommand("workers"), { ok: true, intent: { kind: "workers" } });
 	assert.ok(TRAIL_COMMANDS.includes("workers"));
-	assert.match(trailUsage(), /\/trail workers/);
+	assert.match(trailUsage(true), /\/trail workers/);
 	const invalid = parseTrailCommand("workers extra");
 	assert.equal(invalid.ok, false);
 });
@@ -76,6 +76,7 @@ test("Trail grammar parses worker tell and attention commands", () => {
 	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
 	assert.ok(TRAIL_COMMANDS.includes("tell"));
 	assert.match(trailUsage(), /\/trail tell w<N> \[text\]/);
+	assert.match(trailUsage(true), /\/trail tell w<N> \[text\]/);
 	assert.equal(parseTrailCommand("reply w1 nope").ok, false);
 });
 
@@ -85,7 +86,7 @@ test("Trail grammar parses worker result commands", () => {
 	assert.deepEqual(parseTrailCommand("use w:auth-bug-a3b1"), { ok: true, intent: { kind: "worker-result", worker: "auth-bug-a3b1", action: "use" } });
 	assert.ok(TRAIL_COMMANDS.includes("result"));
 	assert.ok(TRAIL_COMMANDS.includes("use"));
-	assert.match(trailUsage(), /\/trail use w<N>/);
+	assert.match(trailUsage(true), /\/trail use w<N>/);
 });
 
 test("Trail grammar recognizes accidental worker protocol in bash", () => {
@@ -110,5 +111,5 @@ test("Trail grammar parses answers, log, and remaining short aliases", () => {
 	assert.equal(parseTrailCommand("catalog").ok, false);
 	assert.equal(parseTrailCommand("cat").ok, false);
 	assert.ok(TRAIL_COMMANDS.includes("answers"));
-	assert.match(trailUsage(), /\/trail answers \[query\]/);
+	assert.match(trailUsage(true), /\/trail answers \[query\]/);
 });

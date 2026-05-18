@@ -20,7 +20,7 @@ type WorkerCommandsDeps = {
 };
 
 export type WorkerCommands = {
-	spawn(task: string, options?: { worktree?: boolean }): Promise<void>;
+	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean }): Promise<void>;
 	tell(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
@@ -83,10 +83,10 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	};
 
 	return {
-		async spawn(task: string, options: { worktree?: boolean } = {}): Promise<void> {
+		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean } = {}): Promise<void> {
 			try {
 				const git = readGitSnapshot(deps.cwd);
-				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession, ...(options.worktree ? { worktree: true } : {}), ...(git ? { git } : {}) });
+				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession, ...(options.worktree ? { worktree: true } : {}), ...(options.fresh ? { fresh: true } : {}), ...(git ? { git } : {}) });
 				const now = Date.parse(worker.createdAt);
 				deps.announce(
 					workerLaunchSubject(worker, { now }),

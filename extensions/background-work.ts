@@ -376,6 +376,15 @@ export function workerInputAcceptedPatch(): Partial<WorkerStatus> {
 	return { state: "active", question: undefined, questions: [] };
 }
 
+export const HEARTBEAT_ARTIFACT_CAP = 200;
+
+export function heartbeatArtifactSignature(artifacts: Artifact[]): string {
+	if (artifacts.length === 0) return "0:";
+	const last = artifacts[artifacts.length - 1]!;
+	const ts = last.timestamp ?? 0;
+	return `${artifacts.length}:${last.ref}:${ts}`;
+}
+
 export function workerHeartbeatPatch(current: WorkerStatus | undefined, input: { pid: number; sessionFile?: string; artifactCount: number }): Partial<WorkerStatus> {
 	const stickyState = current?.state === "needs_input" || current?.state === "ready" || current?.state === "failed" || current?.state === "idle";
 	return {

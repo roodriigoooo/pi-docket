@@ -40,7 +40,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -53,10 +53,11 @@ import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection
 import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type WorkerActivityRow } from "./worker-activity.js";
+import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { createWorkerStore, readWorkerStatusSync, TRAIL_WORKER_ENV } from "./worker-store.js";
+import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -781,7 +782,7 @@ class TrailView implements Component {
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}`, innerWidth - 2), 1, 0));
 		if (this.state.filter !== "all") this.container.addChild(new Text(`${muted("filter")} ${filterBar(this.theme, this.state.filter)}`, 1, 0));
 		const sourceLine = sourceBar(this.theme, sources, sourceLabel);
-		if (sources.length > 1 && sourceLine) this.container.addChild(new Text(`${accent("s")} ${muted("source")} ${sourceLine}`, 1, 0));
+		if (sources.length > 1 && sourceLine) this.container.addChild(new Text(sourceLine, 1, 0));
 		this.container.addChild(new DynamicBorder(dividerBorder));
 
 		const listWidth = Math.max(30, innerWidth);
@@ -888,12 +889,13 @@ class TrailView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim(`↑↓ move · Enter review · P promote · d diff · c continue · Space done · a attach · / search · ? more · Esc close`), 1, 0));
+		this.container.addChild(new Text(dim(`↑↓ move · / search · ? more · Esc close`), 1, 0));
 		if (this.showHelp) {
+			this.container.addChild(new Text(`${muted("Card")} ${dim("Enter primary · c reply/continue · Space done · a attach · y copy · d diff · P promote · I inject full · o open file")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 log · tab cycle")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Source")} ${dim("s switch source · pills above show available scopes")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Filters")} ${dim("f cycle artifact kind")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("o open file · I inject full · p pin · v preview · t tell (alias for c) · x done (alias for Space)")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("p pin · v preview · t tell (alias for c) · x done (alias for Space)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1089,6 +1091,31 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 		const plain = workerActivityRowText(row, width, selectedIndex === index, options);
 		if (selectedIndex === index) return theme.bold(theme.fg("text", plain));
 		return workerStateColor(theme, row.state, plain);
+	});
+}
+
+function dockRowText(row: DockRow, width: number): string {
+	const marker = "●";
+	const labelCell = row.modelBadge ? `${row.label}[${row.modelBadge}]` : row.label;
+	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/todos" : row.state.replace(/_/g, " ");
+	const trailing = [row.progressLabel, row.ageLabel].filter(Boolean).join(" · ");
+	const left = `${marker} ${labelCell}${stateCell ? ` ${stateCell}` : ""} ${row.taskLabel}`.trim();
+	const right = [trailing, row.chip].filter(Boolean).join(" ");
+	const sep = "  ";
+	const rightLen = visibleWidth(right);
+	if (!right) return truncateToWidth(left, width, "");
+	const leftWidth = Math.max(0, width - rightLen - sep.length);
+	const leftFit = truncateToWidth(left, leftWidth, "");
+	const leftPad = padAnsi(leftFit, leftWidth);
+	return `${leftPad}${sep}${right}`;
+}
+
+function renderDockRows(theme: any, rows: DockRow[], width: number): string[] {
+	const dim = (s: string) => theme.fg("dim", s);
+	return rows.map((row) => {
+		const plain = dockRowText(row, width);
+		if (row.attention) return workerStateColor(theme, row.state, plain);
+		return dim(plain);
 	});
 }
 
@@ -1702,7 +1729,11 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let activeCtx: ExtensionContext | undefined;
 	let sweptOnce = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
-	let workerDockTimer: NodeJS.Timeout | undefined;
+	let lastHeartbeatSignature: string | undefined;
+	let workerDockUnwatch: Unwatcher | undefined;
+	let workerDockCache: WorkerSnapshotCache | undefined;
+	let workerDockPending = false;
+	let workerDockRunning = false;
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
@@ -1870,9 +1901,14 @@ export default function trailExtension(pi: ExtensionAPI) {
 	const refreshWorkerDockWidget = async (): Promise<void> => {
 		const ctx = activeCtx;
 		if (!ctx?.hasUI || workerId) return;
+		if (workerDockRunning) {
+			workerDockPending = true;
+			return;
+		}
+		workerDockRunning = true;
 		try {
-			const store = createWorkerStore();
-			const { workers: allWorkers, artifactsByWorker } = await readWorkersWithArtifacts(store);
+			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
+			const { workers: allWorkers, artifactsByWorker } = await workerDockCache.snapshot();
 			const workers = allWorkers.filter(isPromptDockWorker);
 			if (workers.length === 0) {
 				ctx.ui.setWidget("trail-workers", undefined);
@@ -1880,6 +1916,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 			const rows = workerActivityRows(workers, artifactsByWorker);
 			const counts = workerActivityTotals(rows);
+			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id });
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
 				"trail-workers",
@@ -1887,20 +1924,19 @@ export default function trailExtension(pi: ExtensionAPI) {
 					render(width: number): string[] {
 						const accent = (s: string) => theme.fg("accent", s);
 						const dim = (s: string) => theme.fg("dim", s);
-						const muted = (s: string) => theme.fg("muted", s);
-						const status = [
-							counts.waiting ? `${counts.waiting} waiting` : undefined,
-							counts.failed ? `${counts.failed} failed` : undefined,
-							counts.readyOpenTodos ? `${counts.readyOpenTodos} ready/open todos` : undefined,
-							counts.ready ? `${counts.ready} ready` : undefined,
-							counts.active ? `${counts.active} active` : undefined,
-						].filter(Boolean).join(" · ") || plural(counts.workers, "worker");
-						const todoStatus = counts.todos ? ` ${muted(`todos ${counts.completedTodos}/${counts.todos}`)}` : "";
-						const heading = git ? `${accent(theme.bold("trail"))} ${dim("·")} ${dim(git)} ${dim("·")} ${muted(status)}${todoStatus}` : `${accent(theme.bold("trail"))} ${dim("·")} ${muted(status)}${todoStatus}`;
+						const attentionParts: string[] = [];
+						if (counts.waiting) attentionParts.push(`${counts.waiting} waiting`);
+						if (counts.failed) attentionParts.push(`${counts.failed} failed`);
+						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/todos`);
+						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
+						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos;
+						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
+						const summary = attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker");
+						const heading = `${accent(theme.bold("trail"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
 						return [
 							truncateToWidth(heading, width, ""),
-							...renderWorkerActivityRows(theme, rows, rowWidth, undefined, { hideAction: true }),
+							...renderDockRows(theme, dockRows, rowWidth),
 						];
 					},
 					invalidate() {},
@@ -1909,6 +1945,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 			);
 		} catch {
 			// best-effort dock; never disturb the session
+		} finally {
+			workerDockRunning = false;
+			if (workerDockPending) {
+				workerDockPending = false;
+				void refreshWorkerDockWidget();
+			}
 		}
 	};
 
@@ -1945,15 +1987,23 @@ export default function trailExtension(pi: ExtensionAPI) {
 		try {
 			const config = await loadConfig(ctx.cwd);
 			const catalog = createArtifactCatalog(ctx, config, []);
-			const artifacts = catalog.list();
+			const fullArtifacts = catalog.list();
+			const capped = fullArtifacts.length > HEARTBEAT_ARTIFACT_CAP ? fullArtifacts.slice(-HEARTBEAT_ARTIFACT_CAP) : fullArtifacts;
+			const signature = heartbeatArtifactSignature(capped);
 			const workerStore = createWorkerStore();
-			await workerStore.writeArtifacts(workerId, artifacts);
+			if (signature !== lastHeartbeatSignature) {
+				await workerStore.writeArtifacts(workerId, capped);
+				lastHeartbeatSignature = signature;
+			}
 			const current = await workerStore.find(workerId);
-			await workerStore.patchStatus(workerId, workerHeartbeatPatch(current, {
-				pid: process.pid,
-				sessionFile: ctx.sessionManager.getSessionFile?.(),
-				artifactCount: artifacts.length,
-			}));
+			await workerStore.patchStatus(workerId, {
+				...workerHeartbeatPatch(current, {
+					pid: process.pid,
+					sessionFile: ctx.sessionManager.getSessionFile?.(),
+					artifactCount: fullArtifacts.length,
+				}),
+				...(ctx.model?.id ? { model: ctx.model.id } : {}),
+			});
 		} catch {
 			// best-effort heartbeat; never crash the worker
 		}
@@ -2146,9 +2196,9 @@ export default function trailExtension(pi: ExtensionAPI) {
 			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
 			heartbeatTimer.unref?.();
 		} else if (ctx.hasUI) {
-			void refreshWorkerDockWidget();
-			workerDockTimer = setInterval(() => void refreshWorkerDockWidget(), 500);
-			workerDockTimer.unref?.();
+			const root = createWorkerStore().root();
+			workerDockCache = new WorkerSnapshotCache(root);
+			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
 		}
 	});
 
@@ -2157,10 +2207,13 @@ export default function trailExtension(pi: ExtensionAPI) {
 			clearInterval(heartbeatTimer);
 			heartbeatTimer = undefined;
 		}
-		if (workerDockTimer) {
-			clearInterval(workerDockTimer);
-			workerDockTimer = undefined;
+		if (workerDockUnwatch) {
+			workerDockUnwatch();
+			workerDockUnwatch = undefined;
 		}
+		workerDockCache = undefined;
+		workerDockPending = false;
+		workerDockRunning = false;
 		if (workerId) {
 			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
 		}

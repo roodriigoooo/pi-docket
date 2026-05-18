@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
@@ -40,6 +40,8 @@ export type SpawnInput = {
 	parentSession?: string;
 	extensionArgs?: string[];
 	idHint?: string;
+	/** Skip parent-session JSONL seeding. Worker starts with a blank session. */
+	fresh?: boolean;
 };
 
 function workersRoot(): string {
@@ -87,8 +89,9 @@ function workerExitPatchCommand(statusFile: string): string {
 	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code"`;
 }
 
-export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[] }): string {
+export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean }): string {
 	const piParts = [`${TRAIL_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
+	if (input.resumeSeeded) piParts.push("--continue");
 	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
 	piParts.push(shellQuote(input.initialPrompt));
 	return `${piParts.join(" ")}; code=$?; ${workerExitPatchCommand(input.statusFile)}`;
@@ -220,6 +223,23 @@ function makeWorkerId(task: string, hint?: string): string {
 	return `${slug}-${suffix}`.slice(0, 80);
 }
 
+/**
+ * Seed the worker's session dir with a fork of the parent's JSONL so the worker
+ * starts with the parent's context (faster TTFT + reused prompt cache prefix).
+ * Returns true when seeding succeeded and `--continue` should be passed to pi.
+ */
+export function seedWorkerSession(parentSessionFile: string, workerCwd: string, workerSessionDir: string): boolean {
+	try {
+		if (!fsSync.existsSync(parentSessionFile)) return false;
+		fsSync.mkdirSync(workerCwd, { recursive: true });
+		fsSync.mkdirSync(workerSessionDir, { recursive: true });
+		SessionManager.forkFrom(parentSessionFile, workerCwd, workerSessionDir);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string }): string {
 	return buildBackgroundWorkerInitialPrompt({
 		label: workerShortLabel(input.index),
@@ -348,6 +368,10 @@ export function createWorkerStore(): WorkerStore {
 			const sessionDir = path.join(dir, "session");
 			await fs.mkdir(sessionDir, { recursive: true });
 
+			const resumeSeeded = input.fresh !== true && typeof input.parentSession === "string" && input.parentSession.length > 0
+				? seedWorkerSession(input.parentSession, workerCwd, sessionDir)
+				: false;
+
 			const existing = await this.list();
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 
@@ -368,7 +392,7 @@ export function createWorkerStore(): WorkerStore {
 			};
 			await this.writeStatus(status);
 
-			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs() });
+			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded });
 			const result = spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "-c", workerCwd, command], { encoding: "utf8" });
 			if (result.error || result.status !== 0) {
 				if (worktree) removeGitWorktree(worktree);

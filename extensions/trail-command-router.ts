@@ -42,7 +42,7 @@ export type TrailCommandRouterDeps = {
 	notify(text: string, level: NotifyLevel): void;
 	emitText(text: string, kind: TrailMessageKind, heading?: string): void;
 	announce(subject: string, detail?: string, kind?: TrailMessageKind): void;
-	trailUsage(): string;
+	trailUsage(advanced?: boolean): string;
 	renderArtifactList(artifacts: Artifact[]): string;
 	renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): string;
 	formatArtifact(artifact: Artifact): string;
@@ -146,7 +146,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 	return {
 		async handle(intent: TrailIntent): Promise<void> {
 			if (intent.kind === "help") {
-				deps.emitText(deps.trailUsage(), "help", "trail · help");
+				deps.emitText(deps.trailUsage(intent.advanced === true), "help", intent.advanced === true ? "trail · help advanced" : "trail · help");
 				return;
 			}
 
@@ -202,7 +202,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "spawn") {
-				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true });
+				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true });
 				await deps.refreshWorkerDockWidget();
 				return;
 			}
