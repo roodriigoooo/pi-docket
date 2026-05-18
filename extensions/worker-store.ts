@@ -109,18 +109,73 @@ function killTmux(name: string): boolean {
 	return result.status === 0;
 }
 
-function gitOutput(cwd: string, args: string[]): string | undefined {
-	const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+function gitOutput(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): string | undefined {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8", input: options.input, env: options.env ? { ...process.env, ...options.env } : undefined, maxBuffer: 20 * 1024 * 1024 });
 	if (result.error || result.status !== 0) return undefined;
 	return result.stdout.trim() || undefined;
 }
 
-function addGitWorktree(baseCwd: string, target: string): { path: string; baseCwd: string; baseHead?: string } {
-	if (gitOutput(baseCwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") throw new Error("--worktree requires running inside a git repo");
+function gitStatus(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): { status: number | null; stderr: string; error?: Error } {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8", input: options.input, env: options.env ? { ...process.env, ...options.env } : undefined, maxBuffer: 20 * 1024 * 1024 });
+	return { status: result.status, stderr: result.stderr.trim(), ...(result.error ? { error: result.error } : {}) };
+}
+
+function gitRawOutput(cwd: string, args: string[]): string | undefined {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+	if (result.error || result.status !== 0 || result.stdout.length === 0) return undefined;
+	return result.stdout;
+}
+
+function copyUntrackedFiles(baseRoot: string, targetRoot: string): void {
+	const raw = gitRawOutput(baseRoot, ["ls-files", "--others", "--exclude-standard", "-z"]);
+	if (!raw) return;
+	for (const rel of raw.split("\0").filter(Boolean)) {
+		const from = path.join(baseRoot, rel);
+		const to = path.join(targetRoot, rel);
+		fsSync.mkdirSync(path.dirname(to), { recursive: true });
+		fsSync.copyFileSync(from, to);
+	}
+}
+
+function createBaselineCommit(worktreePath: string, parent: string | undefined): string | undefined {
+	gitStatus(worktreePath, ["add", "-A"]);
+	const changed = gitStatus(worktreePath, ["diff", "--cached", "--quiet", parent ?? "HEAD"]).status !== 0;
+	if (!changed) return parent;
+	const tree = gitOutput(worktreePath, ["write-tree"]);
+	if (!tree) return parent;
+	const commit = gitOutput(worktreePath, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", "Trail worker baseline"], {
+		env: {
+			GIT_AUTHOR_NAME: "Trail",
+			GIT_AUTHOR_EMAIL: "trail@example.invalid",
+			GIT_COMMITTER_NAME: "Trail",
+			GIT_COMMITTER_EMAIL: "trail@example.invalid",
+		},
+	});
+	if (!commit) return parent;
+	gitStatus(worktreePath, ["reset", "--hard", commit]);
+	return commit;
+}
+
+export function createWorkerWorkspace(baseCwd: string, target: string): { path: string; baseCwd: string; baseRoot?: string; parentCwd?: string; baseHead?: string; snapshotHead?: string } | undefined {
+	if (gitOutput(baseCwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") return undefined;
+	const baseRoot = gitOutput(baseCwd, ["rev-parse", "--show-toplevel"]);
 	const baseHead = gitOutput(baseCwd, ["rev-parse", "HEAD"]);
 	const result = spawnSync("git", ["worktree", "add", "--detach", target, baseHead ?? "HEAD"], { cwd: baseCwd, encoding: "utf8" });
 	if (result.error || result.status !== 0) throw new Error(result.stderr.trim() || result.error?.message || "git worktree add failed");
-	return { path: target, baseCwd, ...(baseHead ? { baseHead } : {}) };
+	try {
+		const root = baseRoot ?? baseCwd;
+		const dirtyPatch = gitRawOutput(root, ["diff", "--binary", "HEAD"]);
+		if (dirtyPatch) {
+			const applied = gitStatus(target, ["apply", "--binary", "--whitespace=nowarn"], { input: dirtyPatch });
+			if (applied.status !== 0) throw new Error(applied.stderr || "git apply parent changes failed");
+		}
+		copyUntrackedFiles(root, target);
+		const snapshotHead = createBaselineCommit(target, baseHead);
+		return { path: target, baseCwd, baseRoot: root, parentCwd: baseCwd, ...(baseHead ? { baseHead } : {}), ...(snapshotHead ? { snapshotHead } : {}) };
+	} catch (err) {
+		removeGitWorktree({ path: target, baseCwd });
+		throw err;
+	}
 }
 
 function removeGitWorktree(worktree: { path: string; baseCwd: string }): void {
@@ -286,8 +341,9 @@ export function createWorkerStore(): WorkerStore {
 
 			const tmuxName = tmuxSessionName(id);
 			if (tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${tmuxName} already exists`);
-			const worktree = input.worktree ? addGitWorktree(input.cwd, path.join(dir, "worktree")) : undefined;
-			const workerCwd = worktree?.path ?? input.cwd;
+			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
+			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
+			if (worktree) await fs.mkdir(workerCwd, { recursive: true });
 
 			const sessionDir = path.join(dir, "session");
 			await fs.mkdir(sessionDir, { recursive: true });

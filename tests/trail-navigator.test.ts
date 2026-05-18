@@ -193,6 +193,26 @@ test("Changed file artifact with worker source maps to patch-proposed", () => {
 	assert.equal(item.headline, "Edited src/auth.ts");
 });
 
+test("Worker change set artifact maps to promoteable patch card", () => {
+	const item = reviewItemForArtifact({
+		id: "changes",
+		displayId: "changes",
+		ref: "worker-changes:w2:0",
+		kind: "response",
+		title: "w2 change set · 2 files",
+		subtitle: "auth fix",
+		body: "patch",
+		timestamp: 4500,
+		meta: { workerChangeSet: true, workerStatus: "ready", workerLabel: "w2", changedFiles: [{ path: "src/auth.ts", additions: 3, deletions: 1 }] },
+		source: "w2",
+	});
+
+	assert.equal(item.category, "patch-proposed");
+	assert.equal(item.statusChip, "change set");
+	assert.equal(item.primaryAction, "inspect");
+	assert.equal(item.actions.includes("promoteWorker"), true);
+});
+
 test("episodesFromItems groups current and worker artifacts and counts each", () => {
 	const items = [
 		reviewItemForArtifact(artifact("f1", "file", 10, { tool: "edit" })),

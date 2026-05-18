@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -50,6 +50,35 @@ test("Background Work protocol patch clears questions for ready and failed state
 		lastError: undefined,
 	});
 	assert.equal(workerProtocolResultText("failed"), "Trail failure recorded. Parent can review the failure.");
+});
+
+test("Background Work stores structured done outcomes", () => {
+	const patch = workerProtocolPatch(worker(), "ready", "legacy", question("ignored"), {
+		outcome: "proposal",
+		summary: "Wrote candidate files.",
+		evidence: [" wrote logo.svg ", ""],
+		recommended: ["Review generated SVG", "Adopt markdown notes"],
+		scopeConfidence: "clear",
+	});
+
+	assert.equal(formatWorkerDoneSummary({ summary: "Wrote candidate files.", recommended: ["Review generated SVG"] }), "Wrote candidate files.\n\nRecommended:\n- Review generated SVG");
+	assert.equal(patch?.summary, "Wrote candidate files.\n\nRecommended:\n- Review generated SVG\n- Adopt markdown notes");
+	assert.equal(patch?.outcome, "proposal");
+	assert.deepEqual(patch?.evidence, ["wrote logo.svg"]);
+	assert.deepEqual(patch?.recommended, ["Review generated SVG", "Adopt markdown notes"]);
+	assert.equal(patch?.scopeConfidence, "clear");
+});
+
+test("Background Work asks for clarification on vague no-evidence done", () => {
+	const vague = worker({ task: "find the bear..." });
+	const scoped = worker({ task: "find bear references in repo" });
+
+	assert.equal(workerTaskLooksVague(vague.task), true);
+	assert.equal(workerTaskLooksVague(scoped.task), false);
+	assert.match(workerDoneClarificationQuestion(vague, { outcome: "no_evidence", summary: "No bear refs found.", scopeConfidence: "unclear" }) ?? "", /What exactly/);
+	assert.match(workerDoneClarificationQuestion(vague, { outcome: "no_evidence", summary: "No bear refs found.", scopeConfidence: "clear" }) ?? "", /What exactly/);
+	assert.match(workerDoneClarificationQuestion(vague, { summary: "No bear refs found." }, { artifactEvidenceCount: 1 }) ?? "", /What exactly/);
+	assert.equal(workerDoneClarificationQuestion(scoped, { outcome: "no_evidence", summary: "No bear refs found.", scopeConfidence: "clear" }), undefined);
 });
 
 test("Background Work heartbeat preserves sticky attention states", () => {

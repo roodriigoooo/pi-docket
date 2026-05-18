@@ -129,7 +129,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			}
 			deps.loadedArtifacts.unloadSource("worker", worker.id);
 			await deps.store.purge(worker.id);
-			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved worktree: ${worker.worktree.path}` : ""}`);
+			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved workspace: ${worker.worktree.path}` : ""}`);
 		},
 		async load(ref: string | undefined): Promise<void> {
 			if (!ref) {

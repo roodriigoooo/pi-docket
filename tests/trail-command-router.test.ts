@@ -95,6 +95,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		showWorkerResult: () => { calls.push("showWorkerResult"); },
 		clearWorkerResult: () => { calls.push("clearWorkerResult"); return false; },
 		markArtifactDone: (item) => { calls.push(`done:${item.ref}`); },
+		promoteWorkerChangeSet: async (item) => { calls.push(`promote:${item.ref}`); return true; },
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
 		createCheckpoint: async () => { calls.push("createCheckpoint"); },
 		createHandoffCheckpoint: async () => { calls.push("createHandoffCheckpoint"); },

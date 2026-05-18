@@ -20,6 +20,17 @@ export type WorkerTodo = {
 	note?: string;
 };
 
+export type WorkerDoneOutcome = "completed" | "findings" | "proposal" | "no_evidence";
+export type WorkerScopeConfidence = "clear" | "unclear";
+
+export type WorkerDoneInput = {
+	summary?: string;
+	outcome?: WorkerDoneOutcome;
+	evidence?: string[];
+	recommended?: string[];
+	scopeConfidence?: WorkerScopeConfidence;
+};
+
 export type WorkerQuestion = {
 	id: string;
 	text: string;
@@ -30,7 +41,10 @@ export type WorkerQuestion = {
 export type WorkerWorktree = {
 	path: string;
 	baseCwd: string;
+	baseRoot?: string;
+	parentCwd?: string;
 	baseHead?: string;
+	snapshotHead?: string;
 };
 
 export type WorkerStatus = {
@@ -53,6 +67,10 @@ export type WorkerStatus = {
 	questions?: WorkerQuestion[];
 	todos?: WorkerTodo[];
 	summary?: string;
+	outcome?: WorkerDoneOutcome;
+	evidence?: string[];
+	recommended?: string[];
+	scopeConfidence?: WorkerScopeConfidence;
 	lastError?: string;
 };
 
@@ -146,7 +164,7 @@ export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number
 		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
 		todos ? `todos:  ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
-		worker.worktree ? `tree:   ${worker.worktree.path}` : undefined,
+		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,
 		`inbox:  /trail`,
 		`debug:  /trail workers`,
 	].filter((line): line is string => line !== undefined).join("\n");
@@ -232,6 +250,70 @@ export function workerTodoBoardLines(worker: WorkerStatus, options: { includeHea
 	return lines;
 }
 
+function normalizeShortList(items: string[] | undefined, max: number): string[] | undefined {
+	const normalized = (items ?? []).map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, max);
+	return normalized.length ? normalized : undefined;
+}
+
+export function normalizeWorkerDoneInput(input: WorkerDoneInput = {}): WorkerDoneInput {
+	return {
+		summary: input.summary?.trim() || undefined,
+		outcome: input.outcome,
+		evidence: normalizeShortList(input.evidence, 12),
+		recommended: normalizeShortList(input.recommended, 12),
+		scopeConfidence: input.scopeConfidence,
+	};
+}
+
+export function formatWorkerDoneSummary(input: WorkerDoneInput = {}): string | undefined {
+	const done = normalizeWorkerDoneInput(input);
+	const parts: string[] = [];
+	if (done.summary) parts.push(done.summary);
+	if (done.recommended?.length && !/\bRecommended\s*:/i.test(done.summary ?? "")) {
+		parts.push(["Recommended:", ...done.recommended.map((item) => `- ${item}`)].join("\n"));
+	}
+	return parts.join("\n\n") || undefined;
+}
+
+const TASK_STOP_WORDS = new Set(["a", "an", "the", "and", "or", "to", "of", "for", "in", "on", "with", "by", "from", "up", "about", "please", "just"]);
+
+export function workerTaskLooksVague(task: string): boolean {
+	const trimmed = task.trim();
+	if (!trimmed) return true;
+	const lower = trimmed.toLowerCase();
+	const words = lower.match(/[a-z0-9][a-z0-9_-]*/g) ?? [];
+	const meaningful = words.filter((word) => !TASK_STOP_WORDS.has(word));
+	const unfinishedTail = /(\.\.\.|…|,\s*|\bmore\s*)$/.test(lower);
+	const genericStart = /^(find|look for|search|check|inspect|investigate|review|improve|come up with|think about|work on)\b/.test(lower);
+	const concreteScope = /(`[^`]+`|[./][\w.-]+|\b[\w-]+\.(?:ts|tsx|js|jsx|json|md|svg|png|jpg|jpeg|css|html|go|rs|py|rb|java|yml|yaml)\b|#\d+|\b(repo|repository|codebase|project|extension|docs?|readme|tests?|src|source|file|directory|folder|command|function|class|component|api|cli|tui|worker|artifact|checkpoint|symbol|module|package)\b)/i.test(trimmed);
+	const deliverable = /\b(ascii|svg|logo|markdown|md|json|patch|diff|test|fix|implement|add|write|generate|report|summary|recommendations?|design|proposal)\b/i.test(trimmed);
+
+	if (unfinishedTail && (meaningful.length <= 5 || genericStart)) return true;
+	if (meaningful.length <= 2) return true;
+	if (genericStart && meaningful.length <= 3 && !concreteScope && !deliverable) return true;
+	if (genericStart && !concreteScope && !deliverable) return true;
+	return false;
+}
+
+function summarySaysNoEvidence(summary: string | undefined): boolean {
+	if (!summary) return false;
+	return /\b(no|not|nothing|couldn'?t|could not|didn'?t|did not|zero)\b.{0,60}\b(found|find|matches?|hits?|refs?|references?|related|evidence)\b/i.test(summary)
+		|| /\b(found|find|matches?|hits?|refs?|references?|evidence)\b.{0,60}\b(no|nothing|zero)\b/i.test(summary);
+}
+
+export function workerDoneClarificationQuestion(worker: WorkerStatus, input: WorkerDoneInput = {}, options: { artifactEvidenceCount?: number } = {}): string | undefined {
+	const done = normalizeWorkerDoneInput(input);
+	const evidenceCount = (done.evidence?.length ?? 0) + (options.artifactEvidenceCount ?? 0);
+	const scopeUnclear = done.scopeConfidence === "unclear";
+	const vague = scopeUnclear || workerTaskLooksVague(worker.task);
+	if (!vague) return undefined;
+	if (scopeUnclear || done.outcome === "no_evidence" || summarySaysNoEvidence(done.summary) || (!done.outcome && evidenceCount === 0)) {
+		const task = truncatePlain(worker.task, 80);
+		return `I didn't find enough evidence to complete "${task}". What exactly should I search for, and where?`;
+	}
+	return undefined;
+}
+
 export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	if (worker.questions?.length) return worker.questions;
 	if (worker.question) return [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }];
@@ -275,7 +357,7 @@ export function buildWorkerInitialPrompt(input: { label: string; id: string; tas
 		`You are Trail worker ${input.label} (${input.id}).`,
 		`Your task is in ${input.taskFile}. Read it, then begin.`,
 		`Artifacts are auto-snapshotted to ${input.artifactsFile}.`,
-		input.worktreePath ? `Isolated git worktree: ${input.worktreePath}` : undefined,
+		input.worktreePath ? `Worker workspace: ${input.worktreePath}` : undefined,
 		"Operating rules and tool contracts live in <trail_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`trail_wait`, `trail_done`, `trail_fail`, `trail_todos`).",
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -304,15 +386,23 @@ export function workerHeartbeatPatch(current: WorkerStatus | undefined, input: {
 	};
 }
 
-export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolState, text: string | undefined, question: WorkerQuestion): Partial<WorkerStatus> | undefined {
+export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolState, text: string | undefined, question: WorkerQuestion, doneInput?: WorkerDoneInput): Partial<WorkerStatus> | undefined {
 	if (state === "needs_input") return appendWorkerQuestionPatch(worker, text ?? "", question);
-	return {
+	const patch: Partial<WorkerStatus> = {
 		state,
 		question: undefined,
 		questions: [],
-		summary: state === "ready" ? text : undefined,
+		summary: state === "ready" ? formatWorkerDoneSummary(doneInput ?? { summary: text }) : undefined,
 		lastError: state === "failed" ? text : undefined,
 	};
+	if (state === "ready") {
+		const done = normalizeWorkerDoneInput(doneInput ?? { summary: text });
+		if (done.outcome) patch.outcome = done.outcome;
+		if (done.evidence?.length) patch.evidence = done.evidence;
+		if (done.recommended?.length) patch.recommended = done.recommended;
+		if (done.scopeConfidence) patch.scopeConfidence = done.scopeConfidence;
+	}
+	return patch;
 }
 
 export function workerProtocolResultText(state: WorkerProtocolState): string {
@@ -364,7 +454,7 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		subtitle: workerDisplayName(worker),
 		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, git: worker.git },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, git: worker.git },
 	};
 }
 

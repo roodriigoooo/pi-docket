@@ -10,7 +10,7 @@ import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 
-export type TrailBrowserAction = { action: "inspect" | "openFile" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker"; artifact?: Artifact };
+export type TrailBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker"; artifact?: Artifact };
 
 export type ParallelWorkEntry = {
 	worker: WorkerStatus;
@@ -52,6 +52,7 @@ export type TrailCommandRouterDeps = {
 	showWorkerResult(worker: WorkerStatus, artifacts: Artifact[], expanded: boolean): void;
 	clearWorkerResult(): boolean;
 	markArtifactDone(artifact: Artifact): void;
+	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
 	createHandoffCheckpoint(): Promise<void>;
@@ -435,6 +436,10 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				if (result.action === "openFile") {
 					await deps.openFileOrArtifact(catalog, result.artifact);
 					continue;
+				}
+				if (result.action === "promoteWorker") {
+					if (await deps.promoteWorkerChangeSet(result.artifact)) deps.markArtifactDone(result.artifact);
+					return;
 				}
 				const artifact = result.artifact;
 				if (result.action === "reference") {

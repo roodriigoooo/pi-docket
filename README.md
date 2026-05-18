@@ -130,7 +130,7 @@ card pieces:
 
 ## workers
 
-`/trail spawn [--worktree|-w] <task>` starts a pi worker in tmux. the worker gets a task file, writes artifacts, and reports status through a small protocol.
+`/trail spawn <task>` starts a pi worker in tmux. the worker gets a hidden workspace, a task file, artifacts, and a small status protocol.
 
 while workers are running, trail can show a compact dock:
 
@@ -175,16 +175,10 @@ short version:
 |---|---|
 | `trail_todos` | multi-step work. replaces the visible todo board. |
 | `trail_wait` | ambiguity, blocked auth, irreversible action, or contradiction. |
-| `trail_done` | finished with useful output. `Recommended:` bullets surface in the parent card. |
+| `trail_done` | finished with useful output. includes `outcome`, `evidence`, and recommendations. vague/no-evidence work is rejected back to `trail_wait`. |
 | `trail_fail` | cannot continue and no useful partial output remains. |
 
-workers default to read-only investigation. if you want a worker to edit freely without touching your branch, use:
-
-```bash
-/trail spawn --worktree <task>
-```
-
-that creates a detached git worktree. trail does not merge anything automatically.
+workers run in hidden workspaces seeded from your current repo state. if a worker edits files, trail surfaces one change-set card with summary, diffstat, and actions: promote, diff, revise, or dismiss. promoting applies the whole change set after a clean preflight; trail does not merge anything silently.
 
 if a worker calls `/trail wait ...` through bash by mistake, trail tries to catch it and record the intent. the tool protocol is still the real path.
 
@@ -238,7 +232,7 @@ use `/trail log` when you need to reconstruct what happened. use `/trail` when y
 primary commands:
 
 - `/trail` — open the inbox.
-- `/trail spawn [--worktree|-w] <task>` — launch a background worker.
+- `/trail spawn <task>` — launch a background worker in a hidden workspace.
 - `/trail tell w<N> [text]` — reply to a worker. omit text to open an input prompt.
 - `/trail w<N>` — show one worker mini-report.
 - `/trail use w<N>` — attach worker result to your next message.

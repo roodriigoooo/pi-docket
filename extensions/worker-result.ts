@@ -123,6 +123,9 @@ function workerProgressLine(worker: WorkerStatus): string {
 }
 
 function workerChangesLine(artifacts: Artifact[]): string {
+	const changeSet = artifacts.find((a) => a.meta?.workerChangeSet === true);
+	const changedFiles = Array.isArray(changeSet?.meta?.changedFiles) ? changeSet.meta.changedFiles : undefined;
+	if (changedFiles?.length) return `${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}`;
 	const edited = artifacts.filter((a) => a.kind === "file" && (a.meta?.tool === "edit" || a.meta?.tool === "write"));
 	if (edited.length === 0) return "none";
 	if (edited.length === 1) return `1 file (${edited[0]!.title})`;

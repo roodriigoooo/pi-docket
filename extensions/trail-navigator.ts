@@ -10,6 +10,7 @@ export type ReviewBucket = "needs" | "pinned" | "recent";
 export type ReviewActionId =
 	| "inspect"
 	| "openFile"
+	| "promoteWorker"
 	| "tellWorker"
 	| "attachReference"
 	| "injectFull"
@@ -22,6 +23,7 @@ export type ReviewReasonId =
 	| "workerNeedsInput"
 	| "workerFailed"
 	| "workerReady"
+	| "workerChangeSet"
 	| "error"
 	| "changedFile"
 	| "createdFile"
@@ -181,6 +183,10 @@ function artifactWorkerRef(artifact: Artifact): string | undefined {
 	return artifact.source;
 }
 
+function isWorkerChangeSet(artifact: Artifact): boolean {
+	return artifactMeta(artifact).workerChangeSet === true;
+}
+
 function isChangedFileArtifact(artifact: Artifact): boolean {
 	return artifact.kind === "file" && ["edit", "write"].includes(artifactTool(artifact) ?? "");
 }
@@ -196,6 +202,7 @@ export function reviewBucket(artifact: Artifact, queueState: ReviewQueueState = 
 	if (queueState.doneRefs.has(artifact.ref)) return "recent";
 	const workerStatus = artifactWorkerStatus(artifact);
 	if (workerStatus === "needs_input" || workerStatus === "ready" || workerStatus === "ready_open_todos" || workerStatus === "failed") return "needs";
+	if (isWorkerChangeSet(artifact)) return "needs";
 	if (artifact.kind === "error") return "needs";
 	if (isChangedFileArtifact(artifact) && artifact.source) return "needs";
 	if (isFailedCommandArtifact(artifact)) return "needs";
@@ -210,8 +217,9 @@ function attentionRank(item: ReviewItem): number {
 	if (status === "needs_input") return 0;
 	if (status === "failed") return 1;
 	if (artifact.kind === "error" || isFailedCommandArtifact(artifact)) return 2;
-	if (isChangedFileArtifact(artifact)) return 3;
-	if (status === "ready") return 4;
+	if (isWorkerChangeSet(artifact)) return 3;
+	if (isChangedFileArtifact(artifact)) return 4;
+	if (status === "ready") return 5;
 	if (artifact.source && artifact.kind === "response") return 5;
 	if (artifact.source && artifact.kind === "code") return 6;
 	return 100;
@@ -223,6 +231,7 @@ function reviewReason(artifact: Artifact, bucket: ReviewBucket | undefined): Rev
 	if (bucket === "recent") return "done";
 	if (status === "needs_input") return "workerNeedsInput";
 	if (status === "failed") return "workerFailed";
+	if (isWorkerChangeSet(artifact)) return "workerChangeSet";
 	if (status === "ready" || status === "ready_open_todos") return "workerReady";
 	if (artifact.kind === "error") return "error";
 	if (isChangedFileArtifact(artifact)) return artifactHasDiff(artifact) ? "changedFile" : "createdFile";
@@ -240,7 +249,7 @@ export function reviewCategory(reasonId: ReviewReasonId | undefined, bucket: Rev
 	if (reasonId === "workerNeedsInput") return "needs-decision";
 	if (reasonId === "workerReady" || reasonId === "workerAnswer" || reasonId === "workerOutput") return "ready-for-review";
 	if (reasonId === "workerFailed" || reasonId === "error" || reasonId === "failedCommand") return "failed-blocked";
-	if (reasonId === "changedFile" || reasonId === "createdFile") return "patch-proposed";
+	if (reasonId === "workerChangeSet" || reasonId === "changedFile" || reasonId === "createdFile") return "patch-proposed";
 	if (reasonId === "checkpointAvailable") return "checkpoint-available";
 	return undefined;
 }
@@ -258,6 +267,7 @@ export function reviewCategoryLabel(category: ReviewCategory | undefined): strin
 
 function primaryAction(artifact: Artifact): ReviewActionId {
 	if (artifactWorkerStatus(artifact) === "needs_input") return "tellWorker";
+	if (isWorkerChangeSet(artifact)) return "inspect";
 	if (artifact.kind === "file" && !artifactHasDiff(artifact)) return "openFile";
 	return "inspect";
 }
@@ -354,6 +364,7 @@ function workerHeadline(artifact: Artifact, status: ArtifactWorkerStatus, label:
 function cardHeadline(artifact: Artifact): string {
 	const status = artifactWorkerStatus(artifact);
 	const label = workerLabelOf(artifact);
+	if (isWorkerChangeSet(artifact)) return firstNonEmptyLine(artifact.title) ?? "Worker change set";
 	if (status && label) return workerHeadline(artifact, status, label);
 	if (artifact.kind === "error") return firstNonEmptyLine(artifact.title) ?? "Error";
 	if (isChangedFileArtifact(artifact)) {
@@ -372,7 +383,7 @@ function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): s
 	const status = artifactWorkerStatus(artifact);
 	if (status === "needs_input") return "needs reply";
 	if (status === "failed") return "failed";
-	if (status === "ready") return "ready";
+	if (status === "ready") return isWorkerChangeSet(artifact) ? "change set" : "ready";
 	if (status === "ready_open_todos") return "ready · open todos";
 	if (status === "stale") return "stale";
 	if (artifact.kind === "error") return "error";
@@ -391,6 +402,7 @@ function cardProvenance(artifact: Artifact): string {
 
 function reviewActions(artifact: Artifact): ReviewActionId[] {
 	const actions: ReviewActionId[] = ["inspect"];
+	if (isWorkerChangeSet(artifact)) actions.push("promoteWorker");
 	if (artifact.kind === "file") actions.push("openFile");
 	if (artifactWorkerRef(artifact)) actions.push("tellWorker");
 	actions.push("attachReference", "injectFull", "copyArtifact", "pin", "markDone");

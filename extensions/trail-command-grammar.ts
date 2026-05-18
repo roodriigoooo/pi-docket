@@ -63,7 +63,7 @@ export function trailUsage(): string {
 		CHECKPOINT_USAGE,
 		"/trail continue [id|last]",
 		"/trail resume [id|last]",
-		"/trail spawn [--worktree|-w] <task>  start background work",
+		"/trail spawn <task>             start background work in a hidden workspace",
 		"/trail w<N>                    show worker result above editor",
 		"/trail result w<N>             show worker result above editor",
 		"/trail use w<N>                attach worker result to next prompt",
@@ -254,7 +254,7 @@ export function parseTrailCommand(args: string): ParseResult {
 			if (token === "--worktree" || token === "-w") worktree = true;
 			else taskParts.push(token);
 		}
-		if (taskParts.length === 0) return parseError("Usage: /trail spawn [--worktree|-w] <task>");
+		if (taskParts.length === 0) return parseError("Usage: /trail spawn <task>");
 		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}) } };
 	}
 	if (command === "workers") {

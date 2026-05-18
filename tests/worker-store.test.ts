@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, currentPiCommandParts, explicitExtensionArgs, readWorkerStatusSync, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
+import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, readWorkerStatusSync, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
 
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
@@ -65,7 +65,7 @@ test("worker initial prompt points at guardrails and names protocol tools", () =
 	assert.match(prompt, /trail_todos/);
 	assert.match(prompt, /task is in \/tmp\/trail-worker-demo\/task\.md/);
 	const worktreePrompt = buildWorkerInitialPrompt({ index: 1, id: "demo", dir: "/tmp/trail-worker-demo", worktreePath: "/tmp/trail-worker-demo/worktree" });
-	assert.match(worktreePrompt, /Isolated git worktree: \/tmp\/trail-worker-demo\/worktree/);
+	assert.match(worktreePrompt, /Worker workspace: \/tmp\/trail-worker-demo\/worktree/);
 });
 
 test("worker launch command reuses current pi binary and records process exit", () => {
@@ -96,6 +96,38 @@ test("explicit extension args preserve no-extension isolation", () => {
 		assert.deepEqual(explicitExtensionArgs(), ["--no-extensions", "-e", "./extensions/trail.ts", "--extension", "extra.ts"]);
 	} finally {
 		process.argv = originalArgv;
+	}
+});
+
+test("worker workspace is seeded from parent dirty state", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-worker-workspace-test-"));
+	const workspace = path.join(os.tmpdir(), `${path.basename(tmp)}-workspace`);
+	try {
+		await rm(workspace, { recursive: true, force: true });
+		const git = (args: string[]) => {
+			const result = spawnSync("git", args, { cwd: tmp, encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr || result.error?.message);
+			return result.stdout.trim();
+		};
+		git(["init"]);
+		git(["config", "user.name", "Test"]);
+		git(["config", "user.email", "test@example.invalid"]);
+		await writeFile(path.join(tmp, "tracked.txt"), "one\n", "utf8");
+		git(["add", "tracked.txt"]);
+		git(["commit", "-m", "initial"]);
+		await writeFile(path.join(tmp, "tracked.txt"), "one\nparent dirty\n", "utf8");
+		await writeFile(path.join(tmp, "untracked.txt"), "parent untracked\n", "utf8");
+
+		const created = createWorkerWorkspace(tmp, workspace);
+
+		assert.equal(created?.path, workspace);
+		assert.ok(created?.snapshotHead);
+		assert.equal(await readFile(path.join(workspace, "tracked.txt"), "utf8"), "one\nparent dirty\n");
+		assert.equal(await readFile(path.join(workspace, "untracked.txt"), "utf8"), "parent untracked\n");
+		assert.equal(spawnSync("git", ["diff", "--quiet", "HEAD", "--"], { cwd: workspace }).status, 0);
+	} finally {
+		spawnSync("git", ["worktree", "remove", "--force", workspace], { cwd: tmp, stdio: "ignore" });
+		await rm(tmp, { recursive: true, force: true });
 	}
 });
 

@@ -55,7 +55,7 @@ test("Trail grammar parses spawn", () => {
 	assert.deepEqual(parseTrailCommand("spawn -w edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
 	const invalid = parseTrailCommand("spawn");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn \[--worktree\|-w\] <task>/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail spawn <task>/);
 });
 
 test("Trail grammar parses workers dashboard", () => {

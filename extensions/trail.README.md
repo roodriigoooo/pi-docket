@@ -15,7 +15,7 @@ Session artifacts as first-class objects for Pi.
 - `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
 - `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
-- `/trail spawn [--worktree|-w] <task>` — spawn a tmux-backed Pi worker session; `--worktree` isolates edits
+- `/trail spawn <task>` — spawn a tmux-backed Pi worker in a hidden workspace
 - `/trail w<N>` / `/trail result w<N>` — show a worker result panel above the prompt
 - `/trail use w<N>` — attach the worker result to the next prompt as a compact Trail ref
 - `/trail ask w<N> [text]` — alias for tell
@@ -31,7 +31,7 @@ Session artifacts as first-class objects for Pi.
 
 Short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
 
-Worker status appears in a compact activity dock above the prompt while workers are starting, active, waiting, ready, ready/open-todos, failed, idle, or stale. Every visible worker gets a one-line row, sorted by attention/recency, with identity, status, task, todo progress, output kind, and next action. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. `/trail workers` opens the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers default to read-only investigation unless explicitly asked to edit; use `/trail spawn --worktree <task>` for isolated parallel editing. Trail removes the worktree when deleting that worker, but does not auto-merge worker edits.
+Worker status appears in a compact activity dock above the prompt while workers are starting, active, waiting, ready, ready/open-todos, failed, idle, or stale. Every visible worker gets a one-line row, sorted by attention/recency, with identity, status, task, todo progress, output kind, and next action. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. `/trail workers` opens the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers run in hidden workspaces seeded from the parent's current repo state. If they edit files, Trail surfaces one change-set card; press `P` to promote the whole set, `Enter`/`d` to inspect the diff, or `c` to ask for revision.
 
 ## Checkpoint resume keys
 
@@ -63,6 +63,8 @@ Default `/trail` view is Inbox: unresolved items first, recent items only when a
 Primary:
 - `↑↓` / `j/k` — move
 - `Enter` — review primary action (tell waiting worker, review diff, inspect failure, view answer, open file)
+- `P` — promote selected worker change set when available
+- `d` — inspect selected diff/artifact
 - `c` — continue conversation with the selected worker (falls back to handoff checkpoint when nothing is worker-bound)
 - `Space` — mark item done / restore it
 - `a` — attach compact reference chip
@@ -78,9 +80,11 @@ Advanced (revealed by `?`):
 
 ## Inspect view keys
 
-- `j/k` or arrows — scroll
+- `j/k` or arrows — scroll vertically
+- `h/l` or arrows — scroll horizontally
 - `d/u` — half-page down/up
 - `g/G` — top/bottom
+- `0` — reset horizontal scroll
 - `q` or `esc` — close
 
 ## Captured artifact kinds
