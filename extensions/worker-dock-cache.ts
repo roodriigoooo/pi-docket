@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import type { Artifact } from "./types.js";
 import type { WorkerStatus } from "./background-work.js";
+import { tailWorkerEvents, type WorkerEvent } from "./worker-events.js";
 
 type Entry = {
 	id: string;
@@ -10,9 +11,14 @@ type Entry = {
 	artifactsMtime: number;
 	status: WorkerStatus | undefined;
 	artifacts: Artifact[];
+	eventOffset: number;
 };
 
-export type WorkerSnapshot = { workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> };
+export type WorkerSnapshot = {
+	workers: WorkerStatus[];
+	artifactsByWorker: Map<string, Artifact[]>;
+	eventsByWorker: Map<string, WorkerEvent[]>;
+};
 
 async function safeStat(file: string): Promise<fsSync.Stats | undefined> {
 	try {
@@ -33,13 +39,14 @@ export class WorkerSnapshotCache {
 			names = await fs.readdir(this.root);
 		} catch {
 			this.entries.clear();
-			return { workers: [], artifactsByWorker: new Map() };
+			return { workers: [], artifactsByWorker: new Map(), eventsByWorker: new Map() };
 		}
 		const active = new Set(names);
 		for (const id of [...this.entries.keys()]) if (!active.has(id)) this.entries.delete(id);
 
 		const workers: WorkerStatus[] = [];
 		const artifactsByWorker = new Map<string, Artifact[]>();
+		const eventsByWorker = new Map<string, WorkerEvent[]>();
 		await Promise.all(names.map(async (id) => {
 			const dir = path.join(this.root, id);
 			const statusFile = path.join(dir, "status.json");
@@ -50,7 +57,7 @@ export class WorkerSnapshotCache {
 				return;
 			}
 			const existing = this.entries.get(id);
-			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [] };
+			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [], eventOffset: 0 };
 			if (entry.statusMtime !== statusStat.mtimeMs) {
 				try {
 					entry.status = JSON.parse(await fs.readFile(statusFile, "utf8")) as WorkerStatus;
@@ -72,14 +79,17 @@ export class WorkerSnapshotCache {
 				entry.artifacts = [];
 				entry.artifactsMtime = -1;
 			}
+			const tail = await tailWorkerEvents(this.root, id, { offset: entry.eventOffset });
+			entry.eventOffset = tail.offset;
 			this.entries.set(id, entry);
 			if (entry.status) {
 				workers.push(entry.status);
 				artifactsByWorker.set(entry.status.id, entry.artifacts);
+				if (tail.events.length) eventsByWorker.set(entry.status.id, tail.events);
 			}
 		}));
 		workers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-		return { workers, artifactsByWorker };
+		return { workers, artifactsByWorker, eventsByWorker };
 	}
 
 	invalidate(id?: string): void {

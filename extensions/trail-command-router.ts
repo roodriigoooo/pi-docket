@@ -1,5 +1,6 @@
 import { workerQuestions, workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
 import { workerResultArtifact, workerResultText } from "./worker-result.js";
+import { isSharedSessionTarget, SHARED_TMUX_SESSION } from "./worker-store.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
@@ -69,6 +70,14 @@ export type TrailCommandRouterDeps = {
 	announceChipChange(artifact: Artifact, mode: "ref" | "full", result: ReturnType<LoadedArtifactContext["toggleChip"]>): void;
 	parallelKindLabel(kind: Artifact["kind"]): string;
 };
+
+export function buildAttachCommand(target: string): string {
+	if (isSharedSessionTarget(target)) {
+		const window = target.split(":")[1] ?? "";
+		return window ? `tmux attach -t ${SHARED_TMUX_SESSION} \\; select-window -t ${window}` : `tmux attach -t ${SHARED_TMUX_SESSION}`;
+	}
+	return `tmux attach -t ${target}`;
+}
 
 function trailMetaString(artifact: Artifact, key: string): string | undefined {
 	const value = artifact.meta?.[key];
@@ -168,6 +177,22 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				return;
 			}
 
+			if (intent.kind === "attach") {
+				let target = `${SHARED_TMUX_SESSION}:`;
+				if (intent.worker) {
+					const worker = await deps.workerStore.find(intent.worker);
+					if (!worker) {
+						deps.notify("Trail worker not found", "error");
+						return;
+					}
+					target = worker.tmuxSession;
+				}
+				const command = buildAttachCommand(target);
+				const copied = await deps.copyText(command);
+				deps.notify(copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
+				return;
+			}
+
 			if (intent.kind === "worker-state") {
 				if (!deps.workerId) {
 					deps.notify("Worker state commands only run inside a Trail worker", "warning");
@@ -230,7 +255,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						return;
 					}
 					if (result.action === "copyAttach") {
-						const command = `tmux attach -t ${result.worker.tmuxSession}`;
+						const command = buildAttachCommand(result.worker.tmuxSession);
 						const copied = await deps.copyText(command);
 						deps.notify(copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
 						return;

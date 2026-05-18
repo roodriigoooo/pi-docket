@@ -23,6 +23,7 @@ export type TrailIntent =
 	| { kind: "workers" }
 	| { kind: "worker-result"; worker: string; action: "show" | "use" }
 	| { kind: "tell"; worker: string; text?: string }
+	| { kind: "attach"; worker?: string }
 	| { kind: "worker-state"; state: "needs_input" | "ready" | "failed"; text?: string }
 	| { kind: "answers"; query?: string }
 	| { kind: "search"; query: string }
@@ -32,7 +33,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "result", "use", "ask", "tell", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "result", "use", "ask", "tell", "attach", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -59,6 +60,7 @@ export function trailUsage(advanced = false): string {
 		"/trail                         open inbox",
 		"/trail spawn [--fresh] <task>  start background worker (seeds parent session by default)",
 		"/trail tell w<N> [text]        reply to a worker",
+		"/trail attach [w<N>]           print/copy tmux attach command for the shared worker session",
 		"/trail w<N>                    show worker result above editor",
 		"/trail checkpoint [flags] [note]   create a handoff checkpoint",
 		"/trail continue [id|last]      resume from a checkpoint",
@@ -283,6 +285,11 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "ask" || command === "tell") {
 		if (rest.length < 1) return parseError(`Usage: /trail ${command} w<N> [text]`);
 		return { ok: true, intent: { kind: "tell", worker: rest[0]!, text: rest.length > 1 ? rest.slice(1).join(" ") : undefined } };
+	}
+	if (command === "attach") {
+		if (rest.length === 0) return { ok: true, intent: { kind: "attach" } };
+		if (rest.length > 1) return parseError("Usage: /trail attach [w<N>]");
+		return { ok: true, intent: { kind: "attach", worker: rest[0]! } };
 	}
 	if (command === "wait") {
 		if (rest.length === 0) return parseError("Usage: /trail wait <question>");

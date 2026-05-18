@@ -56,8 +56,9 @@ import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./w
 import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { createWorkerStore, readWorkerStatusSync, TRAIL_WORKER_ENV } from "./worker-store.js";
+import { createWorkerStore, isSharedSessionTarget, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
+import { appendWorkerEventSync } from "./worker-events.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -1898,6 +1899,17 @@ export default function trailExtension(pi: ExtensionAPI) {
 		return undefined;
 	}
 
+	const reconcileOrphanedWorkers = async (workers: WorkerStatus[]): Promise<void> => {
+		const ACTIVE_STATES: Array<WorkerStatus["state"]> = ["starting", "active", "idle", "needs_input"];
+		const sharedTargets = workers.filter((w) => isSharedSessionTarget(w.tmuxSession) && ACTIVE_STATES.includes(w.state));
+		if (sharedTargets.length === 0) return;
+		if (sharedSessionExists()) return;
+		const store = createWorkerStore();
+		for (const worker of sharedTargets) {
+			await store.patchStatus(worker.id, { state: "error", lastError: "tmux session ended; worker terminated" });
+		}
+	};
+
 	const refreshWorkerDockWidget = async (): Promise<void> => {
 		const ctx = activeCtx;
 		if (!ctx?.hasUI || workerId) return;
@@ -1909,6 +1921,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		try {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
 			const { workers: allWorkers, artifactsByWorker } = await workerDockCache.snapshot();
+			await reconcileOrphanedWorkers(allWorkers);
 			const workers = allWorkers.filter(isPromptDockWorker);
 			if (workers.length === 0) {
 				ctx.ui.setWidget("trail-workers", undefined);
@@ -2034,6 +2047,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}, nextDoneInput);
 		const updated = patch ? await store.patchStatus(workerId, patch) : current;
 		emitWorkerStateArtifact(ctx, nextState, nextText);
+		appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
 		await writeWorkerHeartbeat(ctx);
 		return updated;
 	};
@@ -2044,6 +2058,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 		const current = await store.find(workerId);
 		if (!current) return undefined;
 		const updated = await store.patchStatus(workerId, workerTodosPatch(items));
+		if (updated?.todos) {
+			const progress = workerTodoProgress(updated);
+			appendWorkerEventSync(store.root(), workerId, { kind: "todo", payload: { total: progress.total, completed: progress.completed, inProgress: progress.inProgress } });
+		}
 		await writeWorkerHeartbeat(ctx);
 		return updated;
 	};
@@ -2169,6 +2187,9 @@ export default function trailExtension(pi: ExtensionAPI) {
 		});
 
 		pi.on("tool_call", async (event, ctx) => {
+			if (workerId) {
+				appendWorkerEventSync(createWorkerStore().root(), workerId, { kind: "tool", payload: { tool: event.toolName, when: "call" } });
+			}
 			if (!isToolCallEventType("bash", event)) return;
 			const intent = parseTrailWorkerShellCommand(event.input.command);
 			if (!intent) return;

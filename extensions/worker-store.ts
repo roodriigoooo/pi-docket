@@ -12,6 +12,16 @@ export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerSt
 export const WORKER_TMUX_PREFIX = "trail-worker-";
 export const TRAIL_WORKER_ENV = "TRAIL_WORKER_ID";
 export const WORKER_DASHBOARD_TMUX = "trail-workers";
+/** Single tmux session that hosts every worker window. */
+export const SHARED_TMUX_SESSION = "trail-workers";
+
+export function workerWindowTarget(index: number): string {
+	return `${SHARED_TMUX_SESSION}:w${index}`;
+}
+
+export function isSharedSessionTarget(target: string | undefined): boolean {
+	return typeof target === "string" && target.startsWith(`${SHARED_TMUX_SESSION}:`);
+}
 
 export type WorkerStore = {
 	root(): string;
@@ -55,10 +65,6 @@ function workerDir(id: string): string {
 function tmuxSafeId(value: string): string {
 	const safe = value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "worker";
 	return safe.slice(0, 64);
-}
-
-function tmuxSessionName(id: string): string {
-	return `${WORKER_TMUX_PREFIX}${id}`.slice(0, 100);
 }
 
 function shellQuote(value: string): string {
@@ -106,10 +112,19 @@ function tmuxSessionExists(name: string): boolean {
 	return spawnSync("tmux", ["has-session", "-t", name], { stdio: "ignore" }).status === 0;
 }
 
-function killTmux(name: string): boolean {
-	if (!tmuxSessionExists(name)) return false;
-	const result = spawnSync("tmux", ["kill-session", "-t", name], { stdio: "ignore" });
+function killTmux(target: string): boolean {
+	if (isSharedSessionTarget(target)) {
+		if (!tmuxSessionExists(SHARED_TMUX_SESSION)) return false;
+		const result = spawnSync("tmux", ["kill-window", "-t", target], { stdio: "ignore" });
+		return result.status === 0;
+	}
+	if (!tmuxSessionExists(target)) return false;
+	const result = spawnSync("tmux", ["kill-session", "-t", target], { stdio: "ignore" });
 	return result.status === 0;
+}
+
+export function sharedSessionExists(): boolean {
+	return tmuxSessionExists(SHARED_TMUX_SESSION);
 }
 
 function gitOutput(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): string | undefined {
@@ -346,8 +361,8 @@ export function createWorkerStore(): WorkerStore {
 			if (!status) return false;
 			const safeText = text.replace(/\s+/g, " ").trim();
 			if (!safeText) return false;
-			const result = spawnSync("tmux", ["send-keys", "-t", status.tmuxSession, safeText, "Enter"], { stdio: "ignore" });
-			if (result.status !== 0) return false;
+			const ok = sendKeysToWindow(status.tmuxSession, safeText);
+			if (!ok) return false;
 			await this.patchStatus(status.id, workerInputAcceptedPatch());
 			return true;
 		},
@@ -359,8 +374,6 @@ export function createWorkerStore(): WorkerStore {
 			await fs.mkdir(dir, { recursive: true });
 			await fs.writeFile(path.join(dir, "task.md"), `${input.task.trim()}\n`, "utf8");
 
-			const tmuxName = tmuxSessionName(id);
-			if (tmuxSessionExists(tmuxName)) throw new Error(`tmux session ${tmuxName} already exists`);
 			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
 			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
 			if (worktree) await fs.mkdir(workerCwd, { recursive: true });
@@ -374,6 +387,8 @@ export function createWorkerStore(): WorkerStore {
 
 			const existing = await this.list();
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
+			const target = workerWindowTarget(index);
+			const windowName = `w${index}`;
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path });
 
@@ -381,7 +396,7 @@ export function createWorkerStore(): WorkerStore {
 			const status: WorkerStatus = {
 				id,
 				index,
-				tmuxSession: tmuxName,
+				tmuxSession: target,
 				task: input.task,
 				cwd: workerCwd,
 				git: input.git,
@@ -393,11 +408,11 @@ export function createWorkerStore(): WorkerStore {
 			await this.writeStatus(status);
 
 			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded });
-			const result = spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "-c", workerCwd, command], { encoding: "utf8" });
-			if (result.error || result.status !== 0) {
+			const result = launchSharedWindow({ windowName, cwd: workerCwd, command });
+			if (!result.ok) {
 				if (worktree) removeGitWorktree(worktree);
 				await fs.rm(dir, { recursive: true, force: true });
-				throw new Error(result.stderr.trim() || result.error?.message || `tmux failed for ${id}`);
+				throw new Error(result.error || `tmux failed for ${id}`);
 			}
 
 			return status;
@@ -419,4 +434,33 @@ export function createWorkerStore(): WorkerStore {
 			await fs.rm(workerDir(status.id), { recursive: true, force: true });
 		},
 	};
+}
+
+const TRAIL_INJECT_MARK = "[trail] ";
+
+function sendKeysToWindow(target: string, text: string): boolean {
+	if (!target) return false;
+	const literal = isSharedSessionTarget(target) ? `${TRAIL_INJECT_MARK}${text}` : text;
+	const literalResult = isSharedSessionTarget(target)
+		? spawnSync("tmux", ["send-keys", "-t", target, "-l", literal], { stdio: "ignore" })
+		: spawnSync("tmux", ["send-keys", "-t", target, literal], { stdio: "ignore" });
+	if (literalResult.status !== 0) return false;
+	const enterResult = spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore" });
+	return enterResult.status === 0;
+}
+
+function launchSharedWindow(input: { windowName: string; cwd: string; command: string }): { ok: true } | { ok: false; error: string } {
+	if (!tmuxSessionExists(SHARED_TMUX_SESSION)) {
+		const created = spawnSync("tmux", ["new-session", "-d", "-s", SHARED_TMUX_SESSION, "-n", input.windowName, "-c", input.cwd, input.command], { encoding: "utf8" });
+		if (created.error || created.status !== 0) {
+			return { ok: false, error: created.stderr?.trim() || created.error?.message || "tmux new-session failed" };
+		}
+		spawnSync("tmux", ["set-option", "-t", SHARED_TMUX_SESSION, "remain-on-exit", "off"], { stdio: "ignore" });
+		return { ok: true };
+	}
+	const added = spawnSync("tmux", ["new-window", "-d", "-t", `${SHARED_TMUX_SESSION}:`, "-n", input.windowName, "-c", input.cwd, input.command], { encoding: "utf8" });
+	if (added.error || added.status !== 0) {
+		return { ok: false, error: added.stderr?.trim() || added.error?.message || "tmux new-window failed" };
+	}
+	return { ok: true };
 }
