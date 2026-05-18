@@ -4,34 +4,58 @@ Session artifacts as first-class objects for Pi.
 
 ## Commands
 
-- `/trail` — open inbox
+Primary (shown in `/trail help`):
+
+- `/trail` — open the inbox
+- `/trail spawn [--fresh] <task>` — spawn a worker as a window in the shared `trail-workers` tmux session. seeds the parent session JSONL by default; `--fresh` opts out
+- `/trail tell w<N> [text]` — send input or follow-up via `tmux send-keys -l`. no text opens a prompt
+- `/trail w<N>` / `/trail result w<N>` — show a worker result panel above the prompt
+- `/trail attach [w<N>]` — copy the `tmux attach -t trail-workers` incantation; with `w<N>`, lands directly on that worker's pane
+- `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
+- `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
+
+Advanced (shown in `/trail help advanced`):
+
 - `/trail answers [query]` — browse assistant and worker answers
 - `/trail log` — audit timeline grouped by episode
 - `/trail search <query>` — search artifact docs with ripgrep, then browse matches
-- `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
-- `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
-- `/trail resume [id|last]` — alias for continue
-- `/trail load [id|last|w<N>] [--include-consumed]` — advanced: mount checkpoint or worker artifacts without spending model-context tokens
-- `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
-- `/trail delete [id|last|w<N>]` — permanently delete a checkpoint or worker
-- `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
-- `/trail spawn <task>` — spawn a tmux-backed Pi worker in a hidden workspace
-- `/trail w<N>` / `/trail result w<N>` — show a worker result panel above the prompt
 - `/trail use w<N>` — attach the worker result to the next prompt as a compact Trail ref
 - `/trail ask w<N> [text]` — alias for tell
-- `/trail tell w<N> [text]` — send input or follow-up to a worker; no text opens a prompt
-- `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
-- `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
-- `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
-- `/trail workers` — open navigable worker inbox
+- `/trail resume [id|last]` — alias for continue
+- `/trail load [id|last|w<N>] [--include-consumed]` — mount checkpoint or worker artifacts without spending model-context tokens
+- `/trail unload <id|w<N>|all>` — drop a loaded checkpoint or worker from the session
+- `/trail delete [id|last|w<N>]` — kill window + purge worker, or delete checkpoint
+- `/trail list [--include-consumed] [--workers]` — list checkpoints or workers
+- `/trail workers` — open the worker dashboard
 - `/trail ref <artifact-id-or-ref>` — inject compact artifact reference
 - `/trail inject <artifact-id-or-ref>` — alias for `ref`
 - `/trail inject-full <artifact-id-or-ref>` — inject full artifact text
 - `/trail copy <artifact-id>` — copy artifact to clipboard
+- `/trail wait <question>` — worker-side Pi prompt fallback: ask the parent session for input
+- `/trail done [summary]` — worker-side Pi prompt fallback: mark worker output ready
+- `/trail fail <reason>` — worker-side Pi prompt fallback: mark worker failed
 
 Short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`.
 
-Worker status appears in a compact activity dock above the prompt while workers are starting, active, waiting, ready, ready/open-todos, failed, idle, or stale. Every visible worker gets a one-line row, sorted by attention/recency, with identity, status, task, todo progress, output kind, and next action. Starting/thinking workers animate at low FPS with chips like `w1[o  ]` and `w1(o_o)`; static states use `w2(?_?)`, `w3(^_^)`, `w4(x_x)`, and `w5(-_-)`. `/trail workers` opens the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers run in hidden workspaces seeded from the parent's current repo state. If they edit files, Trail surfaces one change-set card; press `P` to promote the whole set, `Enter`/`d` to inspect the diff, or `c` to ask for revision.
+## Worker topology
+
+Every worker is one window in a single tmux session named `trail-workers`. First `/trail spawn` creates the session (`tmux new-session -d -s trail-workers -n w<N>`). Subsequent spawns add windows (`tmux new-window -t trail-workers: -n w<N>`). One server hosts the fleet, one `tmux attach` puts you in front of all of them, one `kill-window` retires a worker. `/trail attach` copies the attach command; `/trail attach w<N>` adds `\; select-window -t w<N>`.
+
+Parent → worker stdin uses `tmux send-keys -t trail-workers:w<N> -l '[trail] <text>'` followed by a separate `Enter` send. The `-l` flag is literal mode (tmux skips key-table interpretation), and the `[trail]` prefix lets an attached user see which keystrokes are parent-injected versus their own typing.
+
+Workers emit append-only NDJSON events to `workers/<id>/events.ndjson` (state transitions, todo updates, tool calls). The parent watches the workers root with `fs.watch` and tails each event log from a held offset. `status.json` and `artifacts.json` are cached by mtime; if neither has been touched, the parent doesn't reparse. The 15 s heartbeat that used to rewrite `artifacts.json` unconditionally now hashes the artifact list and skips the write when nothing has changed.
+
+If the shared tmux session dies unexpectedly, the parent detects it on its next dock tick (via `tmux has-session -t trail-workers`) and patches every still-active worker to `state: error`.
+
+## Worker dock
+
+Worker status appears in a compact dock above the prompt. One row per worker, sorted by attention/recency. Idle rows dim. Attention rows (`needs_input`, `failed`, `ready`, `ready_open_todos`) get a state colour plus a `← reply / inspect / review` chip on the right. A model badge (e.g. `w1[sonnet-4-6]`) appears only when a worker is on a different model than the parent or workers vary among themselves.
+
+`/trail workers` opens the navigable worker inbox: rows stay collapsed, and only the selected worker gets a compact preview plus actions. Use `/trail w<N>` to expand an answer-first result panel above the prompt, `/trail use w<N>` to attach that result to the next message, and `/trail ask w<N> [text]` for follow-up. Worker sessions should use protocol tools (`trail_wait`, `trail_done`, and `trail_fail`) for parent coordination. Workers may call `trail_todos` to publish a short ordered progress board shown in the dock, `/trail w<N>`, and `/trail workers`; if `trail_done` runs while todos remain open, Trail shows the separate `ready/open todos` state. This is a lightweight Trail visibility layer, not a full task-list replacement. Worker-side `/trail wait`, `/trail done`, and `/trail fail` are Pi prompt fallbacks, not bash commands. Accidental direct bash calls like `/trail wait ...` are intercepted inside worker sessions. Workers run in hidden workspaces seeded from the parent's current repo state. If they edit files, Trail surfaces one change-set card; press `P` to promote the whole set, `Enter`/`d` to inspect the diff, or `c` to ask for revision.
+
+## Prompt cache seeding
+
+By default, `/trail spawn` copies the parent's pi session JSONL into the worker's session dir via `SessionManager.forkFrom`, then launches the worker with `--continue`. The worker resumes from the parent's prefix so the provider's prompt cache hits the shared prefix on the worker's first call, and the worker inherits the parent's discoveries. Use `--fresh` to opt out. If the parent hasn't yet flushed its JSONL (pi defers persistence until the first assistant turn), seeding falls back gracefully.
 
 ## Checkpoint resume keys
 
@@ -48,7 +72,7 @@ Primary:
 - `↑↓` / `j/k` — move
 - `Enter` — open selected worker details
 - `c` — continue/tell selected worker
-- `a` — copy tmux attach command
+- `a` — copy `tmux attach -t trail-workers \; select-window -t w<N>`
 - `l` — load selected worker refs
 - `?` — show advanced shortcuts
 - `q` or `Esc` — close
@@ -58,7 +82,7 @@ Advanced (revealed by `?`):
 
 ## Navigator keys
 
-Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. Footer follows a primary-action model — only the common keys appear; press `?` for the rest.
+Default `/trail` view is Inbox: unresolved items first, recent items only when all clear. The footer carries only `↑↓ move · / search · ? more · Esc close`; card actions live inside the selected card itself.
 
 Primary:
 - `↑↓` / `j/k` — move

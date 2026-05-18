@@ -130,9 +130,11 @@ card pieces:
 
 ## workers
 
-`/trail spawn <task>` starts a pi worker in tmux. the worker gets a hidden workspace, a task file, artifacts, and a small status protocol.
+`/trail spawn <task>` starts a pi worker. the worker lands in a tmux window inside a single shared session called `trail-workers`, with a hidden workspace, a task file, an append-only event log, and a small status protocol.
 
-while workers are running, trail can show a compact dock:
+every worker is a window in the same session, not its own session. that one decision shapes a lot of what follows. one tmux server hosts the whole fleet, so spawning a fifth worker doesn't spin up a fifth server. one `tmux attach -t trail-workers` puts you in front of all of them; you switch panes to switch workers. and one `set-hook pane-died` notification covers every worker we care about.
+
+while workers are running, trail shows a compact dock above your prompt:
 
 ```text
 trail · feat/foo ±2 · 1 waiting · 2 ready
@@ -140,6 +142,8 @@ trail · feat/foo ±2 · 1 waiting · 2 ready
 ●  w2  needs reply    audit migration order  needs reply
 ●  w3  failed         apply migration        error
 ```
+
+each row is one window in `trail-workers`. idle rows fade. only rows that need a decision get colour and a `← reply / inspect / review` chip on the right. if every worker shares the parent's model, the model badge stays hidden; if any worker is on a different model, the badge appears next to its short label.
 
 `/trail workers` opens the worker dashboard. `/trail w<N>` shows one worker:
 
@@ -164,6 +168,30 @@ trail · w1 · ready  Reviewed README for command accuracy
 ```
 
 worker artifacts do not enter model context automatically. they stay on disk until you attach or inject them.
+
+### attaching
+
+`/trail attach` copies `tmux attach -t trail-workers` to your clipboard. `/trail attach w2` copies the same thing with a trailing `select-window -t w2` so you land directly on that worker's pane. once attached, you see what each worker is actually doing in real time. detach with `prefix-d`, like any tmux session.
+
+### talking to a worker
+
+`/trail tell w<N> [text]` sends a reply. under the hood it's `tmux send-keys -t trail-workers:w<N> -l '[trail] <text>'` followed by a separate `Enter`. the `-l` is literal mode: tmux skips key-table interpretation, so quotes and special characters in your message can't accidentally trigger shortcuts. the `[trail]` prefix is a one-line tell that the input came from the parent — if you happen to be attached to the worker's pane while trail injects a message, you can see which keystrokes are yours and which are not.
+
+### event stream
+
+each worker appends one JSON line per significant event (state change, todo update, tool call) to `workers/<id>/events.ndjson`. it's append-only, one event per line, rotated at 5 MB. the parent watches the workers root with `fs.watch` and tails each worker's event log from where it last stopped reading. this is why the dock feels live without polling, and why ten idle workers don't cost you a tenth of a CPU.
+
+the unix part of this is intentional. a flat NDJSON file survives a parent restart, can be grep'd or tailed from another terminal, and doesn't need a daemon to receive messages. `fs.watch` is just inotify (or its kqueue/FSEvents cousin). `tmux` is a small C program that already speaks PTYs. session JSONLs are just append-only logs of conversations. nothing in trail's worker plumbing is a network service or a JSON-RPC layer; it is the boring composition of small tools that have been good at their jobs since before any of this was about LLMs.
+
+### prompt cache seeding
+
+by default, `/trail spawn` copies your current pi session's JSONL into the worker's session dir before the worker starts. the worker resumes from that prefix instead of starting blank, so the assistant has your earlier discoveries already in context. the big wins are two: the provider's prompt cache hits on the shared prefix (much cheaper first call), and the worker doesn't have to re-walk the codebase the parent just walked.
+
+pass `--fresh` if you want a worker that knows nothing about the parent session:
+
+```bash
+/trail spawn --fresh do an independent review of src/auth.ts
+```
 
 ### worker protocol
 
@@ -232,12 +260,14 @@ use `/trail log` when you need to reconstruct what happened. use `/trail` when y
 primary commands:
 
 - `/trail` — open the inbox.
-- `/trail spawn <task>` — launch a background worker in a hidden workspace.
+- `/trail spawn [--fresh] <task>` — launch a background worker. seeds the parent session by default.
 - `/trail tell w<N> [text]` — reply to a worker. omit text to open an input prompt.
 - `/trail w<N>` — show one worker mini-report.
-- `/trail use w<N>` — attach worker result to your next message.
+- `/trail attach [w<N>]` — copy the `tmux attach` incantation for the shared worker session.
 - `/trail checkpoint [flags] [note]` — create a handoff checkpoint.
 - `/trail continue [id|last]` — start from a checkpoint.
+
+`/trail help` shows only these six. `/trail help advanced` lists the rest.
 
 secondary commands:
 
@@ -264,6 +294,8 @@ short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`, `/trail 
 
 in `/trail`:
 
+the footer shows only `↑↓ move · / search · ? more · Esc close`. card actions live inside the selected card itself, contextual to its state.
+
 - `↑↓` / `j/k` — move.
 - `Enter` — primary action for selected card.
 - `c` — continue or reply.
@@ -271,9 +303,9 @@ in `/trail`:
 - `a` — attach compact reference chip.
 - `y` — copy selected artifact.
 - `/` — search.
-- `s` — switch source.
+- `s` — switch source (only visible when carryover sources exist).
 - `tab` / `1` / `2` / `3` — cycle inbox, answers, log.
-- `?` — show advanced shortcuts.
+- `?` — show advanced shortcuts (including `P d c y o I p v f t x g G`).
 - `q` / `Esc` — close.
 
 advanced keys shown with `?`:
@@ -292,7 +324,7 @@ in `/trail workers`:
 - `↑↓` / `j/k` — move.
 - `Enter` — open selected worker.
 - `c` — continue or tell selected worker.
-- `a` — copy tmux attach command.
+- `a` — copy `tmux attach -t trail-workers \; select-window -t w<N>`.
 - `l` — load selected worker refs.
 - `?` — show advanced shortcuts.
 - `q` / `Esc` — close.
@@ -354,8 +386,13 @@ workers live in:
 - `~/.pi/agent/trail/workers/<id>/task.md`
 - `~/.pi/agent/trail/workers/<id>/status.json`
 - `~/.pi/agent/trail/workers/<id>/artifacts.json`
+- `~/.pi/agent/trail/workers/<id>/events.ndjson`
+- `~/.pi/agent/trail/workers/<id>/session/` (seeded pi session jsonl)
+- `~/.pi/agent/trail/workers/<id>/workspace/` (detached git worktree)
 
-checkpoint state is event-backed through `events.ndjson`, with `index.json` kept as a compatibility snapshot. worker artifact snapshots are refreshed by the worker heartbeat and mounted into the parent session as sources like `w1`, `w2`, etc.
+every worker is one window in a single tmux session named `trail-workers`. the parent watches the workers root with `fs.watch` and tails each worker's `events.ndjson` from a held offset. `status.json` and `artifacts.json` are cached by mtime; if neither has been touched since the last read, the parent doesn't reparse them. the heartbeat that used to rewrite `artifacts.json` every 15 seconds now signs the artifact list and skips the write when nothing has changed.
+
+checkpoint state is event-backed through `events.ndjson` (at the trail root, not per-worker), with `index.json` kept as a compatibility snapshot. worker artifact snapshots are refreshed by the worker heartbeat and mounted into the parent session as sources like `w1`, `w2`, etc.
 
 `--once` checkpoints are soft-consumed after use. the index entry gets `consumedAt`, default lists hide it, and the files stay on disk for `consumedRetentionDays` so accidental cancels are recoverable. `/trail unload <id>` cancels a pending consume. `/trail delete` purges immediately. use `--include-consumed` to see soft-consumed entries.
 

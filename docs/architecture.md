@@ -185,7 +185,7 @@ Leverage:
 
 Interface:
 
-- `spawn(task)`
+- `spawn(task, { worktree?, fresh? })`
 - `list()`
 - `tell(ref, text)`
 - `delete(ref)`
@@ -206,6 +206,49 @@ Leverage:
 - Trail command registration does not own worker lookup, spawn announcement formatting, list formatting, or explicit load/unload/delete behavior.
 - Worker Store and Loaded Artifact Context are adapters, so worker command behavior is testable without tmux or Pi UI.
 - Mixed Checkpoint/worker load selection remains outside this Module, keeping Worker Commands focused on explicit worker operations.
+
+### Worker Store (tmux topology)
+
+Interface:
+
+- `spawn(input)` — adds a window to the shared session
+- `kill(id)` / `purge(id)` — kills the window, optionally purges the worker dir
+- `sendInput(id, text)` — `tmux send-keys -l` with `[trail]` prefix
+- `sharedSessionExists()` / `isSharedSessionTarget(target)` — shared-session probes
+- `seedWorkerSession(parentFile, workerCwd, workerSessionDir)` — `SessionManager.forkFrom` adapter
+
+Owned flow:
+1. All workers live as windows inside one tmux session named `trail-workers`.
+2. First spawn creates the session via `tmux new-session -d -s trail-workers -n w<N>`. Later spawns append windows via `tmux new-window -t trail-workers: -n w<N>`.
+3. Worker status stores the window target (`trail-workers:w<N>`) in the `tmuxSession` field. Legacy per-worker session names are still recognised by kill/purge for graceful migration.
+4. Parent-injected stdin uses `tmux send-keys -t <target> -l '[trail] <text>'` followed by a separate `Enter` send. Literal mode bypasses tmux key-table interpretation; the `[trail]` prefix marks the input as parent-originated.
+5. When `parentSession` is supplied and `fresh` is not set, the worker's session dir is seeded from the parent's JSONL via `SessionManager.forkFrom`, and the worker pi launches with `--continue` so the parent prefix becomes the worker's starting context.
+
+Leverage:
+- Tmux topology is one decision held in this Module; everything else routes through `tmuxSession` opaquely.
+- Session seeding for prompt-cache reuse is a `SessionManager.forkFrom` adapter, not a custom JSONL parser.
+- Worker Commands and Background Work do not depend on whether the worker is in a shared session or a legacy per-worker one.
+
+### Worker Events + Dock Cache
+
+Interface:
+
+- `appendWorkerEventSync(root, id, { kind, payload })` — append-only NDJSON event log
+- `tailWorkerEvents(root, id, { offset })` — read new bytes since offset, return `{ events, rotated, offset }`
+- `WorkerSnapshotCache.snapshot()` — mtime-cached status + artifacts read with per-worker event tail
+- `watchWorkersRoot(root, onChange, options)` — `fs.watch` recursive + debounced + fallback poll
+
+Owned flow:
+1. Worker pi appends one JSON line per significant event (state transition, todo update, tool call) to `workers/<id>/events.ndjson`, rotated at 5 MB with one retained generation.
+2. Parent watches the workers root with `fs.watch` (recursive on macOS, fallback poll 3 s otherwise) and debounces refresh ticks at 150 ms.
+3. `WorkerSnapshotCache` keeps per-worker `{ statusMtime, artifactsMtime, status, artifacts, eventOffset }` and skips re-reads when mtimes match. On each snapshot it tails new events for every worker and returns `eventsByWorker` alongside the existing status/artifacts maps.
+4. On dock tick, orphan workers (active state but shared session gone) are reconciled to `state: error` with a tmux-died lastError.
+
+Leverage:
+- Liveness is event-driven, not poll-driven. The parent reacts to file writes instead of running a 500 ms timer.
+- The 15 s worker heartbeat hashes its artifact list and skips the `writeArtifacts` call when unchanged, so a quiet worker no longer rewrites 200 artifacts twice per minute.
+- Event log lives on disk so it survives parent restarts; no daemon or socket needed.
+- Dock UI consumers can read structured events without parsing terminal output (no `tmux pipe-pane` required).
 
 ### Navigator
 
