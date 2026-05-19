@@ -1,6 +1,7 @@
 import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import { isWorkerStatusArtifact, workerResultArtifact, workerResultSummary } from "./worker-result.js";
 import type { Artifact } from "./types.js";
+import type { WorkerEvent } from "./worker-events.js";
 
 export type WorkerEvidence = {
 	reads: number;
@@ -155,7 +156,46 @@ export type DockRow = {
 	attention: boolean;
 	chip?: string;
 	modelBadge?: string;
+	eventLine?: string;
 };
+
+const SKIP_TOOL_EVENT_NAMES = new Set([
+	"trail_wait",
+	"trail_done",
+	"trail_fail",
+	"trail_todos",
+]);
+
+function truncateTool(text: string, max = 60): string {
+	if (text.length <= max) return text;
+	return `${text.slice(0, Math.max(1, max - 1))}…`;
+}
+
+export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState): string | undefined {
+	if (!events?.length) return undefined;
+	if (state !== "thinking" && state !== "starting") return undefined;
+	for (let i = events.length - 1; i >= 0; i--) {
+		const event = events[i]!;
+		if (event.kind === "tool") {
+			const tool = typeof event.payload.tool === "string" ? event.payload.tool : undefined;
+			if (!tool || SKIP_TOOL_EVENT_NAMES.has(tool)) continue;
+			const target = typeof event.payload.target === "string" ? event.payload.target : undefined;
+			return truncateTool(target ? `tool: ${tool} ${target}` : `tool: ${tool}`);
+		}
+	}
+	for (let i = events.length - 1; i >= 0; i--) {
+		const event = events[i]!;
+		if (event.kind === "todo") {
+			const total = Number(event.payload.total ?? 0);
+			const completed = Number(event.payload.completed ?? 0);
+			const inProgress = Number(event.payload.inProgress ?? 0);
+			if (!Number.isFinite(total) || total <= 0) continue;
+			const active = inProgress > 0 ? ` · ${inProgress} active` : "";
+			return `todos ${completed}/${total}${active}`;
+		}
+	}
+	return undefined;
+}
 
 function relativeAgeLabel(updatedAtMs: number, now: number): string {
 	const ageMs = now - updatedAtMs;
@@ -192,13 +232,15 @@ function isAttentionState(state: WorkerDerivedState): boolean {
 
 export function dockRowsForRender(
 	rows: WorkerActivityRow[],
-	options: { parentModelId?: string; now?: number } = {},
+	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]> } = {},
 ): DockRow[] {
 	const now = options.now ?? Date.now();
 	const workers = rows.map((row) => row.worker);
 	return rows.map((row) => {
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
 		const chip = dockChip(row.state);
+		const events = options.eventsByWorker?.get(row.worker.id);
+		const eventLine = dockEventSubLine(events, row.state);
 		return {
 			worker: row.worker,
 			label: row.label,
@@ -209,6 +251,7 @@ export function dockRowsForRender(
 			attention: isAttentionState(row.state),
 			...(chip ? { chip } : {}),
 			...(modelBadge ? { modelBadge } : {}),
+			...(eventLine ? { eventLine } : {}),
 		};
 	});
 }

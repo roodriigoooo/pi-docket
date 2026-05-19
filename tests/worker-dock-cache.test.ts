@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, utimes } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { WorkerSnapshotCache } from "../extensions/worker-dock-cache.js";
+import { DOCK_RECENT_EVENT_CAP, WorkerSnapshotCache } from "../extensions/worker-dock-cache.js";
+import { appendWorkerEventSync } from "../extensions/worker-events.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 
 function makeStatus(partial: Partial<WorkerStatus> & { id: string; index: number }): WorkerStatus {
@@ -78,4 +79,44 @@ test("WorkerSnapshotCache yields empty snapshot when root missing", async () => 
 	const snap = await cache.snapshot();
 	assert.equal(snap.workers.length, 0);
 	assert.equal(snap.artifactsByWorker.size, 0);
+});
+
+test("WorkerSnapshotCache keeps a sticky recent-event buffer across snapshots", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-events-"));
+	try {
+		await seedWorkerDir(root, "alpha", 1, "[]");
+		const cache = new WorkerSnapshotCache(root);
+
+		appendWorkerEventSync(root, "alpha", { kind: "tool", payload: { tool: "read", target: "src/a.ts" } });
+		const first = await cache.snapshot();
+		assert.equal(first.eventsByWorker.get("alpha")?.length, 1);
+
+		const second = await cache.snapshot();
+		assert.equal(second.eventsByWorker.get("alpha")?.length, 1, "event should remain visible after tail offset advances");
+
+		appendWorkerEventSync(root, "alpha", { kind: "tool", payload: { tool: "edit", target: "src/b.ts" } });
+		const third = await cache.snapshot();
+		const buffer = third.eventsByWorker.get("alpha")!;
+		assert.equal(buffer.length, 2);
+		assert.equal(buffer.at(-1)!.payload.target, "src/b.ts");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("WorkerSnapshotCache caps recent-event buffer", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-cap-"));
+	try {
+		await seedWorkerDir(root, "alpha", 1, "[]");
+		const cache = new WorkerSnapshotCache(root);
+		for (let i = 0; i < DOCK_RECENT_EVENT_CAP + 5; i++) {
+			appendWorkerEventSync(root, "alpha", { kind: "tool", payload: { tool: "read", n: i } });
+		}
+		const snap = await cache.snapshot();
+		const buffer = snap.eventsByWorker.get("alpha")!;
+		assert.equal(buffer.length, DOCK_RECENT_EVENT_CAP);
+		assert.equal(buffer.at(-1)!.payload.n, DOCK_RECENT_EVENT_CAP + 4);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });

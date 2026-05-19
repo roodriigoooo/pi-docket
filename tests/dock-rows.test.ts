@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dockRowsForRender, pickModelBadge, shortModelLabel, workerActivityRows } from "../extensions/worker-activity.js";
+import { dockEventSubLine, dockRowsForRender, pickModelBadge, shortModelLabel, workerActivityRows } from "../extensions/worker-activity.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
+import type { WorkerEvent } from "../extensions/worker-events.js";
 
 function makeWorker(partial: Partial<WorkerStatus> & { id: string; index: number; state?: WorkerStatus["state"] }): WorkerStatus {
 	return {
@@ -54,4 +55,44 @@ test("dockRowsForRender marks attention states accurately", () => {
 	assert.equal(byLabel.get("w3")!.attention, true);
 	assert.equal(byLabel.get("w1")!.chip, "← reply");
 	assert.equal(byLabel.get("w3")!.chip, "← review");
+});
+
+function event(kind: WorkerEvent["kind"], payload: Record<string, unknown>): WorkerEvent {
+	return { ts: Date.now(), kind, payload };
+}
+
+test("dockEventSubLine picks latest non-protocol tool when thinking", () => {
+	const events: WorkerEvent[] = [
+		event("tool", { tool: "trail_todos" }),
+		event("tool", { tool: "read", target: "src/foo.ts" }),
+		event("tool", { tool: "trail_wait" }),
+	];
+	assert.equal(dockEventSubLine(events, "thinking"), "tool: read src/foo.ts");
+});
+
+test("dockEventSubLine falls back to todo progress when no tool events", () => {
+	const events: WorkerEvent[] = [
+		event("state", { state: "active" }),
+		event("todo", { total: 5, completed: 2, inProgress: 1 }),
+	];
+	assert.equal(dockEventSubLine(events, "thinking"), "todos 2/5 · 1 active");
+});
+
+test("dockEventSubLine returns undefined for non-thinking states", () => {
+	const events: WorkerEvent[] = [event("tool", { tool: "edit", target: "x" })];
+	assert.equal(dockEventSubLine(events, "ready"), undefined);
+	assert.equal(dockEventSubLine(events, "needs_input"), undefined);
+	assert.equal(dockEventSubLine(events, "failed"), undefined);
+});
+
+test("dockRowsForRender attaches eventLine for thinking rows when events present", () => {
+	const now = Date.now();
+	const fresh = new Date(now).toISOString();
+	const thinking = makeWorker({ id: "a", index: 1, state: "active", createdAt: fresh, updatedAt: fresh });
+	const events = new Map<string, WorkerEvent[]>([
+		["a", [event("tool", { tool: "edit", target: "src/bar.ts" })]],
+	]);
+	const rows = workerActivityRows([thinking], new Map(), { now });
+	const dock = dockRowsForRender(rows, { eventsByWorker: events, now });
+	assert.equal(dock[0]!.eventLine, "tool: edit src/bar.ts");
 });

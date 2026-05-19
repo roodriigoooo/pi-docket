@@ -5,6 +5,8 @@ import type { Artifact } from "./types.js";
 import type { WorkerStatus } from "./background-work.js";
 import { tailWorkerEvents, type WorkerEvent } from "./worker-events.js";
 
+export const DOCK_RECENT_EVENT_CAP = 16;
+
 type Entry = {
 	id: string;
 	statusMtime: number;
@@ -12,6 +14,7 @@ type Entry = {
 	status: WorkerStatus | undefined;
 	artifacts: Artifact[];
 	eventOffset: number;
+	recentEvents: WorkerEvent[];
 };
 
 export type WorkerSnapshot = {
@@ -57,7 +60,7 @@ export class WorkerSnapshotCache {
 				return;
 			}
 			const existing = this.entries.get(id);
-			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [], eventOffset: 0 };
+			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [], eventOffset: 0, recentEvents: [] };
 			if (entry.statusMtime !== statusStat.mtimeMs) {
 				try {
 					entry.status = JSON.parse(await fs.readFile(statusFile, "utf8")) as WorkerStatus;
@@ -81,11 +84,15 @@ export class WorkerSnapshotCache {
 			}
 			const tail = await tailWorkerEvents(this.root, id, { offset: entry.eventOffset });
 			entry.eventOffset = tail.offset;
+			if (tail.rotated) entry.recentEvents = [];
+			if (tail.events.length) {
+				entry.recentEvents = [...entry.recentEvents, ...tail.events].slice(-DOCK_RECENT_EVENT_CAP);
+			}
 			this.entries.set(id, entry);
 			if (entry.status) {
 				workers.push(entry.status);
 				artifactsByWorker.set(entry.status.id, entry.artifacts);
-				if (tail.events.length) eventsByWorker.set(entry.status.id, tail.events);
+				if (entry.recentEvents.length) eventsByWorker.set(entry.status.id, entry.recentEvents);
 			}
 		}));
 		workers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));

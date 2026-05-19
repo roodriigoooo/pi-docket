@@ -235,20 +235,41 @@ Interface:
 
 - `appendWorkerEventSync(root, id, { kind, payload })` — append-only NDJSON event log
 - `tailWorkerEvents(root, id, { offset })` — read new bytes since offset, return `{ events, rotated, offset }`
-- `WorkerSnapshotCache.snapshot()` — mtime-cached status + artifacts read with per-worker event tail
+- `WorkerSnapshotCache.snapshot()` — mtime-cached status + artifacts read with per-worker event tail and sticky recent-event buffer
 - `watchWorkersRoot(root, onChange, options)` — `fs.watch` recursive + debounced + fallback poll
+- `dockEventSubLine(events, state)` — pure mapper that picks the latest meaningful event (tool call, todo update) for the dock sub-line
 
 Owned flow:
-1. Worker pi appends one JSON line per significant event (state transition, todo update, tool call) to `workers/<id>/events.ndjson`, rotated at 5 MB with one retained generation.
+1. Worker pi appends one JSON line per significant event (state transition, todo update, tool call with target) to `workers/<id>/events.ndjson`, rotated at 5 MB with one retained generation.
 2. Parent watches the workers root with `fs.watch` (recursive on macOS, fallback poll 3 s otherwise) and debounces refresh ticks at 150 ms.
-3. `WorkerSnapshotCache` keeps per-worker `{ statusMtime, artifactsMtime, status, artifacts, eventOffset }` and skips re-reads when mtimes match. On each snapshot it tails new events for every worker and returns `eventsByWorker` alongside the existing status/artifacts maps.
-4. On dock tick, orphan workers (active state but shared session gone) are reconciled to `state: error` with a tmux-died lastError.
+3. `WorkerSnapshotCache` keeps per-worker `{ statusMtime, artifactsMtime, status, artifacts, eventOffset, recentEvents }` and skips re-reads when mtimes match. On each snapshot it tails new events, appends them to the per-worker `recentEvents` ring (capped at 16), and returns `eventsByWorker` alongside the existing status/artifacts maps.
+4. The dock projects each thinking/starting row's most recent non-protocol tool call (or todo progress) into a dim sub-line under the worker row. Ready/needs-input/failed rows skip the sub-line — the main row's chip already conveys what is needed.
+5. On dock tick, orphan workers (active state but shared session gone) are reconciled to `state: error` with a tmux-died lastError.
 
 Leverage:
 - Liveness is event-driven, not poll-driven. The parent reacts to file writes instead of running a 500 ms timer.
 - The 15 s worker heartbeat hashes its artifact list and skips the `writeArtifacts` call when unchanged, so a quiet worker no longer rewrites 200 artifacts twice per minute.
 - Event log lives on disk so it survives parent restarts; no daemon or socket needed.
-- Dock UI consumers can read structured events without parsing terminal output (no `tmux pipe-pane` required).
+- Dock UI consumers read structured events without parsing terminal output (no `tmux pipe-pane` required).
+- Sticky `recentEvents` buffer means the dock sub-line stays populated across refresh ticks, not only on the tick that observed the append.
+
+### Worker Eviction
+
+Interface:
+
+- `dockIdleHideMs(config)` / `pruneAfterMs(config)` — parse config knobs into millisecond windows
+- `isDockIdleEvictable(worker, now, idleHideMs)` — pure predicate, true only for `ended` workers older than the window
+- `selectPrunableWorkers(workers, now, pruneMs)` — pure filter over the worker list
+
+Owned flow:
+1. Dock filters `ended` workers from the prompt-area row set once their `updatedAt` is older than `worker.dockIdleHideMinutes` (default 30 min).
+2. Session start triggers a one-shot sweep that calls `WorkerStore.purge` for every `ended` worker older than `worker.pruneAfterHours` (default 24 h), removing the worker dir and its detached worktree.
+3. Both windows are configurable per-project via `.pi/trail.json` and globally via `~/.pi/agent/trail.json`. Setting either to 0 disables that side.
+
+Leverage:
+- Auto-eviction only touches `ended` workers. `ready` and `failed` workers stay visible so the user can still act on them.
+- Hide and prune are independent — disk retention can outlive dock visibility, or vice versa.
+- Logic is pure; tests run without filesystem or tmux.
 
 ### Navigator
 
@@ -285,5 +306,29 @@ Leverage:
 - Pi command registration only parses arguments, builds adapters, and delegates one intent.
 - Command behavior tests cross one seam without Pi UI, tmux, clipboard, or session creation.
 - TUI prompts and renderers stay adapters; command policy stays local.
+
+## Storage layout
+
+Per-worker state lives under `~/.pi/agent/trail/workers/<id>/`:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `task.md` | parent on spawn | the assignment, read once by the worker |
+| `status.json` | worker heartbeat + protocol | current state, mtime-cached by the dock |
+| `artifacts.json` | worker heartbeat | snapshot of captured artifacts, signature-deduped between heartbeats |
+| `events.ndjson` | worker live | append-only event stream for liveness + dock sub-line |
+| `session/` | parent (seeded) | forked pi JSONL prefix, enables `--continue` + cache reuse |
+| `workspace/` | parent (seeded) | detached git worktree isolated from the parent's working copy |
+
+Checkpoint state lives under `~/.pi/agent/trail/`:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `checkpoints/<id>.md` | Checkpoint Lifecycle | handoff prose |
+| `checkpoints/<id>.artifacts.json` | Checkpoint Lifecycle | sidecar refs, mounted by `/trail load` |
+| `events.ndjson` | Event Log | append-only checkpoint lifecycle (save/consume/purge/sweep) |
+| `index.json` | Event Log (snapshot) | compat snapshot rebuilt from `events.ndjson` |
+
+`index.json` is a compatibility artifact: the event log is the source of truth and can replay the index on demand. It is kept so external tools that read `index.json` directly do not break, but no Trail code path treats it as authoritative.
 
 ## Planned deepening opportunities

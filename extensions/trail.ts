@@ -59,6 +59,7 @@ import { workerResultHeadline, workerResultReport, workerResultText } from "./wo
 import { createWorkerStore, isSharedSessionTarget, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync } from "./worker-events.js";
+import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -88,6 +89,25 @@ async function copyToClipboard(text: string): Promise<boolean> {
 
 function shellSingleQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function toolEventTarget(event: { toolName?: string; input?: Record<string, unknown> }): string | undefined {
+	const input = event.input;
+	if (!input || typeof input !== "object") return undefined;
+	const candidates = ["file_path", "path", "filePath", "file", "target", "url", "pattern"] as const;
+	for (const key of candidates) {
+		const value = (input as Record<string, unknown>)[key];
+		if (typeof value === "string" && value.length > 0) {
+			const trimmed = value.replace(/^\/Users\/[^/]+\//, "~/").trim();
+			return trimmed.length > 48 ? `…${trimmed.slice(-47)}` : trimmed;
+		}
+	}
+	const command = (input as Record<string, unknown>).command;
+	if (typeof command === "string" && command.length > 0) {
+		const first = command.split(/\s+/)[0] ?? "";
+		return first || undefined;
+	}
+	return undefined;
 }
 
 class TrailTextViewer implements Component {
@@ -1113,11 +1133,17 @@ function dockRowText(row: DockRow, width: number): string {
 
 function renderDockRows(theme: any, rows: DockRow[], width: number): string[] {
 	const dim = (s: string) => theme.fg("dim", s);
-	return rows.map((row) => {
+	const muted = (s: string) => theme.fg("muted", s);
+	const out: string[] = [];
+	for (const row of rows) {
 		const plain = dockRowText(row, width);
-		if (row.attention) return workerStateColor(theme, row.state, plain);
-		return dim(plain);
-	});
+		out.push(row.attention ? workerStateColor(theme, row.state, plain) : dim(plain));
+		if (row.eventLine) {
+			const sub = truncateToWidth(`    ${row.eventLine}`, width, "");
+			out.push(muted(sub));
+		}
+	}
+	return out;
 }
 
 const WORKER_PREVIEW_HEADINGS = new Set(["Outcome", "Evidence", "Next actions"]);
@@ -1735,6 +1761,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let workerDockCache: WorkerSnapshotCache | undefined;
 	let workerDockPending = false;
 	let workerDockRunning = false;
+	let workerDockIdleHideMs = 0;
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
@@ -1756,6 +1783,21 @@ export default function trailExtension(pi: ExtensionAPI) {
 		try {
 			const config = await loadConfig(cwd);
 			await createCheckpointStore().sweepConsumed(config.consumedRetentionDays);
+		} catch { /* best-effort */ }
+		await maybeSweepWorkers(cwd);
+	};
+
+	const maybeSweepWorkers = async (cwd: string): Promise<void> => {
+		try {
+			const config = await loadConfig(cwd);
+			const pruneMs = pruneAfterMs(config.worker);
+			if (pruneMs <= 0) return;
+			const store = createWorkerStore();
+			const workers = await store.list();
+			const targets = selectPrunableWorkers(workers, Date.now(), pruneMs);
+			for (const worker of targets) {
+				try { await store.purge(worker.id); } catch { /* best-effort */ }
+			}
 		} catch { /* best-effort */ }
 	};
 
@@ -1920,16 +1962,17 @@ export default function trailExtension(pi: ExtensionAPI) {
 		workerDockRunning = true;
 		try {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
-			const { workers: allWorkers, artifactsByWorker } = await workerDockCache.snapshot();
+			const { workers: allWorkers, artifactsByWorker, eventsByWorker } = await workerDockCache.snapshot();
 			await reconcileOrphanedWorkers(allWorkers);
-			const workers = allWorkers.filter(isPromptDockWorker);
+			const now = Date.now();
+			const workers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
 			if (workers.length === 0) {
 				ctx.ui.setWidget("trail-workers", undefined);
 				return;
 			}
 			const rows = workerActivityRows(workers, artifactsByWorker);
 			const counts = workerActivityTotals(rows);
-			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id });
+			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
 				"trail-workers",
@@ -2188,7 +2231,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 		pi.on("tool_call", async (event, ctx) => {
 			if (workerId) {
-				appendWorkerEventSync(createWorkerStore().root(), workerId, { kind: "tool", payload: { tool: event.toolName, when: "call" } });
+				const target = toolEventTarget(event);
+				appendWorkerEventSync(createWorkerStore().root(), workerId, { kind: "tool", payload: { tool: event.toolName, when: "call", ...(target ? { target } : {}) } });
 			}
 			if (!isToolCallEventType("bash", event)) return;
 			const intent = parseTrailWorkerShellCommand(event.input.command);
@@ -2219,6 +2263,11 @@ export default function trailExtension(pi: ExtensionAPI) {
 		} else if (ctx.hasUI) {
 			const root = createWorkerStore().root();
 			workerDockCache = new WorkerSnapshotCache(root);
+			workerDockIdleHideMs = 0;
+			void loadConfig(ctx.cwd).then((config) => {
+				workerDockIdleHideMs = dockIdleHideMs(config.worker);
+				void refreshWorkerDockWidget();
+			}).catch(() => undefined);
 			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
 		}
 	});
@@ -2235,6 +2284,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		workerDockCache = undefined;
 		workerDockPending = false;
 		workerDockRunning = false;
+		workerDockIdleHideMs = 0;
 		if (workerId) {
 			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
 		}

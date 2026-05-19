@@ -6,6 +6,10 @@ import type { CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
 
 export type TrailWorkerConfig = {
 	guardrailsPath?: string;
+	/** Hide ended workers from the dock once they go untouched for this many minutes. Set 0 to keep them visible. */
+	dockIdleHideMinutes?: number;
+	/** Auto-prune ended worker dirs once they go untouched for this many hours. Set 0 to disable. */
+	pruneAfterHours?: number;
 };
 
 export type TrailConfig = {
@@ -28,7 +32,10 @@ export const DEFAULT_CONFIG: TrailConfig = {
 		maxInputChars: 36000,
 		timeoutMs: 120000,
 	},
-	worker: {},
+	worker: {
+		dockIdleHideMinutes: 30,
+		pruneAfterHours: 24,
+	},
 };
 
 async function readJsonFile<T>(file: string, fallback: T): Promise<T> {

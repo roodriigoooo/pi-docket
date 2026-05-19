@@ -54,6 +54,8 @@ test("packaged worker guardrails file ships with protocol contract", async () =>
 	assert.match(text, /Recommended:/);
 	assert.match(text, /Do not assume/i);
 	assert.match(text, /Read-only by default/);
+	assert.match(text, /Shared tmux session/);
+	assert.match(text, /Never invoke `tmux` directly/);
 });
 
 test("worker initial prompt points at guardrails and names protocol tools", () => {
