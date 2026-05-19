@@ -499,6 +499,8 @@ dry-run package contents:
 npm run pack:dry
 ```
 
+stress test the parent under 8 workers — runbook in [`scripts/stress-test.md`](./scripts/stress-test.md). on the 0.2.2 release with default config, the parent idles at 0 % CPU and stays under 1 % CPU on average with 8 active workers.
+
 ## credits
 
 this project comes from trying to understand and improve my own workflow with agents. pi gives extensions enough surface area to build this kind of thing, and trail is an experiment on top of that.
