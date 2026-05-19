@@ -63,22 +63,6 @@ spawn a worker:
 
 when the worker finishes, open `/trail` again. review the card. continue, attach, or mark it done.
 
-## gifs
-
-these gifs are useful for getting a feel for the plugin, but they are a bit outdated. i need to make new ones that match the current UI and workflow more closely.
-
-<p align="center">
-  <img src="./assets/compressed_gif1.gif" alt="Trail inbox and decision cards" width="100%" />
-</p>
-
-<p align="center">
-  <img src="./assets/compressed_gif2.gif" alt="Trail checkpoint workflow" width="100%" />
-</p>
-
-<p align="center">
-  <img src="./assets/trail_workers_tmux.gif" alt="Trail tmux worker spawn and load workflow" width="100%" />
-</p>
-
 ## what shows up in the inbox
 
 trail is intentionally picky. not every event becomes a card.

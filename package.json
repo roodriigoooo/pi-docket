@@ -1,6 +1,6 @@
 {
   "name": "@roodriigoooo/trail",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Trail: session artifacts and fresh-session checkpoints for Pi",
   "keywords": [
     "pi-package",

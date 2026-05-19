@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.2
+
+Included:
+- shared `trail-workers` tmux session: one server hosts every worker window instead of N servers
+- worker NDJSON event stream at `workers/<id>/events.ndjson` for state, todo, and tool-call events
+- dock sub-line under thinking workers showing the latest non-protocol tool call (file path, command, etc.)
+- `WorkerSnapshotCache` keeps a sticky recent-event buffer so sub-lines survive across refresh ticks
+- `fs.watch`-driven dock refresh in place of the 500 ms polling timer, with mtime-cached status + artifacts reads
+- heartbeat dedup: workers skip `writeArtifacts` when their artifact list signature is unchanged
+- session JSONL seeding (`SessionManager.forkFrom`) so spawned workers resume from the parent's prefix and hit the provider's prompt cache. Opt out with `/trail spawn --fresh`
+- `/trail attach [w<N>]` first-class command that copies the tmux attach incantation, optionally pinned to one worker
+- idle eviction: ended workers auto-hide from the dock after `worker.dockIdleHideMinutes` (default 30) and auto-prune after `worker.pruneAfterHours` (default 24)
+- worker guardrails note that the tmux session is shared; workers must not invoke `tmux` directly
+- README simplified, outdated demo gifs removed
+- stress-test runbook + sampler under `scripts/`
+- architecture doc resynced (storage layout, shared topology, event stream, eviction)
+
 ## 0.2.1
 
 Included:
