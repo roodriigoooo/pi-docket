@@ -118,10 +118,11 @@ card pieces:
 
 ### worker kinds
 
-every worker has a *kind*. the default kind matches the pre-0.3 behavior — a general-purpose worker with the universal protocol guardrails. trail also ships two presets:
+every worker has a *kind*. trail ships three:
 
-- **`scout`** — fast read-only recon. no worktree, small artifact cap, short time budget. point it at a directory and ask "what's here that does X".
-- **`patcher`** — edits in a worker worktree and proposes a change set. can dispatch a child `scout` via `trail_spawn_child` if it needs context the parent didn't seed.
+- **`default`** — general-purpose, universal guardrails, edits allowed.
+- **`scout`** — fast read-only recon. no worktree, small artifact cap, short time budget.
+- **`patcher`** — edits in a worker worktree and proposes a change set. can dispatch a child `scout` via `trail_spawn_child`.
 
 pick a kind with `--as`:
 
@@ -130,42 +131,9 @@ pick a kind with `--as`:
 /trail spawn --as patcher rename UserService → AccountService across src/
 ```
 
-`/trail kinds` lists what's registered. you can drop your own MD files into `~/.pi/agent/trail/worker-kinds/*.md` or `<project>/.pi/trail/worker-kinds/*.md`:
+`/trail kinds` lists what's registered. drop your own markdown files into `~/.pi/agent/trail/worker-kinds/*.md` or `<project>/.pi/trail/worker-kinds/*.md` — the body is appended to the universal guardrails, the frontmatter tunes posture (read-only, worktree, model, seed, can_spawn, layout, …). full field list and a worked `reviewer` example in [docs/configuration.md#worker-kinds](./docs/configuration.md#worker-kinds).
 
-```markdown
----
-name: reviewer
-description: Read-only diff review.
-read_only: true
-default_worktree: false
-parent_seed: full
-max_duration_sec: 180
----
-
-You are a code reviewer. Read the diff vs HEAD, then call trail_done with a
-findings outcome and a Recommended: bullet list.
-```
-
-frontmatter fields:
-
-| field | default | meaning |
-|---|---|---|
-| `name` | — | required; kebab-case slug used by `--as` |
-| `description` | — | one-line shown in `/trail kinds` |
-| `model` | parent | optional model override (provider/model string) |
-| `thinking` | medium | `off` / `low` / `medium` / `high` |
-| `read_only` | false | when true, kind appendix tells the worker not to edit files |
-| `default_worktree` | true | spawn this kind in a detached worktree by default |
-| `parent_seed` | full | `full` to seed parent session JSONL, `none` for a fresh worker |
-| `max_artifacts` | — | soft cap surfaced as guidance, not enforced by the runtime |
-| `max_duration_sec` | — | soft cap surfaced as guidance |
-| `can_spawn` | none | comma-list of kinds this worker may dispatch via `trail_spawn_child` |
-| `layout` | single | `split-events` opens a right pane with `tail -F events.ndjson` |
-| `guardrails_append` | — | extra guardrail lines pulled into the kind appendix |
-
-the body of the MD is appended to the universal guardrails — it never replaces them. the protocol contract (`trail_wait`/`trail_done`/`trail_fail`/`trail_todos`) is the same for every kind.
-
-other pi extensions can contribute kinds at runtime via `globalThis.__trail.registerWorkerKind(...)` (see [docs/architecture.md](./docs/architecture.md#extension-surface)).
+bundled kinds live in [`extensions/worker-kinds/`](./extensions/worker-kinds/) — use them as a template. other pi extensions can contribute kinds at runtime via `globalThis.__trail.registerWorkerKind(...)` (see [docs/architecture.md](./docs/architecture.md#extension-surface)).
 
 ### child workers
 
@@ -341,208 +309,49 @@ short aliases: `/trail s <query>`, `/trail r [id|last]`, `/trail ckpt`, `/trail 
 
 ## keys
 
-in `/trail`:
+in `/trail` the footer shows only `↑↓ move · / search · ? more · Esc close`. card actions live inside the selected card, contextual to its state. press `?` for the full keymap, including the worker dashboard and inspect views.
 
-the footer shows only `↑↓ move · / search · ? more · Esc close`. card actions live inside the selected card itself, contextual to its state.
+primary keys:
 
 - `↑↓` / `j/k` — move.
 - `Enter` — primary action for selected card.
 - `c` — continue or reply.
 - `Space` — mark done / restore.
 - `a` — attach compact reference chip.
-- `y` — copy selected artifact.
 - `/` — search.
-- `s` — switch source (only visible when carryover sources exist).
 - `tab` / `1` / `2` / `3` — cycle inbox, answers, log.
-- `?` — show advanced shortcuts (including `P d c y o I p v f t x g G`).
 - `q` / `Esc` — close.
 
-advanced keys shown with `?`:
-
-- `o` open file.
-- `I` inject full chip.
-- `p` pin.
-- `v` preview.
-- `f` cycle artifact kind.
-- `t` tell.
-- `x` mark done.
-- `g/G` top/bottom.
-
-in `/trail workers`:
-
-- `↑↓` / `j/k` — move.
-- `Enter` — open selected worker.
-- `c` — continue or tell selected worker.
-- `a` — copy `tmux attach -t trail-workers \; select-window -t w<N>`.
-- `l` — load selected worker refs.
-- `?` — show advanced shortcuts.
-- `q` / `Esc` — close.
-
-inspect views:
-
-- `j/k` line.
-- `J/K` five lines.
-- `d/u` and `Ctrl+D/U` half-page.
-- `Space` / `Ctrl+F` / `PageDown` page.
-- `b` / `Ctrl+B` / `PageUp` page back.
-- `g/G` top/bottom.
-- `q` close.
-
-checkpoint review and resume have their own small keymaps. see [docs/checkpoint-guidelines.md](./docs/checkpoint-guidelines.md) for checkpoint quality notes.
+see [docs/checkpoint-guidelines.md](./docs/checkpoint-guidelines.md) for checkpoint quality notes.
 
 ## configuration
 
-trail reads config from:
+trail reads `~/.pi/agent/trail.json` (global) and `<project>/.pi/trail.json` (project, overrides global). both optional.
 
-1. `~/.pi/agent/trail.json`
-2. `<project>/.pi/trail.json`
-
-example:
+minimal example:
 
 ```json
 {
-  "maxArtifacts": 300,
-  "maxBodyChars": 6000,
-  "checkpointArtifacts": 24,
-  "consumedRetentionDays": 7,
+  "worker": {
+    "maxActive": 8,
+    "defaultKind": "scout"
+  },
   "summarizer": {
     "enabled": true,
-    "provider": "openai",
-    "model": "gpt-5.2",
-    "maxOutputTokens": 1200,
-    "maxInputChars": 36000,
-    "timeoutMs": 120000
-  },
-  "worker": {
-    "guardrailsPath": "~/.pi/agent/trail/my-worker-rules.md"
+    "model": "openai/gpt-5.2"
   }
 }
 ```
 
-`worker.guardrailsPath` can point to a custom guardrail file. absolute paths and cwd-relative paths both work. if unset, trail uses `extensions/worker-guardrails.md` from this package.
-
-worker-related knobs:
-
-| key | default | meaning |
-|---|---|---|
-| `worker.maxActive` | 8 | reject `/trail spawn` once this many workers are starting/active/idle/needs_input |
-| `worker.maxSpawnDepth` | 2 | bound `trail_spawn_child` recursion (top-level worker = depth 0, its child = depth 1, …) |
-| `worker.dockIdleHideMinutes` | 30 | hide `ended` workers from the dock after this many minutes; 0 keeps them |
-| `worker.pruneAfterHours` | 24 | auto-prune `ended` worker dirs after this many hours; 0 disables |
-| `worker.defaultKind` | default | kind used when `/trail spawn` is invoked without `--as` |
-| `worker.tmuxStatusLine` | false | write a compact summary to `trail-workers`'s `status-right` |
-| `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker |
-| `worker.autoRespawn` | false | reserved for future autonomous respawn behavior; today `/trail respawn` is manual |
+full key reference, summarizer options, worker fleet knobs, and worker-kind frontmatter live in [docs/configuration.md](./docs/configuration.md).
 
 ## storage
 
-checkpoints live in:
+checkpoints live under `~/.pi/agent/trail/checkpoints/`, workers under `~/.pi/agent/trail/workers/<id>/`. every worker is one window in a single tmux session named `trail-workers`; the parent reacts to `events.ndjson` writes via `fs.watch` instead of polling, and `status.json` / `artifacts.json` are mtime-cached.
 
-- `~/.pi/agent/trail/checkpoints/<id>.md`
-- `~/.pi/agent/trail/checkpoints/<id>.artifacts.json`
-- `~/.pi/agent/trail/index.json`
-- `~/.pi/agent/trail/events.ndjson`
+`--once` checkpoints are soft-consumed after first use and retained for `consumedRetentionDays` so accidental cancels are recoverable. `/trail load` rehydrates checkpoint or worker artifacts without spending model-context tokens.
 
-workers live in:
-
-- `~/.pi/agent/trail/workers/<id>/task.md`
-- `~/.pi/agent/trail/workers/<id>/status.json`
-- `~/.pi/agent/trail/workers/<id>/artifacts.json`
-- `~/.pi/agent/trail/workers/<id>/events.ndjson`
-- `~/.pi/agent/trail/workers/<id>/session/` (seeded pi session jsonl)
-- `~/.pi/agent/trail/workers/<id>/workspace/` (detached git worktree)
-
-every worker is one window in a single tmux session named `trail-workers`. the parent watches the workers root with `fs.watch` and tails each worker's `events.ndjson` from a held offset. `status.json` and `artifacts.json` are cached by mtime; if neither has been touched since the last read, the parent doesn't reparse them. the heartbeat that used to rewrite `artifacts.json` every 15 seconds now signs the artifact list and skips the write when nothing has changed.
-
-checkpoint state is event-backed through `events.ndjson` (at the trail root, not per-worker), with `index.json` kept as a compatibility snapshot. worker artifact snapshots are refreshed by the worker heartbeat and mounted into the parent session as sources like `w1`, `w2`, etc.
-
-`--once` checkpoints are soft-consumed after use. the index entry gets `consumedAt`, default lists hide it, and the files stay on disk for `consumedRetentionDays` so accidental cancels are recoverable. `/trail unload <id>` cancels a pending consume. `/trail delete` purges immediately. use `--include-consumed` to see soft-consumed entries.
-
-file-path references inside a checkpoint point to project files, so they survive checkpoint consume. artifact-level refs need the sidecar `artifacts.json` to still exist. `/trail load` rehydrates those refs without spending model-context tokens.
-
-worker artifacts work similarly, but come from `workers/<id>/artifacts.json`. `/trail load w<N>` mounts them. `/trail delete w<N>` kills and purges the worker. `/trail unload w<N>` only unmounts it from the current session.
-
-## example checkpoint markdown
-
-`~/.pi/agent/trail/checkpoints/20260502-184212Z.md`
-
-```md
-# Trail checkpoint 20260502-184212Z
-
-mode: handoff
-summary: llm
-cwd: /Users/me/project
-created: 2026-05-02T18:42:12.000Z
-note: finish checkpoint store refactor
-artifacts: /Users/me/.pi/agent/trail/checkpoints/20260502-184212Z.artifacts.json
-
-## Summary
-Checkpoint store now writes durable markdown plus sidecar artifact JSON.
-
-## Decisions / constraints
-- Keep checkpoints compact; do not preserve full transcript.
-- Store exact artifact refs so fresh sessions can ask for source context.
-
-## Current state
-- `extensions/checkpoint-store.ts` handles save, list, find, read, consume.
-- `--once` checkpoints are soft-consumed after use; markdown and sidecar artifacts are retained until the consumed retention window expires.
-
-## Next steps
-- Add tests for partial checkpoint id lookup.
-- Run `npm run check`.
-
-## Avoid repeating
-- Do not move checkpoint files into project cwd; storage belongs under Pi agent dir.
-
-## References
-- [file:f12] `extensions/checkpoint-store.ts`
-- [command:c4] `npm run check`
-```
-
-sidecar artifact example:
-
-```json
-[
-  {
-    "id": "f12",
-    "displayId": "f12",
-    "ref": "file:abc123:0",
-    "kind": "file",
-    "title": "edit extensions/checkpoint-store.ts",
-    "subtitle": "+ save checkpoint markdown and sidecar artifacts",
-    "body": "export function createCheckpointStore(): CheckpointStore { ... }",
-    "timestamp": 1777747332000,
-    "meta": {
-      "path": "extensions/checkpoint-store.ts"
-    }
-  },
-  {
-    "id": "c4",
-    "displayId": "c4",
-    "ref": "command:def456:0",
-    "kind": "command",
-    "title": "npm run check",
-    "subtitle": "exit 0",
-    "body": "tsc --noEmit"
-  }
-]
-```
-
-## trail vs `/compact`
-
-`/compact` and trail solve related but different problems. `/compact` compresses the current conversation. trail preserves specific artifacts and surfaces decisions.
-
-| feature | `/compact` | trail |
-|---|---|---|
-| compress current conversation | yes | yes, optionally |
-| review what needs a decision | no | yes |
-| select exact artifacts to preserve | limited | yes |
-| preserve exact commands/errors/files | not guaranteed | yes |
-| save durable checkpoints | not the main model | yes |
-| resume in another session/model/tool | limited | yes |
-| edit handoff before reuse | not the core workflow | yes |
-| track dead ends / already tried | not guaranteed | yes |
-| run background investigations | no | yes |
+full paths and module ownership in [docs/architecture.md](./docs/architecture.md#storage-layout).
 
 ## development
 
@@ -577,7 +386,7 @@ dry-run package contents:
 npm run pack:dry
 ```
 
-stress test the parent under 8 workers — runbook in [`scripts/stress-test.md`](./scripts/stress-test.md). on the 0.2.2 release with default config, the parent idles at 0 % CPU and stays under 1 % CPU on average with 8 active workers.
+stress test the parent under 8 workers — runbook in [`docs/stress-test.md`](./docs/stress-test.md). on the 0.2.2 release with default config, the parent idles at 0 % CPU and stays under 1 % CPU on average with 8 active workers.
 
 ## credits
 
