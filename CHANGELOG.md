@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+Included:
+- **worker kinds**: frontmatter MD presets that tune one worker's posture without changing the protocol contract. Bundled `scout` (fast read-only recon) and `patcher` (edits in worktree, can dispatch scout) under `extensions/worker-kinds/`; user overrides in `~/.pi/agent/trail/worker-kinds/*.md` and `<project>/.pi/trail/worker-kinds/*.md`. Fields: `name`, `description`, `model`, `thinking`, `read_only`, `default_worktree`, `parent_seed`, `max_artifacts`, `max_duration_sec`, `can_spawn`, `layout`, `guardrails_append`, plus a markdown body that is *appended* to the universal guardrails (never replaces them).
+- **`/trail spawn --as <kind>`**: pick a kind per spawn. `/trail kinds` lists registered kinds.
+- **fleet + depth caps**: `worker.maxActive` (default 8) rejects spawns past the cap with a clear error rather than queuing. `worker.maxSpawnDepth` (default 2) bounds how deep child spawns can recurse.
+- **cascade delete**: `/trail delete w<N>` now purges children dispatched via `trail_spawn_child` along with the parent.
+- **`trail_spawn_child` tool**: only registered for workers whose kind has a `can_spawn` allowlist and only when current depth is below the cap. Child status carries `parentWorkerId`/`depth`; child outcome surfaces in the parent worker's inbox, not directly to the human user.
+- **stable tmux window id**: `tmuxWindowId` (`@N`) captured at spawn time. kill, send-keys, and pipe-pane target the id first with name fallback, so renamed/recycled windows no longer misroute parent input.
+- **per-kind tmux layout**: `layout: split-events` opens a right pane showing `tail -F events.ndjson` so the user can watch tool activity live without context switching.
+- **optional tmux status-line dock**: `worker.tmuxStatusLine: true` writes a compact `trail ?N ✗N ✓N ●N` summary to the shared session's `status-right` so the dock survives even when you're attached to a pane.
+- **optional terminal capture**: `worker.captureTerminal: true` enables `tmux pipe-pane` to `pane.log` inside each worker dir for post-hoc debug.
+- **`/trail respawn <w<N>|all>`**: relaunch workers whose tmux window died (orphan reconciliation no longer means losing the session dir).
+- **`globalThis.__trail` extension surface**: `registerWorkerKind`, `listWorkerKinds`, `onWorkerEvent`. Other pi extensions can contribute kinds at runtime and subscribe to worker events without coupling to trail internals.
+- **worker event subscription**: `WorkerSnapshotCache.snapshot()` now returns `newEventsByWorker` (events read this tick) alongside the existing sticky `eventsByWorker` ring. The parent dock pipes new events through the extension surface on every refresh.
+- new tests cover worker-kinds parsing + registry, extension surface, grammar (`--as`, `kinds`, `respawn`), cascade purge, and `countActive`.
+- **docs cleanup**: README slimmed (587 → ~400 lines) and points at new `docs/configuration.md` for the full config reference, worker-kind frontmatter table, and worked kind examples. `docs/architecture.md` rewritten as a module map + worker lifecycle + storage + extension surface. `docs/stress-test.md` moved out of `scripts/` and inlined the sampler so it has no external dependency. `docs/design-decisions-tmux-and-events.md` removed; same content now lives in much shorter form in `docs/architecture.md`. `scripts/` removed from the package and gitignored. npm-pack leak of personal stress-test results closed by moving the file to a hidden, gitignored path.
+- **README banner**: npm version badge.
+
 ## 0.2.2
 
 Included:

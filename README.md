@@ -2,6 +2,10 @@
   <img src="./assets/trail_logo.jpeg" alt="Trail logo" width="220" />
 </p>
 
+<p align="center">
+  <a href="https://www.npmjs.com/package/@roodriigoooo/trail"><img src="https://img.shields.io/npm/v/@roodriigoooo/trail?color=cb3837&label=npm&logo=npm" alt="npm version" /></a>
+</p>
+
 # trail for pi
 
 trail is a small review queue for work done inside pi.

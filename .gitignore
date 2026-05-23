@@ -10,7 +10,7 @@ graphify_out/
 
 # personal stress-test sample logs + results (not for the package)
 /tmp/trail-stress-*.log
-docs/stress-test-results.md
+/.stress-results.md
 
 # local-only scripts (not shipped)
 scripts/
