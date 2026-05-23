@@ -253,6 +253,42 @@ Leverage:
 - Dock UI consumers read structured events without parsing terminal output (no `tmux pipe-pane` required).
 - Sticky `recentEvents` buffer means the dock sub-line stays populated across refresh ticks, not only on the tick that observed the append.
 
+### Worker Kinds
+
+Interface:
+
+- `createWorkerKindRegistry()` → `{ get, list, names, register, unregister, reload, defaultKind }`
+- `parseWorkerKindMarkdown(text, source, sourcePath?)` — pure frontmatter+body parser
+- `workerKindGuardrailsAppendix(kind)` — composes the kind-specific section appended to the universal guardrails
+
+Owned flow:
+1. On first command, the registry reloads bundled MDs from `extensions/worker-kinds/`, then user MDs from `~/.pi/agent/trail/worker-kinds/` and `<project>/.pi/trail/worker-kinds/`.
+2. Runtime-registered kinds (via `globalThis.__trail.registerWorkerKind`) survive reloads.
+3. Each kind ships posture knobs (read-only, seed policy, layout, max-artifacts/duration, can-spawn) plus a free-form markdown body that becomes part of the worker's guardrails *appendix*, never a replacement.
+4. The `default` kind name is reserved and matches pre-0.3 behavior.
+
+Leverage:
+- One protocol contract (`trail_wait`/`trail_done`/`trail_fail`/`trail_todos`) for every kind.
+- Tool/permission deltas live in MD, not in code paths; new kinds need zero TypeScript.
+- The registry is the single source of truth for the worker-side prompt appendix, parent-side `--as` resolution, and the `trail_spawn_child` allowlist.
+
+### Extension surface
+
+Interface (`globalThis.__trail`):
+
+- `registerWorkerKind(kind)` → `() => void`
+- `listWorkerKinds()` → `WorkerKind[]`
+- `onWorkerEvent(handler)` → `() => void`
+
+Owned flow:
+1. Installed once on extension activation; later calls (e.g. another extension's activation hook) read the live object.
+2. `onWorkerEvent` fires once per event tail per dock tick (sourced from `WorkerSnapshotCache.newEventsByWorker`), so subscribers see each event exactly once.
+3. Subscriber errors are caught and dropped — a misbehaving extension can never crash Trail.
+
+Leverage:
+- Other pi extensions plug in domain-specific kinds without touching Trail's code.
+- Event subscribers can build dashboards, telemetry, or routing without polling the file system.
+
 ### Worker Eviction
 
 Interface:

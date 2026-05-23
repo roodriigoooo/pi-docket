@@ -51,8 +51,14 @@ export type WorkerStatus = {
 	id: string;
 	index: number;
 	tmuxSession: string;
+	/** Stable tmux window id (e.g. "@7") captured at create time. Used for targeting kill/send-keys so renamed/recycled windows don't misroute. */
+	tmuxWindowId?: string;
 	task: string;
 	cwd: string;
+	kind?: string;
+	parentWorkerId?: string;
+	depth?: number;
+	canSpawn?: string[];
 	git?: GitSnapshot;
 	worktree?: WorkerWorktree;
 	createdAt: string;
@@ -352,12 +358,16 @@ export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): bool
 	return deriveWorkerState(worker, now) !== "empty";
 }
 
-export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string }): string {
+export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string; kind?: string; depth?: number; parentWorkerLabel?: string }): string {
+	const kindLine = input.kind && input.kind !== "default" ? `You are operating under worker kind \`${input.kind}\`. Kind-specific rules are in <trail_worker_guardrails>.` : undefined;
+	const parentLine = input.parentWorkerLabel ? `You were dispatched by worker ${input.parentWorkerLabel} (depth ${input.depth ?? 1}). Your trail_done returns to that worker, not directly to the human user.` : undefined;
 	return [
 		`You are Trail worker ${input.label} (${input.id}).`,
 		`Your task is in ${input.taskFile}. Read it, then begin.`,
 		`Artifacts are auto-snapshotted to ${input.artifactsFile}.`,
 		input.worktreePath ? `Worker workspace: ${input.worktreePath}` : undefined,
+		kindLine,
+		parentLine,
 		"Operating rules and tool contracts live in <trail_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`trail_wait`, `trail_done`, `trail_fail`, `trail_todos`).",
 	].filter((line): line is string => line !== undefined).join("\n");
 }

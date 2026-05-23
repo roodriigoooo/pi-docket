@@ -39,7 +39,10 @@ export type WorkerStore = {
 	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
-	purge(id: string): Promise<void>;
+	purge(id: string, options?: { cascade?: boolean }): Promise<string[]>;
+	countActive(): Promise<number>;
+	/** Re-launch a worker whose tmux window died. Reuses the worker dir + seeded session. */
+	respawn(id: string): Promise<WorkerStatus | undefined>;
 };
 
 export type SpawnInput = {
@@ -52,6 +55,20 @@ export type SpawnInput = {
 	idHint?: string;
 	/** Skip parent-session JSONL seeding. Worker starts with a blank session. */
 	fresh?: boolean;
+	/** Worker kind name; resolved by registry. */
+	kind?: string;
+	/** Kind-specific system-prompt body to append after universal guardrails. */
+	kindSystemPrompt?: string;
+	/** Child workers this worker is allowed to spawn (resolved kind names). */
+	canSpawn?: string[];
+	/** Parent worker id when this is a child spawn. */
+	parentWorkerId?: string;
+	/** Spawn depth. Top-level (parent assistant) = 0. */
+	depth?: number;
+	/** Optional tmux layout. */
+	layout?: "single" | "split-events";
+	/** When true, run tmux pipe-pane to capture terminal output to pane.log. */
+	captureTerminal?: boolean;
 };
 
 function workersRoot(): string {
@@ -112,15 +129,29 @@ function tmuxSessionExists(name: string): boolean {
 	return spawnSync("tmux", ["has-session", "-t", name], { stdio: "ignore" }).status === 0;
 }
 
-function killTmux(target: string): boolean {
-	if (isSharedSessionTarget(target)) {
+function killTmux(target: string, windowId?: string): boolean {
+	if (isSharedSessionTarget(target) || windowId) {
 		if (!tmuxSessionExists(SHARED_TMUX_SESSION)) return false;
-		const result = spawnSync("tmux", ["kill-window", "-t", target], { stdio: "ignore" });
-		return result.status === 0;
+		// Prefer stable window id (e.g. "@7") when present so a renamed window still resolves.
+		const primary = windowId ? ["kill-window", "-t", windowId] : ["kill-window", "-t", target];
+		const result = spawnSync("tmux", primary, { stdio: "ignore" });
+		if (result.status === 0) return true;
+		if (windowId) {
+			const fallback = spawnSync("tmux", ["kill-window", "-t", target], { stdio: "ignore" });
+			return fallback.status === 0;
+		}
+		return false;
 	}
 	if (!tmuxSessionExists(target)) return false;
 	const result = spawnSync("tmux", ["kill-session", "-t", target], { stdio: "ignore" });
 	return result.status === 0;
+}
+
+function readWindowId(target: string): string | undefined {
+	const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{window_id}"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) return undefined;
+	const trimmed = result.stdout.trim();
+	return trimmed.startsWith("@") ? trimmed : undefined;
 }
 
 export function sharedSessionExists(): boolean {
@@ -255,13 +286,16 @@ export function seedWorkerSession(parentSessionFile: string, workerCwd: string, 
 	}
 }
 
-export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string }): string {
+export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string; kind?: string; depth?: number; parentWorkerLabel?: string }): string {
 	return buildBackgroundWorkerInitialPrompt({
 		label: workerShortLabel(input.index),
 		id: input.id,
 		taskFile: path.join(input.dir, "task.md"),
 		artifactsFile: path.join(input.dir, "artifacts.json"),
 		worktreePath: input.worktreePath,
+		kind: input.kind,
+		depth: input.depth,
+		parentWorkerLabel: input.parentWorkerLabel,
 	});
 }
 
@@ -361,10 +395,16 @@ export function createWorkerStore(): WorkerStore {
 			if (!status) return false;
 			const safeText = text.replace(/\s+/g, " ").trim();
 			if (!safeText) return false;
-			const ok = sendKeysToWindow(status.tmuxSession, safeText);
+			const ok = sendKeysToWindow(status.tmuxSession, safeText, status.tmuxWindowId);
 			if (!ok) return false;
 			await this.patchStatus(status.id, workerInputAcceptedPatch());
 			return true;
+		},
+
+		async countActive(): Promise<number> {
+			const ACTIVE: Array<WorkerStatus["state"]> = ["starting", "active", "idle", "needs_input"];
+			const workers = await this.list();
+			return workers.filter((w) => ACTIVE.includes(w.state)).length;
 		},
 
 		async spawn(input: SpawnInput): Promise<WorkerStatus> {
@@ -389,8 +429,11 @@ export function createWorkerStore(): WorkerStore {
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 			const target = workerWindowTarget(index);
 			const windowName = `w${index}`;
+			const parentWorker = input.parentWorkerId ? await this.find(input.parentWorkerId) : undefined;
+			const parentLabel = parentWorker ? workerShortLabel(parentWorker.index) : undefined;
+			const depth = typeof input.depth === "number" ? input.depth : (parentWorker?.depth ?? 0) + (parentWorker ? 1 : 0);
 
-			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path });
+			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
 
 			const now = new Date().toISOString();
 			const status: WorkerStatus = {
@@ -404,6 +447,10 @@ export function createWorkerStore(): WorkerStore {
 				createdAt: now,
 				updatedAt: now,
 				state: "starting",
+				...(input.kind ? { kind: input.kind } : {}),
+				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
+				...(depth ? { depth } : {}),
+				...(input.canSpawn && input.canSpawn.length > 0 ? { canSpawn: input.canSpawn } : {}),
 			};
 			await this.writeStatus(status);
 
@@ -415,37 +462,96 @@ export function createWorkerStore(): WorkerStore {
 				throw new Error(result.error || `tmux failed for ${id}`);
 			}
 
-			return status;
+			const windowId = readWindowId(target);
+			if (windowId) await this.patchStatus(id, { tmuxWindowId: windowId });
+
+			if (input.captureTerminal) {
+				const log = path.join(dir, "pane.log");
+				spawnSync("tmux", ["pipe-pane", "-o", "-t", windowId ?? target, `cat > ${shellQuote(log)}`], { stdio: "ignore" });
+			}
+
+			if (input.layout === "split-events") {
+				const eventsPath = path.join(dir, "events.ndjson");
+				const splitCmd = `touch ${shellQuote(eventsPath)} && tail -F ${shellQuote(eventsPath)}`;
+				spawnSync("tmux", ["split-window", "-h", "-d", "-l", "30%", "-t", windowId ?? target, splitCmd], { stdio: "ignore" });
+			}
+
+			return windowId ? { ...status, tmuxWindowId: windowId } : status;
 		},
 
 		async kill(id: string): Promise<boolean> {
 			const status = await this.find(id);
 			if (!status) return false;
-			killTmux(status.tmuxSession);
+			killTmux(status.tmuxSession, status.tmuxWindowId);
 			await this.patchStatus(status.id, { state: "ended" });
 			return true;
 		},
 
-		async purge(id: string): Promise<void> {
+		async respawn(id: string): Promise<WorkerStatus | undefined> {
+			ensureTmux();
 			const status = await this.find(id);
-			if (!status) return;
-			killTmux(status.tmuxSession);
+			if (!status) return undefined;
+			const dir = workerDir(status.id);
+			const sessionDir = path.join(dir, "session");
+			const target = workerWindowTarget(status.index);
+			const windowName = `w${status.index}`;
+			const seeded = fsSync.existsSync(sessionDir) && fsSync.readdirSync(sessionDir).length > 0;
+			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
+			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
+			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
+			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded });
+			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
+			if (!launch.ok) throw new Error(launch.error);
+			const windowId = readWindowId(target);
+			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, ...(windowId ? { tmuxWindowId: windowId } : {}) };
+			return await this.patchStatus(status.id, patch);
+		},
+
+		async purge(id: string, options: { cascade?: boolean } = {}): Promise<string[]> {
+			const status = await this.find(id);
+			if (!status) return [];
+			const purged: string[] = [];
+			if (options.cascade !== false) {
+				const all = await this.list();
+				const children = all.filter((entry) => entry.parentWorkerId === status.id);
+				for (const child of children) {
+					const childPurged = await this.purge(child.id, { cascade: true });
+					purged.push(...childPurged);
+				}
+			}
+			killTmux(status.tmuxSession, status.tmuxWindowId);
 			if (status.worktree) removeGitWorktree(status.worktree);
 			await fs.rm(workerDir(status.id), { recursive: true, force: true });
+			purged.push(status.id);
+			return purged;
 		},
 	};
 }
 
 const TRAIL_INJECT_MARK = "[trail] ";
 
-function sendKeysToWindow(target: string, text: string): boolean {
+function sendKeysToWindow(target: string, text: string, windowId?: string): boolean {
 	if (!target) return false;
-	const literal = isSharedSessionTarget(target) ? `${TRAIL_INJECT_MARK}${text}` : text;
-	const literalResult = isSharedSessionTarget(target)
-		? spawnSync("tmux", ["send-keys", "-t", target, "-l", literal], { stdio: "ignore" })
-		: spawnSync("tmux", ["send-keys", "-t", target, literal], { stdio: "ignore" });
-	if (literalResult.status !== 0) return false;
-	const enterResult = spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore" });
+	const sendTarget = windowId ?? target;
+	const shared = isSharedSessionTarget(target) || Boolean(windowId);
+	const literal = shared ? `${TRAIL_INJECT_MARK}${text}` : text;
+	const literalResult = shared
+		? spawnSync("tmux", ["send-keys", "-t", sendTarget, "-l", literal], { stdio: "ignore" })
+		: spawnSync("tmux", ["send-keys", "-t", sendTarget, literal], { stdio: "ignore" });
+	if (literalResult.status !== 0) {
+		if (windowId) {
+			// Fall back to name target if id resolution failed (e.g. window was renamed and id stale).
+			const retry = spawnSync("tmux", ["send-keys", "-t", target, "-l", literal], { stdio: "ignore" });
+			if (retry.status !== 0) return false;
+		} else {
+			return false;
+		}
+	}
+	const enterResult = spawnSync("tmux", ["send-keys", "-t", sendTarget, "Enter"], { stdio: "ignore" });
+	if (enterResult.status !== 0 && windowId) {
+		const retry = spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore" });
+		return retry.status === 0;
+	}
 	return enterResult.status === 0;
 }
 

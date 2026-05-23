@@ -30,6 +30,9 @@ async function seedWorker(root: string, partial: Partial<WorkerStatus> & { id: s
 		createdAt: partial.createdAt ?? "2026-05-01T00:00:00.000Z",
 		updatedAt: partial.updatedAt ?? "2026-05-01T00:00:00.000Z",
 		state: partial.state ?? "active",
+		...(partial.parentWorkerId ? { parentWorkerId: partial.parentWorkerId } : {}),
+		...(typeof partial.depth === "number" ? { depth: partial.depth } : {}),
+		...(partial.kind ? { kind: partial.kind } : {}),
 	};
 	const dir = path.join(root, partial.id);
 	await mkdir(dir, { recursive: true });
@@ -205,5 +208,41 @@ test("worker store appends active questions", async () => {
 		assert.equal(updated?.state, "needs_input");
 		assert.equal(updated?.question, "2 questions");
 		assert.deepEqual(updated?.questions?.map((q) => q.text), ["Include checkpoint flow?", "Inspect prompt chips too?"]);
+	});
+});
+
+test("purge cascades to child workers when requested", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		await mkdir(root, { recursive: true });
+		await seedWorker(root, { id: "parent", index: 1, state: "ended" });
+		await seedWorker(root, { id: "child-a", index: 2, parentWorkerId: "parent", depth: 1, state: "ended" });
+		await seedWorker(root, { id: "child-b", index: 3, parentWorkerId: "parent", depth: 1, state: "ended" });
+		await seedWorker(root, { id: "grandchild", index: 4, parentWorkerId: "child-a", depth: 2, state: "ended" });
+		await seedWorker(root, { id: "unrelated", index: 5, state: "ended" });
+
+		const purged = await store.purge("parent", { cascade: true });
+		const remaining = (await store.list()).map((w) => w.id).sort();
+
+		assert.equal(purged.includes("parent"), true);
+		assert.equal(purged.includes("child-a"), true);
+		assert.equal(purged.includes("child-b"), true);
+		assert.equal(purged.includes("grandchild"), true);
+		assert.deepEqual(remaining, ["unrelated"]);
+	});
+});
+
+test("countActive ignores ended/failed workers", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		await mkdir(root, { recursive: true });
+		await seedWorker(root, { id: "a", index: 1, state: "active" });
+		await seedWorker(root, { id: "b", index: 2, state: "needs_input" });
+		await seedWorker(root, { id: "c", index: 3, state: "ready" });
+		await seedWorker(root, { id: "d", index: 4, state: "ended" });
+		await seedWorker(root, { id: "e", index: 5, state: "failed" });
+		assert.equal(await store.countActive(), 2);
 	});
 });

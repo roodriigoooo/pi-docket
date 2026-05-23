@@ -10,6 +10,18 @@ export type TrailWorkerConfig = {
 	dockIdleHideMinutes?: number;
 	/** Auto-prune ended worker dirs once they go untouched for this many hours. Set 0 to disable. */
 	pruneAfterHours?: number;
+	/** Max simultaneously active workers (across the whole tmux session). Excess /trail spawn calls are rejected. */
+	maxActive?: number;
+	/** Max child-spawn depth. Top-level parent is depth 0; its children are depth 1; etc. */
+	maxSpawnDepth?: number;
+	/** Project-default kind picked when /trail spawn is invoked without --as. */
+	defaultKind?: string;
+	/** When true, dock writes a compact worker line to tmux status-right so attached panes still see fleet state. */
+	tmuxStatusLine?: boolean;
+	/** When true, every spawned worker also runs tmux pipe-pane to <worker-dir>/pane.log for post-hoc debug. */
+	captureTerminal?: boolean;
+	/** When true, /trail offers to re-window orphan workers when the shared tmux session is gone but their dirs are still live. */
+	autoRespawn?: boolean;
 };
 
 export type TrailConfig = {
@@ -35,6 +47,11 @@ export const DEFAULT_CONFIG: TrailConfig = {
 	worker: {
 		dockIdleHideMinutes: 30,
 		pruneAfterHours: 24,
+		maxActive: 8,
+		maxSpawnDepth: 2,
+		tmuxStatusLine: false,
+		captureTerminal: false,
+		autoRespawn: false,
 	},
 };
 

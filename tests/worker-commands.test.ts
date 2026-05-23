@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createWorkerCommands, workerCompletionCandidates } from "../extensions/worker-commands.js";
 import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
+import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
 
 const worker: WorkerStatus = {
 	id: "worker-1",
@@ -36,7 +37,9 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
 		spawn: async (input) => { spawned.push(input); return { ...worker, state: "starting" }; },
 		kill: async () => true,
-		purge: async (id) => { purged.push(id); },
+		purge: async (id) => { purged.push(id); return [id]; },
+		countActive: async () => workers.filter((w) => ["starting", "active", "idle", "needs_input"].includes(w.state)).length,
+		respawn: async (id) => workers.find((w) => w.id === id),
 	};
 	return { store, spawned, purged, sent };
 }
@@ -64,6 +67,9 @@ function deps(workers = [worker]) {
 		},
 		cwd: "/repo",
 		parentSession: "/session.json",
+		kinds: createWorkerKindRegistry(),
+		maxActive: () => 8,
+		captureTerminal: () => false,
 		notify: (text) => notifications.push(text),
 		announce: (subject, detail, kind, _trail, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
@@ -76,7 +82,12 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 
 	await commands.spawn("inspect bug");
 
-	assert.deepEqual(spawned, [{ task: "inspect bug", cwd: "/repo", parentSession: "/session.json" }]);
+	assert.equal(spawned.length, 1);
+	assert.equal(spawned[0]?.task, "inspect bug");
+	assert.equal(spawned[0]?.cwd, "/repo");
+	assert.equal(spawned[0]?.parentSession, "/session.json");
+	assert.equal(spawned[0]?.kind, "default");
+	assert.equal(spawned[0]?.worktree, true); // default kind has defaultWorktree=true
 	assert.equal(announcements[0]?.subject, "spawned w2[o  ] · starting");
 	assert.match(announcements[0]?.detail ?? "", /status: w2\[o  \] inspect bug now please/);
 	assert.match(announcements[0]?.detail ?? "", /inbox:  \/trail/);
@@ -89,7 +100,9 @@ test("Worker Commands passes worktree spawn option", async () => {
 
 	await commands.spawn("edit bug", { worktree: true });
 
-	assert.deepEqual(spawned, [{ task: "edit bug", cwd: "/repo", parentSession: "/session.json", worktree: true }]);
+	assert.equal(spawned[0]?.task, "edit bug");
+	assert.equal(spawned[0]?.worktree, true);
+	assert.equal(spawned[0]?.parentSession, "/session.json");
 });
 
 test("Worker Commands sends parent messages to workers", async () => {
@@ -111,7 +124,7 @@ test("Worker Commands lists workers", async () => {
 	await commands.list();
 
 	assert.equal(emitted.length, 1);
-	assert.match(emitted[0]!, /w2\s+active\s+3 artifacts/);
+	assert.match(emitted[0]!, /w2\s+active\s+default\s+3 artifacts/);
 });
 
 test("Worker Commands loads and unloads worker artifacts", async () => {

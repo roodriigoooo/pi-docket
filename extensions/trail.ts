@@ -20,7 +20,7 @@
  *   --handoff (default), --compact, --debug, --review, --once, --raw
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,8 +58,10 @@ import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-change
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { createWorkerStore, isSharedSessionTarget, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
-import { appendWorkerEventSync } from "./worker-events.js";
+import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
+import { installTrailExtensionSurface, type TrailExtensionSurfaceInternals } from "./trail-extension-surface.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -1919,6 +1921,15 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	const workerId = process.env[TRAIL_WORKER_ENV];
 
+	const kindRegistry = createWorkerKindRegistry();
+	let kindRegistryReloaded = false;
+	const ensureKindRegistryLoaded = async (cwd: string): Promise<void> => {
+		if (kindRegistryReloaded) return;
+		kindRegistryReloaded = true;
+		await kindRegistry.reload(cwd).catch(() => undefined);
+	};
+	const trailSurface: TrailExtensionSurfaceInternals = installTrailExtensionSurface(kindRegistry);
+
 	const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 	const packagedGuardrails = path.join(extensionDir, "worker-guardrails.md");
 	let guardrailsCache: { path?: string; text?: string } | undefined;
@@ -1941,6 +1952,37 @@ export default function trailExtension(pi: ExtensionAPI) {
 		return undefined;
 	}
 
+	async function loadWorkerKindForCurrent(cwd: string): Promise<WorkerKind | undefined> {
+		if (!workerId) return undefined;
+		// Sync fallback first so worker can resolve its kind even before the async reload finishes.
+		const sync = (kindRegistry as unknown as { _reloadSync?: (cwd: string) => void })._reloadSync;
+		if (sync && !kindRegistryReloaded) sync(cwd);
+		await ensureKindRegistryLoaded(cwd);
+		const status = readWorkerStatusSync(workerId);
+		if (!status?.kind) return undefined;
+		return kindRegistry.get(status.kind);
+	}
+
+	const updateTmuxStatusLine = (workers: WorkerStatus[]): void => {
+		const counts = { needs_input: 0, ready: 0, failed: 0, active: 0 };
+		const now = Date.now();
+		for (const worker of workers) {
+			const state = deriveWorkerState(worker, now);
+			if (state === "needs_input") counts.needs_input++;
+			else if (state === "ready" || state === "ready_open_todos") counts.ready++;
+			else if (state === "failed") counts.failed++;
+			else if (state === "thinking" || state === "starting") counts.active++;
+		}
+		const parts: string[] = [];
+		if (counts.needs_input > 0) parts.push(`#[fg=yellow,bold]?${counts.needs_input}#[default]`);
+		if (counts.failed > 0) parts.push(`#[fg=red,bold]✗${counts.failed}#[default]`);
+		if (counts.ready > 0) parts.push(`#[fg=green]✓${counts.ready}#[default]`);
+		if (counts.active > 0) parts.push(`#[fg=blue]●${counts.active}#[default]`);
+		const line = parts.length > 0 ? `trail ${parts.join(" ")} ` : "trail · idle ";
+		spawnSync("tmux", ["set-option", "-t", "trail-workers", "status-right", line], { stdio: "ignore" });
+		spawnSync("tmux", ["set-option", "-t", "trail-workers", "status", "on"], { stdio: "ignore" });
+	};
+
 	const reconcileOrphanedWorkers = async (workers: WorkerStatus[]): Promise<void> => {
 		const ACTIVE_STATES: Array<WorkerStatus["state"]> = ["starting", "active", "idle", "needs_input"];
 		const sharedTargets = workers.filter((w) => isSharedSessionTarget(w.tmuxSession) && ACTIVE_STATES.includes(w.state));
@@ -1962,7 +2004,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 		workerDockRunning = true;
 		try {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
-			const { workers: allWorkers, artifactsByWorker, eventsByWorker } = await workerDockCache.snapshot();
+			const { workers: allWorkers, artifactsByWorker, eventsByWorker, newEventsByWorker } = await workerDockCache.snapshot();
+			for (const [id, events] of newEventsByWorker) {
+				for (const ev of events) trailSurface.emitWorkerEvent(id, ev);
+			}
+			const tmuxStatusEnabled = await loadConfig(ctx.cwd).then((c) => c.worker?.tmuxStatusLine === true).catch(() => false);
+			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
 			await reconcileOrphanedWorkers(allWorkers);
 			const now = Date.now();
 			const workers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
@@ -2111,10 +2158,13 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	if (workerId) {
 		void loadWorkerGuardrails(activeCtx?.cwd ?? process.cwd());
+		void ensureKindRegistryLoaded(activeCtx?.cwd ?? process.cwd());
 		pi.on("before_agent_start", async (event, ctx) => {
 			const text = await loadWorkerGuardrails(ctx.cwd);
 			if (!text) return;
-			return { systemPrompt: `${event.systemPrompt}\n\n<trail_worker_guardrails>\n${text.trim()}\n</trail_worker_guardrails>` };
+			const kind = await loadWorkerKindForCurrent(ctx.cwd);
+			const appendix = kind ? workerKindGuardrailsAppendix(kind) : "";
+			return { systemPrompt: `${event.systemPrompt}\n\n<trail_worker_guardrails>\n${text.trim()}${appendix}\n</trail_worker_guardrails>` };
 		});
 
 		let workerProtocolCalledThisTurn = false;
@@ -2228,6 +2278,80 @@ export default function trailExtension(pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: workerProtocolResultText("failed") }], details: { state: "failed", reason: params.reason } };
 			},
 		});
+
+		// Only expose trail_spawn_child when current worker's kind allows it.
+		// We probe synchronously via status.json + the sync kind-registry fallback so the
+		// tool registration decision happens before the worker's first turn starts.
+		(() => {
+			const status = readWorkerStatusSync(workerId);
+			if (!status) return;
+			const cwd = activeCtx?.cwd ?? process.cwd();
+			const syncReload = (kindRegistry as unknown as { _reloadSync?: (cwd: string) => void })._reloadSync;
+			if (syncReload && !kindRegistryReloaded) syncReload(cwd);
+			const kind = status.kind ? kindRegistry.get(status.kind) : kindRegistry.get(undefined);
+			const allowed = (status.canSpawn ?? kind.canSpawn ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
+			if (allowed.length === 0) return;
+			const allowedList = allowed.join(", ");
+			pi.registerTool({
+				name: "trail_spawn_child",
+				label: "Trail Spawn Child",
+				description: `Trail worker only: dispatch a child Trail worker. Allowed child kinds for this worker: ${allowedList}. Child runs in a sibling tmux window inside the shared trail-workers session; child trail_done returns here, not to the human user.`,
+				promptSnippet: `Dispatch a child Trail worker (allowed kinds: ${allowedList}).`,
+				promptGuidelines: [
+					"Use child workers sparingly. A child consumes a worker slot and a tmux window.",
+					"Only spawn when the parent's context truly lacks the information you need; otherwise grep/read here.",
+					"Child outcome will arrive in your inbox as a worker artifact under its short label (e.g. wN).",
+				],
+				parameters: Type.Object({
+					kind: StringEnum(allowed as unknown as readonly [string, ...string[]], { description: "Child kind to dispatch" }),
+					task: Type.String({ description: "Concrete task description for the child. Be specific; the child inherits no extra context beyond its kind's system prompt and your seeded parent session." }),
+				}),
+				async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+					markWorkerProtocolCalled();
+					const store = createWorkerStore();
+					const current = await store.find(workerId);
+					if (!current) return { content: [{ type: "text", text: "Trail: cannot spawn child — current worker status missing." }], details: { error: "no-status" } };
+					await ensureKindRegistryLoaded(ctx.cwd);
+					const config = await loadConfig(ctx.cwd).catch(() => undefined);
+					const maxActive = typeof config?.worker?.maxActive === "number" ? config.worker.maxActive : 8;
+					const maxDepth = typeof config?.worker?.maxSpawnDepth === "number" ? config.worker.maxSpawnDepth : 2;
+					const currentDepth = current.depth ?? 0;
+					if (currentDepth + 1 > maxDepth) {
+						return { content: [{ type: "text", text: `Trail: spawn-depth cap reached (${currentDepth + 1} > ${maxDepth}). Use trail_wait to ask the parent to dispatch instead.` }], details: { error: "max-depth", currentDepth, maxDepth } };
+					}
+					if (maxActive > 0) {
+						const active = await store.countActive();
+						if (active >= maxActive) {
+							return { content: [{ type: "text", text: `Trail: fleet cap reached (${active}/${maxActive}). Cannot spawn child right now.` }], details: { error: "max-active", active, maxActive } };
+						}
+					}
+					const requestedKind = (params as { kind: string }).kind;
+					if (!allowed.includes(requestedKind)) {
+						return { content: [{ type: "text", text: `Trail: kind "${requestedKind}" not in allowlist (${allowedList}).` }], details: { error: "not-allowed" } };
+					}
+					const childKind = kindRegistry.get(requestedKind);
+					const taskText = ((params as { task: string }).task ?? "").trim();
+					if (!taskText) return { content: [{ type: "text", text: "Trail: child task is empty." }], details: { error: "empty-task" } };
+					try {
+						const child = await store.spawn({
+							task: taskText,
+							cwd: current.cwd,
+							...(current.sessionFile ? { parentSession: current.sessionFile } : {}),
+							worktree: childKind.defaultWorktree,
+							kind: childKind.name,
+							...(childKind.canSpawn.length > 0 ? { canSpawn: childKind.canSpawn } : {}),
+							parentWorkerId: current.id,
+							depth: currentDepth + 1,
+							layout: childKind.layout,
+						});
+						appendWorkerEventSync(store.root(), current.id, { kind: "message", payload: { event: "spawn-child", childId: child.id, childIndex: child.index, kind: childKind.name } });
+						return { content: [{ type: "text", text: `Trail: dispatched child ${workerShortLabel(child.index)} (kind: ${childKind.name}). Their trail_done will surface in your inbox.` }], details: { childId: child.id, childIndex: child.index, kind: childKind.name } };
+					} catch (err) {
+						return { content: [{ type: "text", text: `Trail: child spawn failed: ${String(err)}` }], details: { error: "spawn-failed", message: String(err) } };
+					}
+				},
+			});
+		})();
 
 		pi.on("tool_call", async (event, ctx) => {
 			if (workerId) {
@@ -2354,11 +2478,18 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const intent = parsed.intent;
 			const workerStore = createWorkerStore();
 			const checkpointStore = createCheckpointStore();
+			await ensureKindRegistryLoaded(ctx.cwd);
+			const trailConfig = await loadConfig(ctx.cwd).catch(() => undefined);
+			const maxActive = typeof trailConfig?.worker?.maxActive === "number" ? trailConfig.worker.maxActive : 8;
+			const captureTerminal = trailConfig?.worker?.captureTerminal === true;
 			const workerCommands = createWorkerCommands({
 				store: workerStore,
 				loadedArtifacts,
 				cwd: ctx.cwd,
-				parentSession: ctx.sessionManager.getSessionFile?.(),
+				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
+				kinds: kindRegistry,
+				maxActive: () => maxActive,
+				captureTerminal: () => captureTerminal,
 				notify: (text, level) => notifyTrail(pi, ctx, text, level),
 				announce: (subject, detail, kind, trail, meta) => announceAction(pi, ctx, subject, detail, kind, trail, meta),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),

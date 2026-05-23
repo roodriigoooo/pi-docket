@@ -116,6 +116,69 @@ card pieces:
 
 `/trail spawn <task>` starts a pi worker. the worker lands in a tmux window inside a single shared session called `trail-workers`, with a hidden workspace, a task file, an append-only event log, and a small status protocol.
 
+### worker kinds
+
+every worker has a *kind*. the default kind matches the pre-0.3 behavior — a general-purpose worker with the universal protocol guardrails. trail also ships two presets:
+
+- **`scout`** — fast read-only recon. no worktree, small artifact cap, short time budget. point it at a directory and ask "what's here that does X".
+- **`patcher`** — edits in a worker worktree and proposes a change set. can dispatch a child `scout` via `trail_spawn_child` if it needs context the parent didn't seed.
+
+pick a kind with `--as`:
+
+```bash
+/trail spawn --as scout grep for callers of getUser()
+/trail spawn --as patcher rename UserService → AccountService across src/
+```
+
+`/trail kinds` lists what's registered. you can drop your own MD files into `~/.pi/agent/trail/worker-kinds/*.md` or `<project>/.pi/trail/worker-kinds/*.md`:
+
+```markdown
+---
+name: reviewer
+description: Read-only diff review.
+read_only: true
+default_worktree: false
+parent_seed: full
+max_duration_sec: 180
+---
+
+You are a code reviewer. Read the diff vs HEAD, then call trail_done with a
+findings outcome and a Recommended: bullet list.
+```
+
+frontmatter fields:
+
+| field | default | meaning |
+|---|---|---|
+| `name` | — | required; kebab-case slug used by `--as` |
+| `description` | — | one-line shown in `/trail kinds` |
+| `model` | parent | optional model override (provider/model string) |
+| `thinking` | medium | `off` / `low` / `medium` / `high` |
+| `read_only` | false | when true, kind appendix tells the worker not to edit files |
+| `default_worktree` | true | spawn this kind in a detached worktree by default |
+| `parent_seed` | full | `full` to seed parent session JSONL, `none` for a fresh worker |
+| `max_artifacts` | — | soft cap surfaced as guidance, not enforced by the runtime |
+| `max_duration_sec` | — | soft cap surfaced as guidance |
+| `can_spawn` | none | comma-list of kinds this worker may dispatch via `trail_spawn_child` |
+| `layout` | single | `split-events` opens a right pane with `tail -F events.ndjson` |
+| `guardrails_append` | — | extra guardrail lines pulled into the kind appendix |
+
+the body of the MD is appended to the universal guardrails — it never replaces them. the protocol contract (`trail_wait`/`trail_done`/`trail_fail`/`trail_todos`) is the same for every kind.
+
+other pi extensions can contribute kinds at runtime via `globalThis.__trail.registerWorkerKind(...)` (see [docs/architecture.md](./docs/architecture.md#extension-surface)).
+
+### child workers
+
+a worker whose kind has `can_spawn` set sees a `trail_spawn_child` tool. the child:
+
+- lands as a sibling window in `trail-workers`
+- records `parentWorkerId` + `depth` in its status
+- returns its `trail_done` to the parent *worker*, not to the human user
+
+depth and fleet are both capped (`worker.maxSpawnDepth` default 2; `worker.maxActive` default 8). `/trail delete w<N>` cascades to children.
+
+
+
 every worker is a window in the same session, not its own session. that one decision shapes a lot of what follows. one tmux server hosts the whole fleet, so spawning a fifth worker doesn't spin up a fifth server. one `tmux attach -t trail-workers` puts you in front of all of them; you switch panes to switch workers. and one `set-hook pane-died` notification covers every worker we care about.
 
 while workers are running, trail shows a compact dock above your prompt:
@@ -244,7 +307,7 @@ use `/trail log` when you need to reconstruct what happened. use `/trail` when y
 primary commands:
 
 - `/trail` — open the inbox.
-- `/trail spawn [--fresh] <task>` — launch a background worker. seeds the parent session by default.
+- `/trail spawn [--fresh] [--as <kind>] <task>` — launch a background worker. seeds the parent session by default. `--as` picks a worker kind (see [worker kinds](#worker-kinds)).
 - `/trail tell w<N> [text]` — reply to a worker. omit text to open an input prompt.
 - `/trail w<N>` — show one worker mini-report.
 - `/trail attach [w<N>]` — copy the `tmux attach` incantation for the shared worker session.
@@ -259,8 +322,10 @@ secondary commands:
 - `/trail log` — audit timeline grouped by episode.
 - `/trail search <query>` — ranked artifact search.
 - `/trail workers` — worker dashboard.
+- `/trail kinds` — list registered worker kinds.
+- `/trail respawn <w<N>|all>` — relaunch a worker whose tmux window died.
 - `/trail list [--include-consumed] [--workers]` — list checkpoints or workers.
-- `/trail delete [id|last|w<N>]` — delete checkpoint or worker.
+- `/trail delete [id|last|w<N>]` — delete checkpoint or worker. for workers, cascades to children dispatched via `trail_spawn_child`.
 
 advanced commands:
 
@@ -355,6 +420,19 @@ example:
 ```
 
 `worker.guardrailsPath` can point to a custom guardrail file. absolute paths and cwd-relative paths both work. if unset, trail uses `extensions/worker-guardrails.md` from this package.
+
+worker-related knobs:
+
+| key | default | meaning |
+|---|---|---|
+| `worker.maxActive` | 8 | reject `/trail spawn` once this many workers are starting/active/idle/needs_input |
+| `worker.maxSpawnDepth` | 2 | bound `trail_spawn_child` recursion (top-level worker = depth 0, its child = depth 1, …) |
+| `worker.dockIdleHideMinutes` | 30 | hide `ended` workers from the dock after this many minutes; 0 keeps them |
+| `worker.pruneAfterHours` | 24 | auto-prune `ended` worker dirs after this many hours; 0 disables |
+| `worker.defaultKind` | default | kind used when `/trail spawn` is invoked without `--as` |
+| `worker.tmuxStatusLine` | false | write a compact summary to `trail-workers`'s `status-right` |
+| `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker |
+| `worker.autoRespawn` | false | reserved for future autonomous respawn behavior; today `/trail respawn` is manual |
 
 ## storage
 
