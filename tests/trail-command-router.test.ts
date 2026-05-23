@@ -52,10 +52,12 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		expandChipsForSubmit: async (_ctx: unknown, text: string) => ({ text, expanded: 0, missing: [] }),
 	} as unknown as LoadedArtifactContext;
 	const workerCommands = {
-		spawn: async () => { calls.push("worker.spawn"); },
+		spawn: async () => { calls.push("worker.spawn"); return undefined; },
 		tell: async () => { calls.push("worker.tell"); },
 		list: async () => { calls.push("worker.list"); },
+		listKinds: async () => { calls.push("worker.listKinds"); },
 		delete: async () => { calls.push("worker.delete"); },
+		respawn: async () => { calls.push("worker.respawn"); },
 		load: async () => { calls.push("worker.load"); },
 		unload: async () => { calls.push("worker.unload"); },
 		completionCandidates: async () => [],

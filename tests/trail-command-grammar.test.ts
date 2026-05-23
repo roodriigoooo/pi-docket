@@ -66,6 +66,22 @@ test("Trail grammar parses workers dashboard", () => {
 	assert.equal(invalid.ok, false);
 });
 
+test("Trail grammar parses spawn --as <kind>", () => {
+	assert.deepEqual(parseTrailCommand("spawn --as scout grep for auth refs"), { ok: true, intent: { kind: "spawn", task: "grep for auth refs", as: "scout" } });
+	assert.deepEqual(parseTrailCommand("spawn -a patcher edit foo.ts"), { ok: true, intent: { kind: "spawn", task: "edit foo.ts", as: "patcher" } });
+	assert.deepEqual(parseTrailCommand("spawn --as=scout look around"), { ok: true, intent: { kind: "spawn", task: "look around", as: "scout" } });
+	const missing = parseTrailCommand("spawn --as");
+	assert.equal(missing.ok, false);
+});
+
+test("Trail grammar parses kinds + respawn", () => {
+	assert.deepEqual(parseTrailCommand("kinds"), { ok: true, intent: { kind: "kinds" } });
+	assert.deepEqual(parseTrailCommand("respawn w2"), { ok: true, intent: { kind: "respawn", target: "w2" } });
+	assert.deepEqual(parseTrailCommand("respawn all"), { ok: true, intent: { kind: "respawn", target: "all" } });
+	const invalid = parseTrailCommand("respawn");
+	assert.equal(invalid.ok, false);
+});
+
 test("Trail grammar parses worker tell and attention commands", () => {
 	assert.deepEqual(parseTrailCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseTrailCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });

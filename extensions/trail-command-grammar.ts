@@ -19,7 +19,9 @@ export type TrailIntent =
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean }
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
-	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean }
+	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; as?: string }
+	| { kind: "kinds" }
+	| { kind: "respawn"; target: string }
 	| { kind: "workers" }
 	| { kind: "worker-result"; worker: string; action: "show" | "use" }
 	| { kind: "tell"; worker: string; text?: string }
@@ -33,7 +35,7 @@ export type ParseResult =
 	| { ok: true; intent: TrailIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "result", "use", "ask", "tell", "attach", "wait", "done", "fail", "workers", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "respawn", "result", "use", "ask", "tell", "attach", "wait", "done", "fail", "workers", "kinds", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -58,7 +60,7 @@ export function trailUsage(advanced = false): string {
 	const primary = [
 		"Trail · core loop:",
 		"/trail                         open inbox",
-		"/trail spawn [--fresh] <task>  start background worker (seeds parent session by default)",
+		"/trail spawn [--fresh] [--as <kind>] <task>  start background worker (seeds parent session by default)",
 		"/trail tell w<N> [text]        reply to a worker",
 		"/trail attach [w<N>]           print/copy tmux attach command for the shared worker session",
 		"/trail w<N>                    show worker result above editor",
@@ -76,6 +78,8 @@ export function trailUsage(advanced = false): string {
 		"/trail log                     audit timeline grouped by episode",
 		"/trail search <query>          ranked artifact search",
 		"/trail workers                 worker dashboard",
+		"/trail kinds                   list registered worker kinds",
+		"/trail respawn <w<N>|all>      relaunch a worker whose tmux window died",
 		"/trail use w<N>                attach worker result to next prompt",
 		"/trail ask w<N> [text]         alias for tell",
 		"/trail result w<N>             alias for /trail w<N>",
@@ -264,18 +268,36 @@ export function parseTrailCommand(args: string): ParseResult {
 	if (command === "spawn") {
 		let worktree = false;
 		let fresh = false;
+		let as: string | undefined;
 		const taskParts: string[] = [];
-		for (const token of rest) {
+		for (let i = 0; i < rest.length; i++) {
+			const token = rest[i]!;
 			if (token === "--worktree" || token === "-w") worktree = true;
 			else if (token === "--fresh") fresh = true;
-			else taskParts.push(token);
+			else if (token === "--as" || token === "-a") {
+				const value = rest[++i];
+				if (!value) return parseError("Usage: /trail spawn [--fresh] [--as <kind>] <task>");
+				as = value;
+			} else if (token.startsWith("--as=")) {
+				as = token.slice("--as=".length);
+			} else {
+				taskParts.push(token);
+			}
 		}
-		if (taskParts.length === 0) return parseError("Usage: /trail spawn [--fresh] <task>");
-		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}) } };
+		if (taskParts.length === 0) return parseError("Usage: /trail spawn [--fresh] [--as <kind>] <task>");
+		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}), ...(as ? { as } : {}) } };
 	}
 	if (command === "workers") {
 		if (rest.length > 0) return parseError("Usage: /trail workers");
 		return { ok: true, intent: { kind: "workers" } };
+	}
+	if (command === "kinds") {
+		if (rest.length > 0) return parseError("Usage: /trail kinds");
+		return { ok: true, intent: { kind: "kinds" } };
+	}
+	if (command === "respawn") {
+		if (rest.length !== 1) return parseError("Usage: /trail respawn <w<N>|all>");
+		return { ok: true, intent: { kind: "respawn", target: rest[0]! } };
 	}
 	if (command === "result" || command === "use") {
 		if (rest.length !== 1) return parseError(`Usage: /trail ${command} w<N>`);

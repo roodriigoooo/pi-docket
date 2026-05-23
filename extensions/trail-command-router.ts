@@ -227,7 +227,18 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "spawn") {
-				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true });
+				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true, ...(intent.as ? { as: intent.as } : {}) });
+				await deps.refreshWorkerDockWidget();
+				return;
+			}
+
+			if (intent.kind === "kinds") {
+				await deps.workerCommands.listKinds();
+				return;
+			}
+
+			if (intent.kind === "respawn") {
+				await deps.workerCommands.respawn(intent.target);
 				await deps.refreshWorkerDockWidget();
 				return;
 			}

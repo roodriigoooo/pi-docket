@@ -2,6 +2,7 @@ import { workerLaunchDetail, workerLaunchSubject, workerQuestions, workerShortLa
 import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
+import type { WorkerKindRegistry, WorkerKind } from "./worker-kinds.js";
 import type { WorkerStore } from "./worker-store.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
@@ -14,16 +15,21 @@ type WorkerCommandsDeps = {
 	loadedArtifacts: Pick<LoadedArtifactContext, "loadSource" | "unloadSource">;
 	cwd: string;
 	parentSession?: string;
+	kinds: WorkerKindRegistry;
+	maxActive(): number;
+	captureTerminal(): boolean;
 	notify(text: string, level: NotifyLevel): void;
 	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
 export type WorkerCommands = {
-	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean }): Promise<void>;
+	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean }): Promise<WorkerStatus | undefined>;
 	tell(ref: string, text: string): Promise<void>;
 	list(): Promise<void>;
+	listKinds(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
+	respawn(target: string): Promise<void>;
 	load(ref: string | undefined): Promise<void>;
 	unload(ref: string): Promise<void>;
 	completionCandidates(): Promise<WorkerCompletionCandidate[]>;
@@ -65,11 +71,25 @@ function formatWorkerList(workers: WorkerStatus[]): string {
 		.map((w) => {
 			const label = workerShortLabel(w.index).padEnd(4);
 			const state = (w.state ?? "?").padEnd(8);
+			const kind = (w.kind ?? "default").padEnd(8);
 			const artifacts = `${w.artifactCount ?? "?"} artifacts`.padEnd(14);
 			const age = workerAge(w.updatedAt).padEnd(8);
-			return `${label}  ${state}  ${artifacts}  ${age}  ${workerSummaryName(w, 48)}`;
+			const parentTag = w.parentWorkerId ? ` ↳w${workers.find((p) => p.id === w.parentWorkerId)?.index ?? "?"}` : "";
+			return `${label}  ${state}  ${kind}  ${artifacts}  ${age}  ${workerSummaryName(w, 40)}${parentTag}`;
 		})
 		.join("\n");
+}
+
+function formatKindList(kinds: WorkerKind[]): string {
+	if (kinds.length === 0) return "No Trail worker kinds registered";
+	return kinds.map((k) => {
+		const ro = k.readOnly ? "ro" : "rw";
+		const seed = k.parentSeedPolicy === "none" ? "fresh" : "seeded";
+		const spawn = k.canSpawn.length ? `spawn:${k.canSpawn.join(",")}` : "no-spawn";
+		const src = `[${k.source}]`;
+		const desc = k.description ? ` — ${k.description}` : "";
+		return `${k.name.padEnd(12)} ${ro} ${seed} ${spawn} ${src}${desc}`;
+	}).join("\n");
 }
 
 export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
@@ -83,10 +103,41 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	};
 
 	return {
-		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean } = {}): Promise<void> {
+		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean } = {}): Promise<WorkerStatus | undefined> {
 			try {
+				const requestedName = options.as?.trim();
+				if (requestedName) {
+					const known = deps.kinds.names();
+					if (!known.includes(requestedName)) {
+						deps.notify(`Trail: unknown worker kind "${requestedName}". Try /trail kinds. Falling back to default.`, "warning");
+					}
+				}
+				const kind = deps.kinds.get(requestedName);
+				const max = deps.maxActive();
+				if (max > 0) {
+					const active = await deps.store.countActive();
+					if (active >= max) {
+						deps.notify(`Trail: fleet cap reached (${active}/${max} active). Resolve or delete a worker before spawning another.`, "error");
+						return undefined;
+					}
+				}
 				const git = readGitSnapshot(deps.cwd);
-				const worker = await deps.store.spawn({ task, cwd: deps.cwd, parentSession: deps.parentSession, ...(options.worktree ? { worktree: true } : {}), ...(options.fresh ? { fresh: true } : {}), ...(git ? { git } : {}) });
+				const seedSource = options.fresh === true || kind.parentSeedPolicy === "none" ? undefined : deps.parentSession;
+				const useWorktree = options.worktree === true || kind.defaultWorktree;
+				const worker = await deps.store.spawn({
+					task,
+					cwd: deps.cwd,
+					...(seedSource ? { parentSession: seedSource } : {}),
+					worktree: useWorktree,
+					...(options.fresh ? { fresh: true } : {}),
+					...(git ? { git } : {}),
+					kind: kind.name,
+					...(kind.canSpawn.length > 0 ? { canSpawn: kind.canSpawn } : {}),
+					...(options.parentWorkerId ? { parentWorkerId: options.parentWorkerId } : {}),
+					...(typeof options.depth === "number" ? { depth: options.depth } : {}),
+					layout: options.layout ?? kind.layout,
+					...(options.captureTerminal || deps.captureTerminal() ? { captureTerminal: true } : {}),
+				});
 				const now = Date.parse(worker.createdAt);
 				deps.announce(
 					workerLaunchSubject(worker, { now }),
@@ -95,8 +146,10 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					undefined,
 					{ workerId: worker.id },
 				);
+				return worker;
 			} catch (err) {
 				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
+				return undefined;
 			}
 		},
 		async tell(ref: string, text: string): Promise<void> {
@@ -117,6 +170,9 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 		async list(): Promise<void> {
 			deps.emitText(formatWorkerList(await deps.store.list()), "list", "trail · workers");
 		},
+		async listKinds(): Promise<void> {
+			deps.emitText(formatKindList(deps.kinds.list()), "list", "trail · worker kinds");
+		},
 		async delete(ref: string | undefined): Promise<void> {
 			if (!ref) {
 				deps.notify("Usage: /trail delete w<N>", "error");
@@ -128,8 +184,36 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				return;
 			}
 			deps.loadedArtifacts.unloadSource("worker", worker.id);
-			await deps.store.purge(worker.id);
-			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved workspace: ${worker.worktree.path}` : ""}`);
+			const purged = await deps.store.purge(worker.id, { cascade: true });
+			const childCount = Math.max(0, purged.length - 1);
+			const cascadeNote = childCount > 0 ? `\ncascade: purged ${childCount} child worker${childCount === 1 ? "" : "s"}` : "";
+			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved workspace: ${worker.worktree.path}` : ""}${cascadeNote}`);
+		},
+		async respawn(target: string): Promise<void> {
+			const ALL = target.toLowerCase() === "all";
+			const candidates = ALL
+				? (await deps.store.list()).filter((w) => ["ended", "error", "failed"].includes(w.state))
+				: await (async () => {
+					const w = await deps.store.find(target);
+					return w ? [w] : [];
+				})();
+			if (candidates.length === 0) {
+				deps.notify(ALL ? "Trail: no relaunch-eligible workers" : "Trail worker not found", "warning");
+				return;
+			}
+			const ok: string[] = [];
+			const failed: { label: string; error: string }[] = [];
+			for (const worker of candidates) {
+				try {
+					const result = await deps.store.respawn(worker.id);
+					if (result) ok.push(workerShortLabel(result.index));
+					else failed.push({ label: workerShortLabel(worker.index), error: "no status" });
+				} catch (err) {
+					failed.push({ label: workerShortLabel(worker.index), error: String(err) });
+				}
+			}
+			if (ok.length > 0) deps.announce(`respawned ${ok.length} worker${ok.length === 1 ? "" : "s"}`, ok.join(", "), "success");
+			if (failed.length > 0) deps.notify(`Trail respawn failed for: ${failed.map((entry) => `${entry.label} (${entry.error})`).join(", ")}`, "error");
 		},
 		async load(ref: string | undefined): Promise<void> {
 			if (!ref) {

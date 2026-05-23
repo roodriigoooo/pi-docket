@@ -20,7 +20,10 @@ type Entry = {
 export type WorkerSnapshot = {
 	workers: WorkerStatus[];
 	artifactsByWorker: Map<string, Artifact[]>;
+	/** Sticky ring of the last DOCK_RECENT_EVENT_CAP events per worker; safe to render. */
 	eventsByWorker: Map<string, WorkerEvent[]>;
+	/** Only events read this tick. Use for one-shot emit/subscribe; rendering should use eventsByWorker. */
+	newEventsByWorker: Map<string, WorkerEvent[]>;
 };
 
 async function safeStat(file: string): Promise<fsSync.Stats | undefined> {
@@ -42,7 +45,7 @@ export class WorkerSnapshotCache {
 			names = await fs.readdir(this.root);
 		} catch {
 			this.entries.clear();
-			return { workers: [], artifactsByWorker: new Map(), eventsByWorker: new Map() };
+			return { workers: [], artifactsByWorker: new Map(), eventsByWorker: new Map(), newEventsByWorker: new Map() };
 		}
 		const active = new Set(names);
 		for (const id of [...this.entries.keys()]) if (!active.has(id)) this.entries.delete(id);
@@ -50,6 +53,7 @@ export class WorkerSnapshotCache {
 		const workers: WorkerStatus[] = [];
 		const artifactsByWorker = new Map<string, Artifact[]>();
 		const eventsByWorker = new Map<string, WorkerEvent[]>();
+		const newEventsByWorker = new Map<string, WorkerEvent[]>();
 		await Promise.all(names.map(async (id) => {
 			const dir = path.join(this.root, id);
 			const statusFile = path.join(dir, "status.json");
@@ -93,10 +97,11 @@ export class WorkerSnapshotCache {
 				workers.push(entry.status);
 				artifactsByWorker.set(entry.status.id, entry.artifacts);
 				if (entry.recentEvents.length) eventsByWorker.set(entry.status.id, entry.recentEvents);
+				if (tail.events.length) newEventsByWorker.set(entry.status.id, tail.events);
 			}
 		}));
 		workers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-		return { workers, artifactsByWorker, eventsByWorker };
+		return { workers, artifactsByWorker, eventsByWorker, newEventsByWorker };
 	}
 
 	invalidate(id?: string): void {
