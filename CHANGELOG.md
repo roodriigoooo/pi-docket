@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - **auto-embed ready summary**: when a worker reaches `ready`, trail appends a short summary (outcome + one-line headline + up to five recommended bullets) to the parent pi session via `pi.sendMessage({ triggerTurn: false })`. The parent assistant sees it on its next turn without manual `/trail inject`, and any worker spawned afterwards inherits it through session seeding — so sibling findings cross-pollinate without a dedicated channel. Full artifacts still live on disk; `/trail load w<N>` remains the path for the long-form detail. Gated by `worker.autoEmbedSummary` (default true) for users who prefer the pure-ledger behavior. New pure formatter `formatReadyEmbedMessage` in `extensions/worker-summary-embed.ts` is fully testable without pi.
 - **kind visibility in the UI**: the worker kind now shows in three surfaces that previously only labelled the worker by index. Dock row renders `● w1·scout …` next to the label; the spawn announce chip becomes `w3·patcher[o  ] · starting`; the spawn-detail and the `/trail w<N>` mini-report both gain an explicit `kind:` line. The implicit `default` kind is suppressed everywhere to keep the common case clean. Model badge keeps its existing brackets so kind and model are visually distinct.
