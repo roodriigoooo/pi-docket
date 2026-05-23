@@ -229,6 +229,17 @@ workers run in hidden workspaces seeded from your current repo state. if a worke
 
 if a worker calls `/trail wait ...` through bash by mistake, trail tries to catch it and record the intent. the tool protocol is still the real path.
 
+### what a finished worker tells the parent
+
+when a worker hits `ready`, trail appends a short summary message to the parent pi session — outcome line, one-sentence summary, and up to five recommended bullets. the full artifacts (file dumps, code blocks, evidence excerpts) stay on disk; `/trail load w<N>` mounts them when you want the detail.
+
+two things follow from that:
+
+- **the parent assistant sees it on the next turn.** ask "what did w1 find?" and the answer is already in context. no manual `/trail inject`.
+- **any worker spawned afterwards inherits it via session seeding.** w3 spawned after w1 and w2 finished will see their summaries in its seeded prefix, so sibling findings cross-pollinate without a dedicated sharing channel.
+
+this preserves the "decision queue" philosophy: only the short conclusion auto-embeds, the bulk of the artifacts stay behind the inbox card so the parent context doesn't bloat from many workers. opt out with `worker.autoEmbedSummary: false` in `.pi/trail.json` if you want the pure ledger behavior.
+
 ## checkpoints
 
 checkpoints are for handoff. they are useful when the session is noisy, context is getting full, or you want to continue from a smaller summary.

@@ -131,6 +131,13 @@ export function shortModelLabel(id: string | undefined): string | undefined {
 	return stripped.length > 12 ? stripped.slice(0, 12) : stripped;
 }
 
+/** Return the kind name to show next to a worker label, or undefined for the implicit default. */
+export function workerKindLabel(worker: WorkerStatus): string | undefined {
+	const kind = worker.kind?.trim();
+	if (!kind || kind === "default") return undefined;
+	return kind.length > 16 ? kind.slice(0, 16) : kind;
+}
+
 export function pickModelBadge(worker: WorkerStatus, allWorkers: WorkerStatus[], parentModelId: string | undefined): string | undefined {
 	const workerLabel = shortModelLabel(worker.model);
 	if (!workerLabel) return undefined;
@@ -155,6 +162,7 @@ export type DockRow = {
 	ageLabel: string;
 	attention: boolean;
 	chip?: string;
+	kindLabel?: string;
 	modelBadge?: string;
 	eventLine?: string;
 };
@@ -241,6 +249,7 @@ export function dockRowsForRender(
 		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
 		const eventLine = dockEventSubLine(events, row.state);
+		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,
 			label: row.label,
@@ -250,6 +259,7 @@ export function dockRowsForRender(
 			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
 			attention: isAttentionState(row.state),
 			...(chip ? { chip } : {}),
+			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),
 			...(eventLine ? { eventLine } : {}),
 		};
@@ -377,12 +387,16 @@ function previewNextActions(row: WorkerActivityRow): string {
 }
 
 export function workerActivityPreviewLines(row: WorkerActivityRow): string[] {
-	return [
+	const kindLabel = workerKindLabel(row.worker);
+	const lines: string[] = [];
+	if (kindLabel) lines.push("Kind", kindLabel);
+	lines.push(
 		"Outcome",
 		previewOutcomeBody(row),
 		"Evidence",
 		previewEvidenceBody(row),
 		"Next actions",
 		previewNextActions(row),
-	];
+	);
+	return lines;
 }

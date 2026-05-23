@@ -22,6 +22,8 @@ export type TrailWorkerConfig = {
 	captureTerminal?: boolean;
 	/** When true, /trail offers to re-window orphan workers when the shared tmux session is gone but their dirs are still live. */
 	autoRespawn?: boolean;
+	/** When true (default), a short summary message is appended to the parent session when a worker reaches ready. Set false to keep the parent JSONL fully manual. */
+	autoEmbedSummary?: boolean;
 };
 
 export type TrailConfig = {
@@ -52,6 +54,7 @@ export const DEFAULT_CONFIG: TrailConfig = {
 		tmuxStatusLine: false,
 		captureTerminal: false,
 		autoRespawn: false,
+		autoEmbedSummary: true,
 	},
 };
 

@@ -72,6 +72,7 @@ Both optional. Defaults below.
 | `worker.tmuxStatusLine` | false | write a compact summary to `trail-workers`' `status-right`. |
 | `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
 | `worker.autoRespawn` | false | reserved; today `/trail respawn` is manual. |
+| `worker.autoEmbedSummary` | true | when a worker reaches `ready`, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session. Set false to keep the parent JSONL purely manual — the inbox card still shows up; nothing is auto-injected. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
 
 `worker.guardrailsPath` replaces `extensions/worker-guardrails.md` from this package. Use it to pin team-wide policies into every worker.

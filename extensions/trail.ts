@@ -59,6 +59,7 @@ import { workerResultHeadline, workerResultReport, workerResultText } from "./wo
 import { createWorkerStore, isSharedSessionTarget, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
+import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { installTrailExtensionSurface, type TrailExtensionSurfaceInternals } from "./trail-extension-surface.js";
@@ -1119,7 +1120,9 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 
 function dockRowText(row: DockRow, width: number): string {
 	const marker = "●";
-	const labelCell = row.modelBadge ? `${row.label}[${row.modelBadge}]` : row.label;
+	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
+	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
+	const labelCell = `${row.label}${kindCell}${modelCell}`;
 	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/todos" : row.state.replace(/_/g, " ");
 	const trailing = [row.progressLabel, row.ageLabel].filter(Boolean).join(" · ");
 	const left = `${marker} ${labelCell}${stateCell ? ` ${stateCell}` : ""} ${row.taskLabel}`.trim();
@@ -1148,7 +1151,7 @@ function renderDockRows(theme: any, rows: DockRow[], width: number): string[] {
 	return out;
 }
 
-const WORKER_PREVIEW_HEADINGS = new Set(["Outcome", "Evidence", "Next actions"]);
+const WORKER_PREVIEW_HEADINGS = new Set(["Kind", "Outcome", "Evidence", "Next actions"]);
 
 function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number): void {
 	if (!row) return;
@@ -1764,6 +1767,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let workerDockPending = false;
 	let workerDockRunning = false;
 	let workerDockIdleHideMs = 0;
+	let workerAutoEmbedSummary = true;
+	const workerReadyEmbedEmitted = new Set<string>();
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
@@ -2006,7 +2011,38 @@ export default function trailExtension(pi: ExtensionAPI) {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
 			const { workers: allWorkers, artifactsByWorker, eventsByWorker, newEventsByWorker } = await workerDockCache.snapshot();
 			for (const [id, events] of newEventsByWorker) {
-				for (const ev of events) trailSurface.emitWorkerEvent(id, ev);
+				for (const ev of events) {
+					trailSurface.emitWorkerEvent(id, ev);
+					if (
+						workerAutoEmbedSummary &&
+						ev.kind === "state" &&
+						(ev.payload?.state === "ready" || ev.payload?.state === "ready_open_todos") &&
+						!workerReadyEmbedEmitted.has(id)
+					) {
+						const worker = allWorkers.find((w) => w.id === id);
+						if (worker) {
+							const embed = formatReadyEmbedMessage(worker);
+							if (embed) {
+								workerReadyEmbedEmitted.add(id);
+								try {
+									pi.sendMessage({
+										customType: "trail",
+										content: embed.content,
+										display: true,
+										details: {
+											kind: "action",
+											heading: embed.heading,
+											subject: embed.subject,
+											trail: { kind: "response", title: embed.title, subtitle: embed.subtitle },
+										} as TrailMessageDetails & { trail: { kind: ArtifactKind; title: string; subtitle: string } },
+									}, { triggerTurn: false });
+								} catch {
+									workerReadyEmbedEmitted.delete(id);
+								}
+							}
+						}
+					}
+				}
 			}
 			const tmuxStatusEnabled = await loadConfig(ctx.cwd).then((c) => c.worker?.tmuxStatusLine === true).catch(() => false);
 			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
@@ -2388,8 +2424,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const root = createWorkerStore().root();
 			workerDockCache = new WorkerSnapshotCache(root);
 			workerDockIdleHideMs = 0;
+			workerReadyEmbedEmitted.clear();
 			void loadConfig(ctx.cwd).then((config) => {
 				workerDockIdleHideMs = dockIdleHideMs(config.worker);
+				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
 				void refreshWorkerDockWidget();
 			}).catch(() => undefined);
 			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());

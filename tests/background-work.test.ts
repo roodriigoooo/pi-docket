@@ -107,6 +107,16 @@ test("Background Work formats live worker launch banner", () => {
 	assert.match(workerLaunchDetail(worker()), /inbox:  \/trail/);
 });
 
+test("Background Work surfaces kind in chip and launch detail", () => {
+	const scout = worker({ state: "active", kind: "scout" });
+	assert.equal(workerActivityChip(scout, { now: 400 }), "w2·scout(o_o)");
+	assert.equal(workerLaunchSubject(scout, { now: 400 }), "spawned w2·scout(o_o) · thinking");
+	assert.match(workerLaunchDetail(scout, { now: 400 }), /kind:   scout/);
+	const defaultKind = worker({ state: "active", kind: "default" });
+	assert.equal(workerActivityChip(defaultKind, { now: 400 }), "w2(o_o)");
+	assert.doesNotMatch(workerLaunchDetail(defaultKind, { now: 400 }), /kind:/);
+});
+
 test("Background Work normalizes and summarizes worker todos", () => {
 	const todos = normalizeWorkerTodos([
 		{ text: "Read current worker flow", state: "completed" },

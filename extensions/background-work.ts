@@ -148,7 +148,8 @@ export function workerMascotLines(worker: WorkerStatus | undefined, options: { n
 export function workerActivityChip(worker: WorkerStatus, options: { verbose?: boolean; now?: number } = {}): string {
 	const state = deriveWorkerState(worker, options.now);
 	const label = workerSourceLabel(worker);
-	let chip = `${label}${workerMascotFrame(worker, options)}`;
+	const kindTag = worker.kind && worker.kind !== "default" ? `·${worker.kind}` : "";
+	let chip = `${label}${kindTag}${workerMascotFrame(worker, options)}`;
 	if (!options.verbose) return chip;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
@@ -166,8 +167,10 @@ export function workerLaunchSubject(worker: WorkerStatus, options: { now?: numbe
 export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number } = {}): string {
 	const git = gitSnapshotLabel(worker.git);
 	const todos = workerTodoSummary(worker);
+	const kindLine = worker.kind && worker.kind !== "default" ? `kind:   ${worker.kind}` : undefined;
 	return [
 		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
+		kindLine,
 		todos ? `todos:  ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
 		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,

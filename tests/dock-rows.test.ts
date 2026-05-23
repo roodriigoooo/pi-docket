@@ -15,6 +15,7 @@ function makeWorker(partial: Partial<WorkerStatus> & { id: string; index: number
 		updatedAt: partial.updatedAt ?? "2026-05-01T00:00:00.000Z",
 		state: partial.state ?? "active",
 		...(partial.model ? { model: partial.model } : {}),
+		...(partial.kind ? { kind: partial.kind } : {}),
 	};
 }
 
@@ -95,4 +96,18 @@ test("dockRowsForRender attaches eventLine for thinking rows when events present
 	const rows = workerActivityRows([thinking], new Map(), { now });
 	const dock = dockRowsForRender(rows, { eventsByWorker: events, now });
 	assert.equal(dock[0]!.eventLine, "tool: edit src/bar.ts");
+});
+
+test("dockRowsForRender exposes kindLabel for non-default kinds", () => {
+	const scout = makeWorker({ id: "a", index: 1, state: "active", kind: "scout" });
+	const patcher = makeWorker({ id: "b", index: 2, state: "ready", kind: "patcher" });
+	const defaultKind = makeWorker({ id: "c", index: 3, state: "active", kind: "default" });
+	const noKind = makeWorker({ id: "d", index: 4, state: "active" });
+	const rows = workerActivityRows([scout, patcher, defaultKind, noKind]);
+	const dock = dockRowsForRender(rows);
+	const byLabel = new Map(dock.map((r) => [r.label, r]));
+	assert.equal(byLabel.get("w1")!.kindLabel, "scout");
+	assert.equal(byLabel.get("w2")!.kindLabel, "patcher");
+	assert.equal(byLabel.get("w3")!.kindLabel, undefined);
+	assert.equal(byLabel.get("w4")!.kindLabel, undefined);
 });
