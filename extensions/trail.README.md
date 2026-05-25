@@ -11,8 +11,8 @@ Primary (shown in `/trail help`):
 - `/trail tell w<N> [text]` — send input or follow-up via `tmux send-keys -l`. no text opens a prompt
 - `/trail w<N>` / `/trail result w<N>` — show a worker result panel above the prompt
 - `/trail attach [w<N>]` — copy the `tmux attach -t trail-workers` incantation; with `w<N>`, lands directly on that worker's pane
-- `/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [note]` — create editable summarized checkpoint
-- `/trail continue [id|last]` — choose or start from a checkpoint in a fresh session
+- `/trail checkpoint [--once] [--summarize] [note]` — freeze an editable artifact bundle + orientation header
+- `/trail continue [id|last]` — start from a checkpoint in a fresh session; mounts the bundle at zero token cost
 
 Advanced (shown in `/trail help advanced`):
 
@@ -154,7 +154,7 @@ Checkpoints live in:
 - `~/.pi/agent/trail/checkpoints/<id>.artifacts.json`
 - index: `~/.pi/agent/trail/index.json`
 
-Default checkpoints use configured/active model to distill artifacts into compact markdown. Use `--raw` to keep artifact excerpts instead.
+A checkpoint is the artifact bundle (`<id>.artifacts.json`) plus a deterministic orientation header in `<id>.md` — no model call by default. Pass `--summarize` to add model-written prose on top.
 
 `--once` checkpoints are **soft-consumed** at the end of the session in which they were used (`/trail continue`, `/trail resume`, or `/trail load`). The index entry is marked `consumedAt` and hidden from default listings, but the markdown and `artifacts.json` files stay on disk for `consumedRetentionDays` (default 7) so accidental cancels are recoverable. `/trail unload <id>` cancels the pending consume contract for the current session. `/trail delete` always purges immediately. Pass `--include-consumed` to `list` / `load` to see soft-consumed entries.
 
@@ -162,7 +162,9 @@ File-path references inside an injected checkpoint always survive consume — th
 
 ## Loading vs continuing
 
-- `/trail continue` spawns a fresh session and injects the checkpoint markdown into its context.
-- `/trail load` stays in the current session and pulls a prior checkpoint's artifacts into the navigator only — **zero bytes** are added to the model's context until you explicitly chip an artifact with `/trail ref` or `/trail inject-full`. Loaded artifacts appear under a slot id (`c1`, `c2`, …) and use `<slot>.<displayId>` (e.g. `c1.f12`) so they never collide with current-session ids.
+Continue composes load — both **mount** the bundle into the navigator at zero token cost:
+
+- `/trail load` stays in the current session and mounts a prior checkpoint's artifacts into the navigator only — **zero bytes** are added to the model's context until you explicitly chip an artifact with `/trail ref` or `/trail inject-full`. Loaded artifacts appear under a slot id (`c1`, `c2`, …) and use `<slot>.<displayId>` (e.g. `c1.f12`) so they never collide with current-session ids.
+- `/trail continue` spawns a fresh session, mounts the bundle the same way, and injects only the orientation header. The artifacts are chippable from turn 1 but cost nothing until chipped.
 
 Trail shows short display IDs like `f12` in the navigator and stores stable references like `file:<entry-id>:0` in checkpoints and sidecars.

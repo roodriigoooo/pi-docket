@@ -124,14 +124,15 @@ test("Artifact Catalog inspects edit file artifacts as diffs", async () => {
 	assert.match(inspected.text, /\+export const current = true/);
 });
 
-test("Artifact Catalog selects and truncates checkpoint payloads by mode", async () => {
+test("Artifact Catalog selects restart-oriented artifacts and shapes checkpoint payloads", async () => {
 	const { catalog } = await fixtureCatalog();
-	const selected = catalog.selectForCheckpoint("debug", 3);
-	assert.deepEqual(selected.map((artifact) => artifact.kind), ["error", "command", "command"]);
+	const selected = catalog.selectForCheckpoint(3);
+	// One ordering: errors first (avoid repeats), then files, then the rest.
+	assert.deepEqual(selected.map((artifact) => artifact.kind), ["error", "file", "file"]);
 
-	const payload = catalog.checkpointPayload(selected, "compact");
+	const payload = catalog.checkpointPayload(selected);
 	assert.equal(payload[0]?.kind, "error");
-	assert.match(String(payload[0]?.body), /Trail truncated/);
+	assert.match(String(payload[0]?.body), /boom/);
 });
 
 test("Artifact Catalog accepts explicit Trail producer metadata on custom messages", () => {

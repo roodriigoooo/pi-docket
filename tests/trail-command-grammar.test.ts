@@ -120,7 +120,8 @@ test("Trail grammar parses answers, log, and remaining short aliases", () => {
 	assert.deepEqual(parseTrailCommand("answers"), { ok: true, intent: { kind: "answers", query: undefined } });
 	assert.deepEqual(parseTrailCommand("answers worker auth plan"), { ok: true, intent: { kind: "answers", query: "worker auth plan" } });
 	assert.deepEqual(parseTrailCommand("s worker auth plan"), { ok: true, intent: { kind: "search", query: "worker auth plan" } });
-	assert.deepEqual(parseTrailCommand("ckpt --raw note"), { ok: true, intent: { kind: "checkpoint", options: { mode: "handoff", note: "note", consumeOnUse: false, raw: true, model: undefined, maxOutputTokens: undefined } } });
+	assert.deepEqual(parseTrailCommand("ckpt note"), { ok: true, intent: { kind: "checkpoint", options: { note: "note", consumeOnUse: false, summarize: false, model: undefined, maxOutputTokens: undefined } } });
+	assert.deepEqual(parseTrailCommand("ckpt --summarize note"), { ok: true, intent: { kind: "checkpoint", options: { note: "note", consumeOnUse: false, summarize: true, model: undefined, maxOutputTokens: undefined } } });
 	assert.deepEqual(parseTrailCommand("r last"), { ok: true, intent: { kind: "continue", idOrLast: "last" } });
 	assert.equal(parseTrailCommand("memory").ok, false);
 	assert.equal(parseTrailCommand("m worker auth plan").ok, false);

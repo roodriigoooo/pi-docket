@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -90,8 +90,8 @@ test("Background Work heartbeat preserves sticky attention states", () => {
 });
 
 test("Background Work formats compact activity chips", () => {
-	assert.equal(workerActivityChip(worker({ state: "starting" }), { now: 0 }), "w2[o  ]");
-	assert.equal(workerActivityChip(worker({ state: "active" }), { now: 400 }), "w2(o_o)");
+	assert.equal(workerActivityChip(worker({ state: "starting" }), { now: 0 }), "w2");
+	assert.equal(workerActivityChip(worker({ state: "active" }), { now: 400 }), "w2");
 	assert.equal(workerActivityChip(worker({ state: "needs_input", questions: [question("One?"), question("Two?")] })), "w2(?_?)");
 	assert.equal(workerActivityChip(worker({ state: "ready" }), { verbose: true }), "w2(^_^) ready");
 	assert.equal(workerActivityChip(worker({ state: "ready", summary: "mascot viable" }), { verbose: true }), "w2(^_^) mascot viable");
@@ -100,8 +100,14 @@ test("Background Work formats compact activity chips", () => {
 	assert.deepEqual(workerMascotLines(worker({ state: "ready" })).slice(0, 2), ["  (^_^)", "  /|\\  w2"]);
 });
 
+test("Background Work pulse glyph cycles on the dock cadence", () => {
+	assert.equal(workerPulseGlyph(0), "·");
+	assert.equal(workerPulseGlyph(DOCK_PULSE_INTERVAL_MS * 3), "●");
+	assert.equal(workerPulseGlyph(DOCK_PULSE_INTERVAL_MS * 6), "·");
+});
+
 test("Background Work formats live worker launch banner", () => {
-	assert.equal(workerLaunchSubject(worker({ state: "active" }), { now: Date.parse("2026-01-01T00:00:00.400Z") }), "spawned w2(o_o) · thinking");
+	assert.equal(workerLaunchSubject(worker({ state: "active" }), { now: Date.parse("2026-01-01T00:00:00.400Z") }), "spawned w2 · thinking");
 	assert.equal(workerLaunchSubject(worker({ state: "ready", summary: "done" })), "spawned w2(^_^) · ready");
 	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done" })), /status: w2\(\^_\^\) done/);
 	assert.match(workerLaunchDetail(worker()), /inbox:  \/trail/);
@@ -109,11 +115,11 @@ test("Background Work formats live worker launch banner", () => {
 
 test("Background Work surfaces kind in chip and launch detail", () => {
 	const scout = worker({ state: "active", kind: "scout" });
-	assert.equal(workerActivityChip(scout, { now: 400 }), "w2·scout(o_o)");
-	assert.equal(workerLaunchSubject(scout, { now: 400 }), "spawned w2·scout(o_o) · thinking");
+	assert.equal(workerActivityChip(scout, { now: 400 }), "w2·scout");
+	assert.equal(workerLaunchSubject(scout, { now: 400 }), "spawned w2·scout · thinking");
 	assert.match(workerLaunchDetail(scout, { now: 400 }), /kind:   scout/);
 	const defaultKind = worker({ state: "active", kind: "default" });
-	assert.equal(workerActivityChip(defaultKind, { now: 400 }), "w2(o_o)");
+	assert.equal(workerActivityChip(defaultKind, { now: 400 }), "w2");
 	assert.doesNotMatch(workerLaunchDetail(defaultKind, { now: 400 }), /kind:/);
 });
 

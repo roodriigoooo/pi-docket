@@ -1,10 +1,8 @@
-import type { CheckpointMode } from "./types.js";
-
 export type CheckpointCreateOptions = {
-	mode: CheckpointMode;
 	note: string;
 	consumeOnUse: boolean;
-	raw: boolean;
+	/** Opt-in: add a model-written prose summary on top of the deterministic bundle header. */
+	summarize: boolean;
 	model?: string;
 	maxOutputTokens?: number;
 };
@@ -46,14 +44,8 @@ function stripWorkerPrefix(value: string): { id: string; isWorker: boolean } {
 	return { id: value, isWorker: false };
 }
 
-const CHECKPOINT_USAGE = "/trail checkpoint [--handoff|--compact|--debug|--review] [--once] [--raw] [--model <provider/model>] [--max-output <tokens>] [--] [note]";
-const MODE_FLAGS: Record<string, CheckpointMode> = {
-	"--handoff": "handoff",
-	"--compact": "compact",
-	"--debug": "debug",
-	"--review": "review",
-};
-const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--raw", "--no-summary"]);
+const CHECKPOINT_USAGE = "/trail checkpoint [--once] [--summarize [--model <provider/model>] [--max-output <tokens>]] [--] [note]";
+const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--summarize"]);
 const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
 export function trailUsage(advanced = false): string {
@@ -164,10 +156,8 @@ function requireArtifactArg(action: "ref" | "inject" | "inject-full" | "copy", r
 }
 
 function parseCheckpoint(tokens: string[]): ParseResult {
-	let mode: CheckpointMode = "handoff";
-	let sawMode = false;
 	let consumeOnUse = false;
-	let raw = false;
+	let summarize = false;
 	let model: string | undefined;
 	let maxOutputTokens: number | undefined;
 	const noteParts: string[] = [];
@@ -178,15 +168,9 @@ function parseCheckpoint(tokens: string[]): ParseResult {
 			noteParts.push(...tokens.slice(i + 1));
 			break;
 		}
-		if (token in MODE_FLAGS) {
-			if (sawMode) return parseError("Use only one checkpoint mode flag", CHECKPOINT_USAGE);
-			mode = MODE_FLAGS[token]!;
-			sawMode = true;
-			continue;
-		}
 		if (BOOLEAN_FLAGS.has(token)) {
 			if (token === "--once" || token === "--delete-on-use") consumeOnUse = true;
-			else raw = true;
+			else summarize = true;
 			continue;
 		}
 		if (VALUE_FLAGS.has(token)) {
@@ -198,13 +182,15 @@ function parseCheckpoint(tokens: string[]): ParseResult {
 				if (!Number.isInteger(parsed) || parsed <= 0) return parseError("--max-output must be a positive integer", CHECKPOINT_USAGE);
 				maxOutputTokens = parsed;
 			}
+			// --model/--max-output only make sense with a summary; imply it.
+			summarize = true;
 			continue;
 		}
 		if (token.startsWith("--")) return parseError(`Unknown checkpoint flag: ${token}`, CHECKPOINT_USAGE);
 		noteParts.push(token);
 	}
 
-	return { ok: true, intent: { kind: "checkpoint", options: { mode, note: noteParts.join(" "), consumeOnUse, raw, model, maxOutputTokens } } };
+	return { ok: true, intent: { kind: "checkpoint", options: { note: noteParts.join(" "), consumeOnUse, summarize, model, maxOutputTokens } } };
 }
 
 export function parseTrailWorkerShellCommand(command: string): Extract<TrailIntent, { kind: "worker-state" }> | undefined {

@@ -12,7 +12,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 |---|---|---|
 | Artifact Catalog | `extensions/artifact-catalog.ts` | Extraction, identity, lookup, references, full text, inspect, checkpoint payloads. |
 | Search Index | `extensions/artifact-search.ts` | Ripgrep adapter over artifact docs, in-memory fallback, attention-weighted ranking. |
-| Checkpoint Lifecycle | `extensions/checkpoint-lifecycle.ts` | Mode → candidates → user prune → draft → review → persist. |
+| Checkpoint Lifecycle | `extensions/checkpoint-lifecycle.ts` | Bundle-first: select candidates → user prune → orientation header (opt-in `--summarize`) → review → persist. See [ADR-0001](./adr/0001-bundle-first-checkpoints.md). |
 | Checkpoint Store | `extensions/checkpoint-store.ts` | Markdown + sidecar JSON on disk; event-backed lifecycle; soft-consume. |
 | Checkpoint Commands | `extensions/trail-checkpoint-commands.ts` | `continue` / `list` / `delete` flows. |
 | Checkpoint Selector | `extensions/trail-checkpoint-selector.ts` | Interactive accept/exclude before summarization. |

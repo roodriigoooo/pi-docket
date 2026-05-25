@@ -40,7 +40,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -1118,8 +1118,9 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 	});
 }
 
-function dockRowText(row: DockRow, width: number): string {
-	const marker = "●";
+function dockRowText(row: DockRow, width: number, now: number): string {
+	// Active workers breathe; everyone else (attention, idle) holds a steady dot.
+	const marker = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : "●";
 	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
 	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
 	const labelCell = `${row.label}${kindCell}${modelCell}`;
@@ -1136,12 +1137,12 @@ function dockRowText(row: DockRow, width: number): string {
 	return `${leftPad}${sep}${right}`;
 }
 
-function renderDockRows(theme: any, rows: DockRow[], width: number): string[] {
+function renderDockRows(theme: any, rows: DockRow[], width: number, now: number): string[] {
 	const dim = (s: string) => theme.fg("dim", s);
 	const muted = (s: string) => theme.fg("muted", s);
 	const out: string[] = [];
 	for (const row of rows) {
-		const plain = dockRowText(row, width);
+		const plain = dockRowText(row, width, now);
 		out.push(row.attention ? workerStateColor(theme, row.state, plain) : dim(plain));
 		if (row.eventLine) {
 			const sub = truncateToWidth(`    ${row.eventLine}`, width, "");
@@ -1767,6 +1768,24 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let workerDockPending = false;
 	let workerDockRunning = false;
 	let workerDockIdleHideMs = 0;
+	let dockAnimTimer: NodeJS.Timeout | undefined;
+	let dockTui: TUI | undefined;
+	const stopDockAnimation = (): void => {
+		if (dockAnimTimer) {
+			clearInterval(dockAnimTimer);
+			dockAnimTimer = undefined;
+		}
+	};
+	// Only repaint on a steady cadence while a worker is actually working. With no active
+	// workers the timer is cleared, so an idle dock costs nothing (preserves the 0%-idle promise).
+	const syncDockAnimation = (hasActive: boolean): void => {
+		if (hasActive && !dockAnimTimer) {
+			dockAnimTimer = setInterval(() => dockTui?.requestRender(), DOCK_PULSE_INTERVAL_MS);
+			dockAnimTimer.unref?.();
+		} else if (!hasActive) {
+			stopDockAnimation();
+		}
+	};
 	let workerAutoEmbedSummary = true;
 	const workerReadyEmbedEmitted = new Set<string>();
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
@@ -1782,6 +1801,16 @@ export default function trailExtension(pi: ExtensionAPI) {
 	const drainShutdownConsume = async (): Promise<void> => {
 		const store = createCheckpointStore();
 		await loadedArtifacts.drainCheckpointConsumes((checkpoint) => store.markConsumed(checkpoint));
+	};
+
+	// Continue composes load: a continued session auto-mounts the checkpoint's bundle at zero token
+	// cost, so the orientation header's artifact refs resolve via /trail ref. Survives restarts
+	// because it keys off the checkpoint marker left in the session branch. See ADR-0001.
+	const mountLoadedCheckpoint = async (id: string): Promise<void> => {
+		try {
+			const entry = await createCheckpointStore().find(id, { includeConsumed: true });
+			if (entry) await loadedArtifacts.loadCheckpoint(entry);
+		} catch { /* best-effort: continue still works without the mount */ }
 	};
 
 	const maybeSweep = async (cwd: string): Promise<void> => {
@@ -2050,17 +2079,21 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const now = Date.now();
 			const workers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
 			if (workers.length === 0) {
+				stopDockAnimation();
 				ctx.ui.setWidget("trail-workers", undefined);
 				return;
 			}
 			const rows = workerActivityRows(workers, artifactsByWorker);
 			const counts = workerActivityTotals(rows);
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
+			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
 				"trail-workers",
 				(_tui, theme) => ({
 					render(width: number): string[] {
+						dockTui = _tui;
+						const renderNow = Date.now();
 						const accent = (s: string) => theme.fg("accent", s);
 						const dim = (s: string) => theme.fg("dim", s);
 						const attentionParts: string[] = [];
@@ -2075,7 +2108,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						const rowWidth = Math.min(width, 110);
 						return [
 							truncateToWidth(heading, width, ""),
-							...renderDockRows(theme, dockRows, rowWidth),
+							...renderDockRows(theme, dockRows, rowWidth, renderNow),
 						];
 					},
 					invalidate() {},
@@ -2415,6 +2448,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			ctx.ui.setWidget("trail-worker-result", undefined);
 		}
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
+		if (loadedCheckpoint) void mountLoadedCheckpoint(loadedCheckpoint.id);
 		void maybeSweep(ctx.cwd);
 		if (workerId) {
 			void writeWorkerHeartbeat(ctx);
@@ -2443,6 +2477,8 @@ export default function trailExtension(pi: ExtensionAPI) {
 			workerDockUnwatch();
 			workerDockUnwatch = undefined;
 		}
+		stopDockAnimation();
+		dockTui = undefined;
 		workerDockCache = undefined;
 		workerDockPending = false;
 		workerDockRunning = false;
@@ -2588,7 +2624,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				},
 				createHandoffCheckpoint: async () => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-					await checkpointLifecycle.create({ mode: "handoff", note: "", consumeOnUse: false, raw: false });
+					await checkpointLifecycle.create({ note: "", consumeOnUse: false, summarize: false });
 				},
 				catalog: async () => {
 					const config = await loadConfig(ctx.cwd);

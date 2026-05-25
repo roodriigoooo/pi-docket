@@ -53,7 +53,7 @@ test("Worker Activity keeps all workers visible as compact rows", () => {
 	assert.equal(workerActivityTotals(rows).readyOpenTodos, 1);
 	assert.match(lines.join("\n"), /w2\(\^_\?\) · ready\/open todos · todos 1\/2 · inspect worker flow · 3 recs · no files · 1\/2 todos · press l to load/);
 	assert.match(lines.join("\n"), /w3\(\^_\^\) · ready · inspect worker flow · summary only · press l to load/);
-	assert.match(lines.join("\n"), /w1\(\._\.\) · active · inspect worker flow · working · working/);
+	assert.match(lines.join("\n"), /w1 · active · inspect worker flow · working · working/);
 	assert.doesNotMatch(lines.join("\n"), /├|└|said:|also tracking/);
 });
 

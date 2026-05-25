@@ -44,19 +44,21 @@ Both optional. Defaults below.
 |---|---|---|
 | `maxArtifacts` | 300 | hard cap on artifacts kept per session. older entries fall off. |
 | `maxBodyChars` | 6000 | truncate any single artifact body to this many chars before storing. |
-| `checkpointArtifacts` | 24 | initial artifact pool a checkpoint mode considers before user prune. |
+| `checkpointArtifacts` | 24 | initial artifact pool a checkpoint considers before user prune. |
 | `consumedRetentionDays` | 7 | how long `--once` checkpoints stay on disk after first use. |
 
-## Summarizer
+## Summarizer (opt-in)
+
+Checkpoints are bundle-first: by default `/trail checkpoint` writes a deterministic orientation header and never calls a model ([ADR-0001](./adr/0001-bundle-first-checkpoints.md)). The summarizer only runs when you pass `--summarize`; these keys tune it when you do.
 
 | key | default | meaning |
 |---|---|---|
-| `summarizer.enabled` | true | when false, `/trail checkpoint` always uses raw markdown. |
+| `summarizer.enabled` | true | when false, `--summarize` is ignored and the bundle header is always used. |
 | `summarizer.provider` | — | provider id (`openai`, `anthropic`, …). inferred from `model` when omitted. |
 | `summarizer.model` | active session model | provider/model string used for summarization. |
 | `summarizer.maxOutputTokens` | 1200 | cap summary length. |
 | `summarizer.maxInputChars` | 36000 | cap input fed into summarizer. |
-| `summarizer.timeoutMs` | 120000 | abort summarization after this many ms; fall back to raw. |
+| `summarizer.timeoutMs` | 120000 | abort summarization after this many ms; fall back to the bundle header. |
 
 `/trail checkpoint --model <provider/model>` and `--max-output <tokens>` override per call.
 

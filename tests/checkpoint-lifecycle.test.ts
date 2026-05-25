@@ -100,7 +100,7 @@ function catalog(artifacts: Artifact[]) {
 	} as any;
 }
 
-const options = { mode: "handoff" as const, note: "fix tests", consumeOnUse: false, raw: true };
+const options = { note: "fix tests", consumeOnUse: false, summarize: false };
 
 test("Checkpoint Lifecycle warns and does not persist when no artifacts selected", async () => {
 	const fakePi = pi();
@@ -120,7 +120,7 @@ test("Checkpoint Lifecycle warns and does not persist when no artifacts selected
 	assert.deepEqual(notifications, ["Trail found no artifacts to checkpoint"]);
 });
 
-test("Checkpoint Lifecycle raw flow saves checkpoint, appends session entry, and labels leaf", async () => {
+test("Checkpoint Lifecycle default flow saves bundle header, appends session entry, and labels leaf", async () => {
 	const fakePi = pi();
 	const fakeStore = store();
 	const notifications: string[] = [];
@@ -137,7 +137,11 @@ test("Checkpoint Lifecycle raw flow saves checkpoint, appends session entry, and
 	assert.equal(fakeStore.saves[0].id, "ck-test");
 	assert.match(fakeStore.saves[0].markdown, /# Trail checkpoint ck-test/);
 	assert.match(fakeStore.saves[0].markdown, /note: fix tests/);
+	// Bundle-first: orientation sections present, artifact referenced (not dumped).
+	assert.match(fakeStore.saves[0].markdown, /## Next steps/);
+	assert.match(fakeStore.saves[0].markdown, /## Mounted artifacts/);
 	assert.match(fakeStore.saves[0].markdown, /\$ npm test/);
+	assert.doesNotMatch(fakeStore.saves[0].markdown, /## Artifact excerpts/);
 	assert.deepEqual(fakePi.appended.map((entry) => entry.customType), ["trail:checkpoint"]);
 	assert.deepEqual(fakePi.labels, [{ leaf: "leaf-1", label: "trail:ck-test" }]);
 	assert.deepEqual(notifications, ["Trail checkpoint saved: ck-test"]);
@@ -202,7 +206,7 @@ test("Checkpoint Lifecycle cancel during review does not persist", async () => {
 	assert.deepEqual(notifications, ["Trail checkpoint cancelled"]);
 });
 
-test("Checkpoint Lifecycle falls back to raw markdown when summarizer fails", async () => {
+test("Checkpoint Lifecycle falls back to bundle header when summarizer fails", async () => {
 	const fakePi = pi();
 	const fakeStore = store();
 	const notifications: string[] = [];
@@ -215,8 +219,8 @@ test("Checkpoint Lifecycle falls back to raw markdown when summarizer fails", as
 		notify: (text) => notifications.push(text),
 	});
 
-	await lifecycle.create({ ...options, raw: false });
+	await lifecycle.create({ ...options, summarize: true });
 	assert.equal(fakeStore.saves.length, 1);
 	assert.match(fakeStore.saves[0].markdown, /# Trail checkpoint ck-test/);
-	assert.match(notifications[0] ?? "", /Trail summarizer failed; using raw checkpoint: Error: model down/);
+	assert.match(notifications[0] ?? "", /Trail summarizer failed; using bundle header: Error: model down/);
 });

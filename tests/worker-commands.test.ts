@@ -88,8 +88,8 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	assert.equal(spawned[0]?.parentSession, "/session.json");
 	assert.equal(spawned[0]?.kind, "default");
 	assert.equal(spawned[0]?.worktree, true); // default kind has defaultWorktree=true
-	assert.equal(announcements[0]?.subject, "spawned w2[o  ] · starting");
-	assert.match(announcements[0]?.detail ?? "", /status: w2\[o  \] inspect bug now please/);
+	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
+	assert.match(announcements[0]?.detail ?? "", /status: w2 inspect bug now please/);
 	assert.match(announcements[0]?.detail ?? "", /inbox:  \/trail/);
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/trail workers/);
 	assert.deepEqual(announcements[0]?.meta, { workerId: "worker-1" });

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { searchArtifacts } from "./search-index.js";
-import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry, CheckpointMode } from "./types.js";
+import type { Artifact, ArtifactKind, ArtifactSummary, CheckpointIndexEntry } from "./types.js";
 
 export type ArtifactCatalogConfig = {
 	maxArtifacts: number;
@@ -20,8 +20,8 @@ export type ArtifactCatalog = {
 	fullText(artifact: Artifact): string;
 	inspect(artifact: Artifact): Promise<{ title: string; text: string }>;
 	search(query: string): Promise<Artifact[]>;
-	selectForCheckpoint(mode: CheckpointMode, limit: number): Artifact[];
-	checkpointPayload(artifacts: Artifact[], mode: CheckpointMode): Array<Record<string, unknown>>;
+	selectForCheckpoint(limit: number): Artifact[];
+	checkpointPayload(artifacts: Artifact[]): Array<Record<string, unknown>>;
 	summary(artifact: Artifact): ArtifactSummary;
 };
 
@@ -333,17 +333,14 @@ function buildArtifacts(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig)
 	});
 }
 
-function chooseCheckpointArtifacts(artifacts: Artifact[], mode: CheckpointMode, limit: number): Artifact[] {
-	const preferred: Record<CheckpointMode, ArtifactKind[]> = {
-		handoff: ["error", "file", "command", "prompt", "response", "code"],
-		compact: ["error", "file", "prompt", "response"],
-		debug: ["error", "command", "file"],
-		review: ["file", "code", "response", "prompt", "error"],
-	};
-	const kinds = preferred[mode];
+// One restart-oriented ordering: errors first (avoid repeats), then files, commands, and recent
+// decisions. The interactive selector does the real pruning, so this only needs sane defaults.
+const CHECKPOINT_KIND_ORDER: ArtifactKind[] = ["error", "file", "command", "response", "prompt", "code"];
+
+function chooseCheckpointArtifacts(artifacts: Artifact[], limit: number): Artifact[] {
 	return artifacts
-		.filter((a) => kinds.includes(a.kind))
-		.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || (b.timestamp ?? 0) - (a.timestamp ?? 0))
+		.filter((a) => CHECKPOINT_KIND_ORDER.includes(a.kind))
+		.sort((a, b) => CHECKPOINT_KIND_ORDER.indexOf(a.kind) - CHECKPOINT_KIND_ORDER.indexOf(b.kind) || (b.timestamp ?? 0) - (a.timestamp ?? 0))
 		.slice(0, limit);
 }
 
@@ -442,17 +439,17 @@ export function createArtifactCatalog(
 		search(query: string) {
 			return searchArtifacts(query, artifacts);
 		},
-		selectForCheckpoint(mode: CheckpointMode, limit: number) {
-			return chooseCheckpointArtifacts(current, mode, limit);
+		selectForCheckpoint(limit: number) {
+			return chooseCheckpointArtifacts(current, limit);
 		},
-		checkpointPayload(selected: Artifact[], mode: CheckpointMode) {
+		checkpointPayload(selected: Artifact[]) {
 			return selected.map((artifact) => ({
 				ref: artifact.ref,
 				displayId: artifact.displayId,
 				kind: artifact.kind,
 				title: artifact.title,
 				subtitle: artifact.subtitle,
-				body: truncateText(artifact.body, mode === "compact" ? 900 : 1600),
+				body: truncateText(artifact.body, 1600),
 				meta: artifact.meta ?? {},
 			}));
 		},

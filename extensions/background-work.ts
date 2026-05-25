@@ -110,6 +110,15 @@ const STARTING_CHIP_FRAMES = ["[o  ]", "[ o ]", "[  o]"];
 const THINKING_CHIP_FRAMES = ["(._.)", "(o_o)", "(._.)"];
 const FRAME_INTERVAL_MS = 400;
 
+// Live dock heartbeat: a single breathing dot for active (starting/thinking) workers.
+// Rendered only in surfaces that repaint on a timer (the prompt dock), never in static chips.
+const PULSE_FRAMES = ["·", "∘", "o", "●", "o", "∘"];
+export const DOCK_PULSE_INTERVAL_MS = 450;
+
+export function workerPulseGlyph(now = Date.now()): string {
+	return PULSE_FRAMES[Math.floor(now / DOCK_PULSE_INTERVAL_MS) % PULSE_FRAMES.length]!;
+}
+
 function workerStatusText(worker: WorkerStatus, fallback: string): string {
 	const text = worker.summary ?? worker.lastError ?? worker.question ?? fallback;
 	return text.split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? fallback;
@@ -149,7 +158,10 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	const state = deriveWorkerState(worker, options.now);
 	const label = workerSourceLabel(worker);
 	const kindTag = worker.kind && worker.kind !== "default" ? `·${worker.kind}` : "";
-	let chip = `${label}${kindTag}${workerMascotFrame(worker, options)}`;
+	// Animated frames (starting/thinking) freeze in static one-shot messages; only emit the
+	// stable state faces here. Live liveliness for active workers lives in the dock pulse.
+	const face = state === "starting" || state === "thinking" ? "" : workerMascotFrame(worker, options);
+	let chip = `${label}${kindTag}${face}`;
 	if (!options.verbose) return chip;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;

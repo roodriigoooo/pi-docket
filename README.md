@@ -242,30 +242,25 @@ this preserves the "decision queue" philosophy: only the short conclusion auto-e
 
 ## checkpoints
 
-checkpoints are for handoff. they are useful when the session is noisy, context is getting full, or you want to continue from a smaller summary.
+a checkpoint is a frozen **bundle** of session artifacts plus a small **orientation header**. it is the bundle first — not a summary. useful when the session is noisy, context is getting full, or you want to restart clean without losing what you learned.
 
 ```bash
-/trail checkpoint --handoff finish the checkpoint store refactor
+/trail checkpoint finish the checkpoint store refactor
 /trail continue last
 ```
 
-modes:
+when you `continue`, the fresh session **mounts** the bundle at zero token cost and sees only the orientation header (git state, files touched, errors, your note). the artifacts stay on disk until you chip one with `/trail ref`. this is trail keeping artifacts around instead of compressing them into context — the same philosophy as the inbox.
 
-| mode | picks | use for |
-|---|---|---|
-| `--handoff` | decisions, files changed, dead ends, next steps | passing work to a new session or another model |
-| `--compact` | minimal recent state | continuing without the full conversation |
-| `--debug` | errors, failed commands, repro steps | reproducing a bug in a clean session |
-| `--review` | files changed, code blocks, commands | walking a reviewer through what happened |
+because nothing is auto-summarized, the **note** carries the judgement: write the decisions and next steps you'd want future-you to have. the editor opens on the pre-filled header so you can fill in `## Decisions` and `## Next steps` before saving.
 
 flags:
 
 - `--once` — soft-consume after first `/trail continue` or `/trail load`.
-- `--raw` — skip model summarization and keep artifact excerpts as written.
-- `--model <provider/model>` — summarize with a specific model.
-- `--max-output <tokens>` — cap summary length.
+- `--summarize` — add a model-written prose summary on top of the bundle header (opt-in; off by default).
+- `--model <provider/model>` — summarize with a specific model (implies `--summarize`).
+- `--max-output <tokens>` — cap summary length (implies `--summarize`).
 
-checkpoints are plain markdown with a sidecar `artifacts.json`. you can edit the markdown before continuing.
+checkpoints are plain markdown with a sidecar `artifacts.json`. you can edit the markdown before continuing. checkpoints saved by older versions still read and continue fine.
 
 ## `/trail log`
 

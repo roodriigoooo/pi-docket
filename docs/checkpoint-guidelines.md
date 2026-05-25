@@ -11,15 +11,14 @@ Trail checkpoints preserve useful work state for a fresh session. They are not t
 - Keep next steps concrete and ordered.
 - Optimize for context window health. Smaller checkpoints are better when they preserve the same continuation power.
 
-## Mode expectations
+## Bundle-first shape
 
-- `handoff`: preserve enough state for another agent/session to continue safely.
-- `compact`: smallest useful continuation note; omit nice-to-have context.
-- `debug`: emphasize failures, hypotheses tried, dead ends, and safest next checks.
-- `review`: emphasize changed files, decisions, risks, test status, and reviewer focus.
+A checkpoint is an artifact **bundle** plus a deterministic **orientation header** — not a summary (see [ADR-0001](./adr/0001-bundle-first-checkpoints.md)). The header carries git state, files touched, errors, and the note; `continue`/`load` mount the bundle at zero token cost. Artifact contents never auto-enter context.
+
+The **note** is load-bearing: decisions and next steps are human-authored (the note + the editor pass that fills `## Decisions` / `## Next steps`), never model-guessed. `--summarize` adds optional model prose on top.
 
 ## Artifact selection
 
-Checkpoint mode chooses initial artifacts. Interactive review should remove noisy or irrelevant artifacts before summarization.
+Selection pre-picks a restart-oriented set (errors first, then files, commands, recent decisions). Interactive review removes noisy or irrelevant artifacts before persist.
 
-Excluded artifacts should stay excluded from checkpoint markdown and sidecar JSON.
+Excluded artifacts should stay excluded from the checkpoint header references and the sidecar JSON.

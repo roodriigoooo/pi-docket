@@ -1,12 +1,12 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { createArtifactCatalog, buildReferenceList, truncateText, type ArtifactCatalog } from "./artifact-catalog.js";
+import { createArtifactCatalog, buildReferenceList, type ArtifactCatalog } from "./artifact-catalog.js";
 import { showCheckpointSelector } from "./checkpoint-selector.js";
 import { createCheckpointStore, type CheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizer } from "./checkpoint-summarizer.js";
 import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { loadConfig, type TrailConfig } from "./trail-config.js";
 import type { CheckpointCreateOptions } from "./trail-command-grammar.js";
-import type { Artifact, CheckpointIndexEntry, CheckpointMode, GitSnapshot } from "./types.js";
+import type { Artifact, CheckpointIndexEntry, GitSnapshot } from "./types.js";
 
 export type CheckpointLifecycle = {
 	create(options: CheckpointCreateOptions): Promise<void>;
@@ -31,24 +31,27 @@ function makeCheckpointId(): string {
 	return stamp.replace("T", "-");
 }
 
-function buildRawCheckpointMarkdown(
+// Bundle-first checkpoint: a small deterministic orientation header. The artifact bundle
+// (.artifacts.json) is the spine; it is mounted at zero token cost on continue/load. This header
+// is all that enters a fresh session's context — never the artifact contents. Decisions and next
+// steps are human-authored (the note + the editor pass), not model-guessed. See ADR-0001.
+function buildOrientationHeader(
 	ctx: ExtensionCommandContext,
 	id: string,
-	mode: CheckpointMode,
 	note: string,
 	consumeOnUse: boolean,
 	artifacts: Artifact[],
+	references: string,
 	git?: GitSnapshot,
 ): string {
 	const usage = ctx.getContextUsage();
 	const files = [...new Set(artifacts.filter((a) => a.kind === "file").map((a) => a.title.replace(/^(read|write|edit|grep|find|ls)\s+/, "")))];
 	const errors = artifacts.filter((a) => a.kind === "error");
-	const commands = artifacts.filter((a) => a.kind === "command");
 
 	const lines: string[] = [];
 	lines.push(`# Trail checkpoint ${id}`);
 	lines.push("");
-	lines.push(`mode: ${mode}`);
+	lines.push("mode: handoff");
 	lines.push(`cwd: ${ctx.cwd}`);
 	lines.push(`created: ${new Date().toISOString()}`);
 	if (ctx.sessionManager.getSessionFile()) lines.push(`sourceSession: ${ctx.sessionManager.getSessionFile()}`);
@@ -58,29 +61,25 @@ function buildRawCheckpointMarkdown(
 	if (note) lines.push(`note: ${note}`);
 	if (consumeOnUse) lines.push("consumeOnUse: true");
 	lines.push("");
-	lines.push("## Intent");
-	lines.push(note || "Continue from preserved session artifacts. Preserve continuity, discard noise, avoid repeated mistakes.");
+	lines.push("## Resuming");
+	lines.push(note || "(state the goal you are resuming)");
+	lines.push("");
+	lines.push("## Decisions");
+	lines.push("<!-- decisions that constrain the continuation; state facts, not guesses -->");
+	lines.push("");
+	lines.push("## Next steps");
+	lines.push("<!-- concrete, ordered -->");
 	lines.push("");
 	lines.push("## Files touched or inspected");
 	lines.push(files.length ? files.map((f) => `- ${f}`).join("\n") : "- (none captured)");
 	lines.push("");
-	lines.push("## Errors and failed attempts");
-	lines.push(errors.length ? errors.map((a) => `- ${a.title}: ${a.subtitle}`).join("\n") : "- (none captured)");
+	lines.push("## Errors to avoid repeating");
+	lines.push(errors.length ? errors.slice(0, 8).map((a) => `- ${a.title}: ${a.subtitle}`).join("\n") : "- (none captured)");
 	lines.push("");
-	lines.push("## Commands worth preserving");
-	lines.push(commands.length ? commands.slice(0, 10).map((a) => `- ${a.title} (${a.subtitle})`).join("\n") : "- (none captured)");
+	lines.push("## Mounted artifacts");
+	lines.push("This checkpoint's artifacts are mounted at zero token cost. Read current file contents from disk; chip an artifact with `/trail ref <ref>` when you need its detail.");
 	lines.push("");
-	lines.push("## Artifact excerpts");
-	for (const artifact of artifacts) {
-		lines.push("");
-		lines.push(`### ${artifact.kind}: ${artifact.title}`);
-		if (artifact.subtitle) lines.push(`_${artifact.subtitle}_`);
-		lines.push("");
-		lines.push(truncateText(artifact.body.trim(), mode === "compact" ? 900 : 1800));
-	}
-	lines.push("");
-	lines.push("## Fresh-session instruction");
-	lines.push("Use checkpoint above as source of truth. Continue work without assuming full prior transcript exists. Do not repeat failed attempts listed above unless explicitly correcting them.");
+	lines.push(references);
 	return lines.join("\n");
 }
 
@@ -96,32 +95,31 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 	const summarizer = deps.summarizer ?? createCheckpointSummarizer();
 	const notify = deps.notify ?? ((text: string, level: NotifyLevel) => defaultNotify(pi, ctx, text, level));
 
-	const selectArtifacts = (options: CheckpointCreateOptions): Artifact[] => {
-		return catalog.selectForCheckpoint(options.mode, config.checkpointArtifacts);
+	const selectArtifacts = (): Artifact[] => {
+		return catalog.selectForCheckpoint(config.checkpointArtifacts);
 	};
 
 	const reviewArtifactSelection = async (artifacts: Artifact[], options: CheckpointCreateOptions): Promise<Artifact[] | null> => {
 		if (deps.selectArtifactsForCheckpoint) return deps.selectArtifactsForCheckpoint(artifacts, options);
 		if (!ctx.hasUI) return artifacts;
-		return showCheckpointSelector(ctx, artifacts, options.mode);
+		return showCheckpointSelector(ctx, artifacts, "handoff");
 	};
 
 	const draftMarkdown = async (id: string, options: CheckpointCreateOptions, artifacts: Artifact[], git?: GitSnapshot): Promise<string> => {
-		if (options.raw || !config.summarizer.enabled) {
-			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts, git);
-		}
+		const header = buildOrientationHeader(ctx, id, options.note, options.consumeOnUse, artifacts, buildReferenceList(artifacts, ctx.cwd), git);
+		if (!options.summarize || !config.summarizer.enabled) return header;
 		if (ctx.hasUI) ctx.ui.notify("Trail summarizing checkpoint...", "info");
 		try {
 			return await summarizer.summarize({
 				id,
-				mode: options.mode,
+				mode: "handoff",
 				note: options.note,
 				consumeOnUse: options.consumeOnUse,
 				cwd: ctx.cwd,
 				sourceSession: ctx.sessionManager.getSessionFile(),
 				git,
 				artifactsFile: store.artifactsFile(id),
-				payload: catalog.checkpointPayload(artifacts, options.mode),
+				payload: catalog.checkpointPayload(artifacts),
 				references: buildReferenceList(artifacts, ctx.cwd),
 				activeModel: ctx.model,
 				modelRegistry: ctx.modelRegistry,
@@ -129,8 +127,8 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 				overrides: { model: options.model, maxOutputTokens: options.maxOutputTokens },
 			});
 		} catch (err) {
-			notify(`Trail summarizer failed; using raw checkpoint: ${String(err)}`, "warning");
-			return buildRawCheckpointMarkdown(ctx, id, options.mode, options.note, options.consumeOnUse, artifacts, git);
+			notify(`Trail summarizer failed; using bundle header: ${String(err)}`, "warning");
+			return header;
 		}
 	};
 
@@ -145,7 +143,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 	const persistCheckpoint = async (id: string, options: CheckpointCreateOptions, markdown: string, artifacts: Artifact[], git?: GitSnapshot): Promise<CheckpointIndexEntry> => {
 		return store.save({
 			id,
-			mode: options.mode,
+			mode: "handoff",
 			markdown,
 			artifacts,
 			cwd: ctx.cwd,
@@ -164,7 +162,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 
 	return {
 		async create(options: CheckpointCreateOptions): Promise<void> {
-			const candidates = selectArtifacts(options);
+			const candidates = selectArtifacts();
 			if (candidates.length === 0) {
 				notify("Trail found no artifacts to checkpoint", "warning");
 				return;
