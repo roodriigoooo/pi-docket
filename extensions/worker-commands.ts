@@ -3,7 +3,7 @@ import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
 import type { WorkerKindRegistry, WorkerKind } from "./worker-kinds.js";
-import type { WorkerStore } from "./worker-store.js";
+import { workerProjectKey, type WorkerStore } from "./worker-store.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
@@ -14,6 +14,7 @@ type WorkerCommandsDeps = {
 	store: WorkerStore;
 	loadedArtifacts: Pick<LoadedArtifactContext, "loadSource" | "unloadSource">;
 	cwd: string;
+	projectRoot?: string;
 	parentSession?: string;
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
@@ -26,7 +27,7 @@ type WorkerCommandsDeps = {
 export type WorkerCommands = {
 	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean }): Promise<WorkerStatus | undefined>;
 	tell(ref: string, text: string): Promise<void>;
-	list(): Promise<void>;
+	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
 	respawn(target: string): Promise<void>;
@@ -46,9 +47,9 @@ export function workerAge(updatedAt: string): string {
 	return `${hours}h ago`;
 }
 
-export async function workerCompletionCandidates(store: WorkerStore): Promise<WorkerCompletionCandidate[]> {
+export async function workerCompletionCandidates(store: WorkerStore, options: { projectRoot?: string } = {}): Promise<WorkerCompletionCandidate[]> {
 	try {
-		const workers = await store.list();
+		const workers = await store.list(options);
 		return workers.slice(-10).reverse().map((w) => ({
 			value: workerShortLabel(w.index),
 			label: `${workerShortLabel(w.index)}  ${w.state}  ${workerSummaryName(w, 40)}`,
@@ -65,19 +66,24 @@ function formatWorkerTell(worker: WorkerStatus, text: string): string {
 	return `Parent message for ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Message: ${text}`;
 }
 
-function formatWorkerList(workers: WorkerStatus[]): string {
+function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: boolean } = {}): string {
 	if (workers.length === 0) return "No Trail workers";
-	return workers
-		.map((w) => {
-			const label = workerShortLabel(w.index).padEnd(4);
-			const state = (w.state ?? "?").padEnd(8);
-			const kind = (w.kind ?? "default").padEnd(8);
-			const artifacts = `${w.artifactCount ?? "?"} artifacts`.padEnd(14);
-			const age = workerAge(w.updatedAt).padEnd(8);
-			const parentTag = w.parentWorkerId ? ` ↳w${workers.find((p) => p.id === w.parentWorkerId)?.index ?? "?"}` : "";
-			return `${label}  ${state}  ${kind}  ${artifacts}  ${age}  ${workerSummaryName(w, 40)}${parentTag}`;
-		})
-		.join("\n");
+	const lineFor = (w: WorkerStatus) => {
+		const label = workerShortLabel(w.index).padEnd(4);
+		const state = (w.state ?? "?").padEnd(8);
+		const kind = (w.kind ?? "default").padEnd(8);
+		const artifacts = `${w.artifactCount ?? "?"} artifacts`.padEnd(14);
+		const age = workerAge(w.updatedAt).padEnd(8);
+		const parentTag = w.parentWorkerId ? ` ↳w${workers.find((p) => p.id === w.parentWorkerId)?.index ?? "?"}` : "";
+		return `${label}  ${state}  ${kind}  ${artifacts}  ${age}  ${workerSummaryName(w, 40)}${parentTag}`;
+	};
+	if (!options.groupByProject) return workers.map(lineFor).join("\n");
+	const groups = new Map<string, WorkerStatus[]>();
+	for (const worker of workers) {
+		const key = workerProjectKey(worker);
+		groups.set(key, [...(groups.get(key) ?? []), worker]);
+	}
+	return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).flatMap(([project, entries]) => [`project: ${project}`, ...entries.map(lineFor)]).join("\n");
 }
 
 function formatKindList(kinds: WorkerKind[]): string {
@@ -167,8 +173,9 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			);
 			else deps.notify(`Trail could not send message to ${workerShortLabel(worker.index)}`, "error");
 		},
-		async list(): Promise<void> {
-			deps.emitText(formatWorkerList(await deps.store.list()), "list", "trail · workers");
+		async list(options: { allProjects?: boolean } = {}): Promise<void> {
+			const projectRoot = options.allProjects ? undefined : deps.projectRoot;
+			deps.emitText(formatWorkerList(await deps.store.list({ ...(projectRoot ? { projectRoot } : {}) }), { groupByProject: options.allProjects === true }), "list", "trail · workers");
 		},
 		async listKinds(): Promise<void> {
 			deps.emitText(formatKindList(deps.kinds.list()), "list", "trail · worker kinds");
@@ -238,7 +245,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			else deps.notify("Trail worker not loaded", "warning");
 		},
 		completionCandidates(): Promise<WorkerCompletionCandidate[]> {
-			return workerCompletionCandidates(deps.store);
+			return workerCompletionCandidates(deps.store, { ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });
 		},
 	};
 }

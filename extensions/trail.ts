@@ -40,7 +40,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -49,14 +49,14 @@ import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./trail-config.js";
 import { parseTrailCommand, parseTrailWorkerShellCommand, trailUsage, TRAIL_COMMANDS } from "./trail-command-grammar.js";
-import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection, type ParallelWorkAction, type ParallelWorkEntry, type TrailBrowserAction } from "./trail-command-router.js";
+import { createTrailCommandRouter, type LoadPickerMode, type LoadPickerSelection, type ParallelWorkAction, type ParallelWorkEntry, type TrailBrowserAction, type TrailVerdictAction } from "./trail-command-router.js";
 import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./trail-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { createWorkerStore, isSharedSessionTarget, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV } from "./worker-store.js";
+import { createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, TRAIL_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
@@ -478,6 +478,7 @@ function reviewReasonLabel(reasonId: ReviewReasonId | undefined): string | undef
 
 function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
 	const artifact = item.artifact;
+	if (action === "openVerdict") return "Verdict";
 	if (action === "tellWorker") return "Tell worker";
 	if (action === "promoteWorker") return "Promote";
 	if (action === "openFile") return "Open file";
@@ -500,6 +501,7 @@ function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
 function selectedActionHints(item: ReviewItem, pinned: boolean, done: boolean): string[] {
 	const artifact = item.artifact;
 	const hints = [`enter ${reviewActionLabel(item.primaryAction, item).toLowerCase()}`];
+	if (item.primaryAction !== "openVerdict" && item.actions.includes("openVerdict")) hints.push("Enter verdict");
 	if (item.actions.includes("promoteWorker")) hints.push("P promote");
 	if (item.actions.includes("tellWorker")) hints.push("t tell");
 	if (item.actions.includes("openFile")) hints.push("o open");
@@ -564,6 +566,7 @@ function inboxButtons(item: ReviewItem, done: boolean): InboxButton[] {
 	const buttons: InboxButton[] = [{ key: "Enter", label: primaryLabel }];
 	const seen = new Set<ReviewActionId>([item.primaryAction]);
 	const order: Array<{ id: ReviewActionId; key: string; label: string }> = [
+		{ id: "openVerdict", key: "Enter", label: "Verdict" },
 		{ id: "promoteWorker", key: "P", label: "Promote" },
 		{ id: "inspect", key: "d", label: "Diff" },
 		{ id: "tellWorker", key: "c", label: "Continue" },
@@ -743,6 +746,7 @@ class TrailView implements Component {
 			return;
 		}
 		if (action.id === "inspect") this.done({ action: "inspect", artifact });
+		else if (action.id === "openVerdict") this.done({ action: "verdict", artifact });
 		else if (action.id === "openFile") this.done({ action: "openFile", artifact });
 		else if (action.id === "promoteWorker") this.done({ action: "promoteWorker", artifact });
 		else if (action.id === "tellWorker") this.done({ action: "tellWorker", artifact });
@@ -939,6 +943,209 @@ async function showTrailBrowser(
 	return ctx.ui.custom((tui, theme, _kb, done) => new TrailView(tui, theme, artifacts, pinnedRefs, completedRefs, initialMode, (artifact) => catalog.fullText(artifact), done), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+	});
+}
+
+type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat";
+export type VerdictVerb = { id: VerdictVerbId; label: string; description: string };
+
+type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean };
+
+function artifactChangedFiles(artifact: Artifact | undefined): Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> {
+	return Array.isArray(artifact?.meta?.changedFiles) ? artifact.meta.changedFiles as Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> : [];
+}
+
+function artifactHunkCount(artifact: Artifact | undefined): number | undefined {
+	const hunkCount = artifact?.meta?.hunkCount;
+	return typeof hunkCount === "number" && Number.isFinite(hunkCount) ? hunkCount : undefined;
+}
+
+export function diffBar(additions: number, deletions: number, width: number): string {
+	const slots = Math.max(1, Math.floor(width));
+	const adds = Math.max(0, additions);
+	const dels = Math.max(0, deletions);
+	const total = adds + dels;
+	if (total <= 0) return "░".repeat(slots);
+	if (slots === 1) return adds >= dels ? "█" : "░";
+	let addSlots = Math.round((adds / total) * slots);
+	if (adds > 0 && addSlots === 0) addSlots = 1;
+	if (dels > 0 && addSlots === slots) addSlots = slots - 1;
+	return `${"█".repeat(addSlots)}${"░".repeat(slots - addSlots)}`;
+}
+
+function coloredDiffBar(theme: any, additions: number, deletions: number, width: number): string {
+	const bar = diffBar(additions, deletions, width);
+	return `[${[...bar].map((char) => char === "█" ? theme.fg("success", char) : theme.fg("error", char)).join("")}]`;
+}
+
+export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean): VerdictVerb[] {
+	if (state === "needs_input") return [
+		{ id: "accept", label: "Accept", description: "approve · worker continues" },
+		{ id: "reject", label: "Reject", description: "redirect · stays alive" },
+		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
+		{ id: "chat", label: "Chat", description: "type a reply" },
+	];
+	if (state === "failed") return [
+		{ id: "accept", label: "Retry", description: "relaunch worker" },
+		{ id: "reject", label: "Reject", description: "dismiss" },
+		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
+		{ id: "chat", label: "Chat", description: "send follow-up" },
+	];
+	return [
+		{ id: "accept", label: "Accept", description: hasChangeSet ? "promote diff into your worktree" : "acknowledge" },
+		{ id: "reject", label: "Reject", description: hasChangeSet ? "discard · keep worktree" : "dismiss" },
+		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
+		{ id: "chat", label: "Chat", description: hasChangeSet ? "send back for revision" : "send follow-up" },
+	];
+}
+
+export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact): VerdictPayload {
+	const state = deriveWorkerState(worker);
+	if (state === "needs_input") {
+		const lines = workerQuestions(worker).map((question) => question.text);
+		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false };
+	}
+	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
+	const changedFiles = artifactChangedFiles(changeSet);
+	if (changedFiles.length > 0) {
+		const totals = changedFiles.reduce<{ additions: number; deletions: number }>((acc, file) => {
+			const additions = typeof file.additions === "number" ? file.additions : 0;
+			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
+			return { additions: acc.additions + additions, deletions: acc.deletions + deletions };
+		}, { additions: 0, deletions: 0 });
+		const hunkCount = artifactHunkCount(changeSet);
+		const fileLines = changedFiles.slice(0, 5).map((file) => {
+			const filePath = typeof file.path === "string" ? file.path : "unknown";
+			const additions = typeof file.additions === "number" ? file.additions : 0;
+			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
+			return `${filePath}   +${additions}/-${deletions}`;
+		});
+		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true };
+	}
+	const lines = [worker.summary, ...(worker.recommended ?? [])].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
+}
+
+class TrailVerdictView implements Component {
+	private container: Container | Box = new Container();
+	private selected = 0;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+	private readonly changeSet?: Artifact;
+	private readonly timer?: NodeJS.Timeout;
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private worker: WorkerStatus,
+		changeSet: Artifact | undefined,
+		private done: (result: TrailVerdictAction | null) => void,
+	) {
+		this.changeSet = changeSet;
+		const state = deriveWorkerState(worker);
+		if (state === "starting" || state === "thinking") {
+			this.timer = setInterval(() => this.tui.requestRender(), DOCK_PULSE_INTERVAL_MS);
+			this.timer.unref?.();
+		}
+	}
+
+	private finish(result: TrailVerdictAction | null): void {
+		if (this.timer) clearInterval(this.timer);
+		this.done(result);
+	}
+
+	handleInput(data: string): void {
+		const state = deriveWorkerState(this.worker);
+		const verbs = verdictVerbs(state, this.changeSet !== undefined);
+		const max = Math.max(0, verbs.length - 1);
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
+			this.finish(null);
+			return;
+		}
+		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
+		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
+		else if (data === "g") this.selected = 0;
+		else if (data === "G") this.selected = max;
+		else if (data === "d" && this.changeSet) {
+			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
+			return;
+		}
+		else if (matchesKey(data, Key.enter)) {
+			const verb = verbs[this.selected]?.id;
+			if (verb) this.finish({ verb, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}) });
+			return;
+		}
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.container.invalidate();
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		this.container = new Box(2, 1, trailCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const listWidth = Math.max(30, innerWidth);
+		const state = deriveWorkerState(this.worker);
+		const payload = workerVerdictPayload(this.worker, this.changeSet);
+		const verbs = verdictVerbs(state, payload.hasChangeSet);
+		this.selected = Math.min(this.selected, Math.max(0, verbs.length - 1));
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const text = (s: string) => this.theme.fg("text", s);
+		const border = (s: string) => this.theme.fg("border", s);
+		const divider = (s: string) => this.theme.fg("borderMuted", s);
+		const stateLabel = state === "ready_open_todos" ? "ready · open todos" : state.replace(/_/g, " ");
+		const active = state === "starting" || state === "thinking";
+		const glyph = active ? workerPulseGlyph() : "●";
+		const label = workerSourceLabel(this.worker);
+		const task = workerSummaryName(this.worker, 28);
+		const headerLeft = ` ${accent(this.theme.bold("trail"))} ${dim("·")} ${accent("verdict")} `;
+		const headerRight = ` ${dim("Esc close")} `;
+		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, border, TOP_CORNERS), 0, 0));
+		const head = `${workerStateColor(this.theme, state, glyph)}  ${text(`${label} · ${task}`)}  ${muted(`${stateLabel} · ${relativeTime(Date.parse(this.worker.updatedAt))}`)}`;
+		this.container.addChild(new Text(truncateToWidth(` ${head}`, listWidth - 2), 1, 0));
+		this.container.addChild(new Spacer(1));
+		if (payload.hasChangeSet) {
+			const hunk = payload.hunkCount === undefined ? "" : `   ${payload.hunkCount} hunk${payload.hunkCount === 1 ? "" : "s"}`;
+			const files = artifactChangedFiles(this.changeSet).length;
+			const stat = `${files} file${files === 1 ? "" : "s"}   +${payload.additions} / -${payload.deletions}   ${coloredDiffBar(this.theme, payload.additions, payload.deletions, 14)}${hunk}`;
+			this.container.addChild(new Text(truncateToWidth(` ${muted(stat)}`, listWidth - 2), 1, 0));
+			for (const line of payload.lines) this.container.addChild(new Text(truncateToWidth(`   ${dim(line)}`, listWidth - 2), 1, 0));
+		} else {
+			for (const line of payload.lines.slice(0, 5)) {
+				for (const wrapped of wrapPlainText(line, listWidth - 4, 3)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
+			}
+		}
+		this.container.addChild(new DynamicBorder(divider));
+		for (let i = 0; i < verbs.length; i++) {
+			const verb = verbs[i]!;
+			const selected = i === this.selected;
+			const marker = selected ? accent("▸") : " ";
+			const labelText = selected ? accent(this.theme.bold(verb.label.padEnd(14))) : text(verb.label.padEnd(14));
+			this.container.addChild(new Text(truncateToWidth(` ${marker} ${labelText} ${dim(verb.description)}`, listWidth - 2), 1, 0));
+		}
+		this.container.addChild(new DynamicBorder(divider));
+		const diffHint = this.changeSet ? "d full diff · " : "";
+		this.container.addChild(new Text(dim(`${diffHint}↑↓ move · Enter select · Esc cancel`), 1, 0));
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = this.container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+}
+
+async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<TrailVerdictAction | null> {
+	const state = deriveWorkerState(worker);
+	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
+	return ctx.ui.custom<TrailVerdictAction | null>((tui, theme, _kb, done) => new TrailVerdictView(tui, theme, worker, changeSet, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "76%", minWidth: 72, maxHeight: "90%", margin: 1 },
 	});
 }
 
@@ -1204,8 +1411,8 @@ function parallelEntries(workers: WorkerStatus[], artifactsByWorker: Map<string,
 	});
 }
 
-async function readWorkersWithArtifacts(store = createWorkerStore()): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }> {
-	const workers = await store.list();
+async function readWorkersWithArtifacts(store = createWorkerStore(), projectRoot?: string): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }> {
+	const workers = await store.list({ ...(projectRoot ? { projectRoot } : {}) });
 	const artifactsByWorker = new Map<string, Artifact[]>();
 	await Promise.all(workers.map(async (worker) => {
 		artifactsByWorker.set(worker.id, await readWorkerArtifactsForReview(worker));
@@ -1213,12 +1420,23 @@ async function readWorkersWithArtifacts(store = createWorkerStore()): Promise<{ 
 	return { workers, artifactsByWorker };
 }
 
-function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): string {
+function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options: { groupByProject?: boolean } = {}): string {
 	const entries = parallelEntries(workers, artifactsByWorker, "all", "all", new Set());
 	if (workers.length === 0) return "No Trail workers";
 	const header = `${workers.length} workers · ${entries.length} artifacts`;
-	const lines = entries.slice(0, 20).map((entry) => `${workerSourceLabel(entry.worker)}\t${entry.artifact.kind}\t${entry.artifact.displayId}\t${entry.artifact.title}`);
-	return [header, ...lines].join("\n");
+	if (!options.groupByProject) {
+		const lines = entries.slice(0, 20).map((entry) => `${workerSourceLabel(entry.worker)}\t${entry.artifact.kind}\t${entry.artifact.displayId}\t${entry.artifact.title}`);
+		return [header, ...lines].join("\n");
+	}
+	const projects = [...new Set(workers.map(workerProjectKey))].sort();
+	const lines: string[] = [header];
+	for (const project of projects) {
+		lines.push(`project: ${project}`);
+		for (const entry of entries.filter((candidate) => workerProjectKey(candidate.worker) === project).slice(0, 20)) {
+			lines.push(`${workerSourceLabel(entry.worker)}\t${entry.artifact.kind}\t${entry.artifact.displayId}\t${entry.artifact.title}`);
+		}
+	}
+	return lines.join("\n");
 }
 
 class TrailParallelWorkView implements Component {
@@ -1234,6 +1452,7 @@ class TrailParallelWorkView implements Component {
 		private workers: WorkerStatus[],
 		private artifactsByWorker: Map<string, Artifact[]>,
 		private done: (result: ParallelWorkAction) => void,
+		private groupByProject = false,
 	) {}
 
 	private entries(): ParallelWorkEntry[] {
@@ -1241,7 +1460,9 @@ class TrailParallelWorkView implements Component {
 	}
 
 	private activityRows(): WorkerActivityRow[] {
-		return workerActivityRows(this.workers, this.artifactsByWorker);
+		const rows = workerActivityRows(this.workers, this.artifactsByWorker);
+		if (!this.groupByProject) return rows;
+		return [...rows].sort((a, b) => workerProjectKey(a.worker).localeCompare(workerProjectKey(b.worker)));
 	}
 
 	private selectedWorker(): WorkerStatus | undefined {
@@ -1341,7 +1562,19 @@ class TrailParallelWorkView implements Component {
 			this.container.addChild(new Spacer(1));
 		} else {
 			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 14)}  ${fitColumn("task", Math.max(14, Math.min(40, listWidth - 64)))}  ${fitColumn("result", 32)}  action`), 1, 0));
-			for (const line of renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected)) this.container.addChild(new Text(line, 1, 0));
+			const renderedRows = renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected);
+			let previousProject: string | undefined;
+			for (let i = 0; i < activityRows.length; i++) {
+				const row = activityRows[i]!;
+				if (this.groupByProject) {
+					const project = workerProjectKey(row.worker);
+					if (project !== previousProject) {
+						previousProject = project;
+						this.container.addChild(new Text(truncateToWidth(` ${muted("project:")} ${dim(project)}`, listWidth - 2), 1, 0));
+					}
+				}
+				this.container.addChild(new Text(renderedRows[i]!, 1, 0));
+			}
 			addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
 		}
 
@@ -1359,8 +1592,8 @@ class TrailParallelWorkView implements Component {
 
 }
 
-async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): Promise<ParallelWorkAction> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new TrailParallelWorkView(tui, theme, workers, artifactsByWorker, done), {
+async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, groupByProject = false): Promise<ParallelWorkAction> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new TrailParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -1638,8 +1871,8 @@ type QueueConsume = (checkpoint: CheckpointIndexEntry) => void;
 
 type CompletionCandidate = { value: string; label: string };
 
-async function checkpointAndWorkerCandidates(subcommand: string): Promise<CompletionCandidate[]> {
-	const workerOnly = subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use";
+async function checkpointAndWorkerCandidates(subcommand: string, projectRoot?: string): Promise<CompletionCandidate[]> {
+	const workerOnly = subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use" || subcommand === "verdict";
 	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete" || workerOnly;
 	const wantCheckpoints = subcommand !== "unload" && !workerOnly;
 	const out: CompletionCandidate[] = [];
@@ -1657,7 +1890,7 @@ async function checkpointAndWorkerCandidates(subcommand: string): Promise<Comple
 		} catch { /* ignore */ }
 	}
 
-	if (wantWorkers) out.push(...await workerCompletionCandidates(createWorkerStore()));
+	if (wantWorkers) out.push(...await workerCompletionCandidates(createWorkerStore(), { ...(projectRoot ? { projectRoot } : {}) }));
 
 	if (subcommand === "unload") out.unshift({ value: "all", label: "all  drop every loaded slot" });
 
@@ -1768,6 +2001,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	let workerDockPending = false;
 	let workerDockRunning = false;
 	let workerDockIdleHideMs = 0;
+	let sessionProjectKey: string | undefined;
 	let dockAnimTimer: NodeJS.Timeout | undefined;
 	let dockTui: TUI | undefined;
 	const stopDockAnimation = (): void => {
@@ -2077,8 +2311,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
 			await reconcileOrphanedWorkers(allWorkers);
 			const now = Date.now();
-			const workers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
-			if (workers.length === 0) {
+			const promptWorkers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
+			const key = sessionProjectKey ?? projectKey(ctx.cwd);
+			const workers = promptWorkers.filter((worker) => workerInProject(worker, key));
+			const otherWorkers = promptWorkers.filter((worker) => !workerInProject(worker, key));
+			const otherProjectCount = new Set(otherWorkers.map(workerProjectKey)).size;
+			if (workers.length === 0 && otherWorkers.length === 0) {
 				stopDockAnimation();
 				ctx.ui.setWidget("trail-workers", undefined);
 				return;
@@ -2103,12 +2341,14 @@ export default function trailExtension(pi: ExtensionAPI) {
 						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
 						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos;
 						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
-						const summary = attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker");
+						const summary = counts.workers > 0 ? (attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker")) : "no workers in this project";
 						const heading = `${accent(theme.bold("trail"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
+						const breadcrumb = otherWorkers.length > 0 ? dim(`↗ ${otherWorkers.length} worker${otherWorkers.length === 1 ? "" : "s"} in ${otherProjectCount} other project${otherProjectCount === 1 ? "" : "s"} · /trail workers --all`) : undefined;
 						return [
 							truncateToWidth(heading, width, ""),
 							...renderDockRows(theme, dockRows, rowWidth, renderNow),
+							...(breadcrumb ? [truncateToWidth(breadcrumb, width, "")] : []),
 						];
 					},
 					invalidate() {},
@@ -2144,7 +2384,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 	const refreshWorkerCarryoverForReview = async (): Promise<void> => {
 		if (workerId) return;
 		try {
-			const workers = await createWorkerStore().list();
+			const workers = await createWorkerStore().list({ ...(sessionProjectKey ? { projectRoot: sessionProjectKey } : {}) });
 			await Promise.all(workers.map(async (worker) => {
 				loadedArtifacts.unloadSource("worker", worker.id);
 				await loadedArtifacts.loadSource({ kind: "worker", worker });
@@ -2438,6 +2678,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
+		sessionProjectKey = projectKey(ctx.cwd);
 		pinnedRefs = new Set();
 		completedRefs = new Set();
 		loadedArtifacts.reset();
@@ -2483,6 +2724,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		workerDockPending = false;
 		workerDockRunning = false;
 		workerDockIdleHideMs = 0;
+		sessionProjectKey = undefined;
 		if (workerId) {
 			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
 		}
@@ -2531,11 +2773,11 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 			const subcommand = trimmed.slice(0, firstSpace);
 			const rest = trimmed.slice(firstSpace + 1);
-			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use") {
+			if (subcommand === "load" || subcommand === "unload" || subcommand === "delete" || subcommand === "continue" || subcommand === "resume" || subcommand === "tell" || subcommand === "ask" || subcommand === "result" || subcommand === "use" || subcommand === "verdict") {
 				const lastSpace = rest.lastIndexOf(" ");
 				const partial = lastSpace === -1 ? rest : rest.slice(lastSpace + 1);
 				const completed = lastSpace === -1 ? "" : `${rest.slice(0, lastSpace + 1)}`;
-				const candidates = await checkpointAndWorkerCandidates(subcommand);
+				const candidates = await checkpointAndWorkerCandidates(subcommand, activeCtx ? projectKey(activeCtx.cwd) : undefined);
 				const matches = candidates.filter((c) => c.value.toLowerCase().startsWith(partial.toLowerCase()));
 				const items = matches.map((c) => ({ value: `${subcommand} ${completed}${c.value}`, label: c.label }));
 				return items.length ? items : null;
@@ -2560,6 +2802,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				store: workerStore,
 				loadedArtifacts,
 				cwd: ctx.cwd,
+				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
@@ -2582,6 +2825,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			await createTrailCommandRouter({
 				hasUI: ctx.hasUI,
 				workerId,
+				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				workerCommands,
 				checkpointCommands,
 				loadedArtifacts,
@@ -2630,11 +2874,12 @@ export default function trailExtension(pi: ExtensionAPI) {
 					const config = await loadConfig(ctx.cwd);
 					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 				},
-				readWorkersWithArtifacts: () => readWorkersWithArtifacts(workerStore),
-				showParallelWorkDashboard: (workers, artifactsByWorker) => showParallelWorkDashboard(ctx, workers, artifactsByWorker),
+				readWorkersWithArtifacts: (options) => readWorkersWithArtifacts(workerStore, options?.allProjects ? undefined : sessionProjectKey ?? projectKey(ctx.cwd)),
+				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true),
 				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
 				showText: (title, text) => showTextViewer(ctx, title, text),
 				showTrailBrowser: (catalog, artifacts, initialMode) => showTrailBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
+				showVerdict: (worker) => showWorkerVerdict(ctx, worker),
 				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),
 				openFileOrArtifact: async (catalog, artifact) => {
 					const filePath = artifactFilePath(artifact, ctx.cwd);
@@ -2642,6 +2887,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 					else await showArtifactViewer(ctx, catalog, artifact);
 				},
 				input: (title, placeholder) => ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined),
+				confirmDeleteWorker: (worker) => ctx.hasUI ? ctx.ui.confirm("Stop Trail worker?", `Stop ${workerSourceLabel(worker)} and remove its workspace? This cannot be undone.`) : Promise.resolve(true),
 				copyText: copyToClipboard,
 				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),
 				parallelKindLabel,

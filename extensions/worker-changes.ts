@@ -16,6 +16,7 @@ export type WorkerChangeSet = {
 	files: WorkerChangedFile[];
 	stat: string;
 	patch: string;
+	hunkCount: number;
 };
 
 export type PromoteWorkerChangeSetResult =
@@ -77,7 +78,8 @@ export function readWorkerChangeSet(worker: WorkerStatus): WorkerChangeSet | und
 	if (!patch?.trim()) return undefined;
 	const stat = gitOutput(workspace, ["diff", "--cached", "--stat", "--compact-summary", "HEAD"])?.trimEnd() ?? "";
 	const files = parseNumstat(gitOutput(workspace, ["diff", "--cached", "--numstat", "HEAD"])?.trimEnd() ?? "");
-	return { workerId: worker.id, workerLabel: workerSourceLabel(worker), files, stat, patch };
+	const hunkCount = patch.match(/^@@ /gm)?.length ?? 0;
+	return { workerId: worker.id, workerLabel: workerSourceLabel(worker), files, stat, patch, hunkCount };
 }
 
 export function workerChangeSetArtifact(worker: WorkerStatus): Artifact | undefined {
@@ -115,6 +117,7 @@ export function workerChangeSetArtifact(worker: WorkerStatus): Artifact | undefi
 			workerStatus: "ready",
 			changedFiles: changeSet.files,
 			diffStat: changeSet.stat,
+			hunkCount: changeSet.hunkCount,
 		},
 	};
 }

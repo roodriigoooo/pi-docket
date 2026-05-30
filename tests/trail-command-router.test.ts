@@ -107,9 +107,11 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		showLoadPicker: async () => null,
 		showText: async () => { calls.push("showText"); },
 		showTrailBrowser: async () => null,
+		showVerdict: async () => null,
 		showArtifact: async () => { calls.push("showArtifact"); },
 		openFileOrArtifact: async () => { calls.push("openFileOrArtifact"); },
 		input: async () => undefined,
+		confirmDeleteWorker: async () => true,
 		copyText: async () => { calls.push("copyText"); return true; },
 		announceChipChange: () => { calls.push("announceChip"); },
 		parallelKindLabel: (kind) => kind,
@@ -152,4 +154,17 @@ test("Trail Command Router handles artifact ref chips through context", async ()
 	const { calls, router } = harness();
 	await router.handle({ kind: "artifact", action: "ref", idOrRef: "a1" });
 	assert.deepEqual(calls, ["done:command:1", "toggleChip", "refreshChips", "announceChip"]);
+});
+
+test("Trail Command Router verdict accept approves waiting worker without loading artifacts", async () => {
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
+	const { calls, router } = harness({
+		hasUI: true,
+		workerStore: { find: async () => waiting, list: async () => [waiting], readArtifacts: async () => [] } as unknown as WorkerStore,
+		showVerdict: async () => ({ verb: "accept", worker: waiting }),
+	});
+
+	await router.handle({ kind: "verdict", worker: "w2" });
+
+	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
 });

@@ -1,6 +1,6 @@
-import { workerQuestions, workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, workerQuestions, workerSourceLabel, workerStatusArtifact, workerSummaryName, type WorkerStatus } from "./background-work.js";
 import { workerResultArtifact, workerResultText } from "./worker-result.js";
-import { isSharedSessionTarget, SHARED_TMUX_SESSION } from "./worker-store.js";
+import { isSharedSessionTarget, SHARED_TMUX_SESSION, workerInProject } from "./worker-store.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
@@ -9,9 +9,16 @@ import type { NavigatorMode } from "./trail-navigator.js";
 import type { CheckpointCreateOptions, TrailIntent } from "./trail-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
+import { workerChangeSetArtifact } from "./worker-changes.js";
 import type { WorkerStore } from "./worker-store.js";
 
-export type TrailBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker"; artifact?: Artifact };
+export type TrailBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
+
+export type TrailVerdictAction = {
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff";
+	worker: WorkerStatus;
+	changeSet?: Artifact;
+};
 
 export type ParallelWorkEntry = {
 	worker: WorkerStatus;
@@ -35,6 +42,7 @@ type TrailMessageKind = "notice" | "success" | "error" | "usage" | "list" | "act
 export type TrailCommandRouterDeps = {
 	hasUI: boolean;
 	workerId?: string;
+	projectRoot?: string;
 	workerCommands: WorkerCommands;
 	checkpointCommands: CheckpointCommands;
 	loadedArtifacts: LoadedArtifactContext;
@@ -45,7 +53,7 @@ export type TrailCommandRouterDeps = {
 	announce(subject: string, detail?: string, kind?: TrailMessageKind): void;
 	trailUsage(advanced?: boolean): string;
 	renderArtifactList(artifacts: Artifact[]): string;
-	renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): string;
+	renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): string;
 	formatArtifact(artifact: Artifact): string;
 	refreshChipWidget(): void;
 	refreshWorkerDockWidget(): Promise<void>;
@@ -58,14 +66,16 @@ export type TrailCommandRouterDeps = {
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
 	createHandoffCheckpoint(): Promise<void>;
 	catalog(): Promise<ArtifactCatalog>;
-	readWorkersWithArtifacts(): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }>;
-	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>): Promise<ParallelWorkAction>;
+	readWorkersWithArtifacts(options?: { allProjects?: boolean }): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }>;
+	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): Promise<ParallelWorkAction>;
 	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection>;
 	showText(title: string, text: string): Promise<void>;
 	showTrailBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<TrailBrowserAction | null>;
+	showVerdict(worker: WorkerStatus): Promise<TrailVerdictAction | null>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	openFileOrArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	input(title: string, placeholder: string): Promise<string | undefined>;
+	confirmDeleteWorker(worker: WorkerStatus): Promise<boolean>;
 	copyText(text: string): Promise<boolean>;
 	announceChipChange(artifact: Artifact, mode: "ref" | "full", result: ReturnType<LoadedArtifactContext["toggleChip"]>): void;
 	parallelKindLabel(kind: Artifact["kind"]): string;
@@ -152,6 +162,87 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 		await deps.refreshWorkerDockWidget();
 	};
 
+	const projectWorker = (worker: WorkerStatus): boolean => !deps.projectRoot || workerInProject(worker, deps.projectRoot);
+
+	const workerHasChangeSet = (worker: WorkerStatus): Artifact | undefined => {
+		const state = deriveWorkerState(worker);
+		if (state !== "ready" && state !== "ready_open_todos") return undefined;
+		return workerChangeSetArtifact(worker);
+	};
+
+	const verdictCandidateRank = (worker: WorkerStatus): number => {
+		const state = deriveWorkerState(worker);
+		if (state === "needs_input") return 0;
+		if (state === "failed") return 1;
+		if (workerHasChangeSet(worker)) return 2;
+		if (state === "ready" || state === "ready_open_todos") return 3;
+		return 100;
+	};
+
+	const findVerdictWorker = async (ref?: string): Promise<WorkerStatus | undefined> => {
+		if (ref) {
+			const worker = await deps.workerStore.find(ref);
+			return worker && projectWorker(worker) ? worker : undefined;
+		}
+		const workers = await deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });
+		return workers
+			.map((worker) => ({ worker, rank: verdictCandidateRank(worker) }))
+			.filter((entry) => entry.rank < 100)
+			.sort((a, b) => a.rank - b.rank || Date.parse(b.worker.updatedAt) - Date.parse(a.worker.updatedAt))[0]?.worker;
+	};
+
+	const runVerdict = async (worker: WorkerStatus): Promise<void> => {
+		if (!deps.hasUI) {
+			deps.notify("Trail verdict needs UI. Use /trail tell, /trail load, or /trail delete.", "error");
+			return;
+		}
+		while (true) {
+			const result = await deps.showVerdict(worker);
+			if (!result) return;
+			const latest = await deps.workerStore.find(result.worker.id) ?? result.worker;
+			const label = workerSourceLabel(latest);
+			const state = deriveWorkerState(latest);
+			const changeSet = result.changeSet ?? workerHasChangeSet(latest);
+			const statusArtifact = workerStatusArtifact(latest);
+			if (result.verb === "diff") {
+				if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet));
+				continue;
+			}
+			if (result.verb === "rejectStop") {
+				if (!(await deps.confirmDeleteWorker(latest))) return;
+				await deps.workerCommands.delete(label);
+				await deps.refreshWorkerDockWidget();
+				return;
+			}
+			if (result.verb === "chat") {
+				const text = (await deps.input(`Chat ${label}`, "message to worker"))?.trim();
+				if (!text) return;
+				await deps.workerCommands.tell(label, changeSet ? `revise: ${text}` : text);
+				await deps.refreshWorkerDockWidget();
+				return;
+			}
+			if (result.verb === "accept") {
+				if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
+				else if (state === "failed") await deps.workerCommands.respawn(label);
+				else if (changeSet) {
+					if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
+				} else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+				await deps.refreshWorkerDockWidget();
+				return;
+			}
+			if (result.verb === "reject") {
+				if (state === "needs_input") {
+					const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
+					if (!text) return;
+					await deps.workerCommands.tell(label, text);
+				} else if (changeSet) deps.markArtifactDone(changeSet);
+				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+				await deps.refreshWorkerDockWidget();
+				return;
+			}
+		}
+	};
+
 	return {
 		async handle(intent: TrailIntent): Promise<void> {
 			if (intent.kind === "help") {
@@ -174,6 +265,16 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 
 			if (intent.kind === "tell") {
 				await tellWorker(intent.worker, intent.text);
+				return;
+			}
+
+			if (intent.kind === "verdict") {
+				const worker = await findVerdictWorker(intent.worker);
+				if (!worker) {
+					deps.notify("Trail worker needing verdict not found", "warning");
+					return;
+				}
+				await runVerdict(worker);
 				return;
 			}
 
@@ -221,7 +322,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "list") {
-				if (intent.workers === true) await deps.workerCommands.list();
+				if (intent.workers === true) await deps.workerCommands.list({ allProjects: intent.allProjects === true });
 				else await deps.checkpointCommands.list(intent.includeConsumed === true);
 				return;
 			}
@@ -244,13 +345,14 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			}
 
 			if (intent.kind === "workers") {
-				const { workers, artifactsByWorker } = await deps.readWorkersWithArtifacts();
+				const { workers, artifactsByWorker } = await deps.readWorkersWithArtifacts({ allProjects: intent.allProjects === true });
+				const groupByProject = intent.allProjects === true;
 				if (!deps.hasUI) {
-					deps.emitText(deps.renderParallelWorkList(workers, artifactsByWorker), "list", "trail · parallel work");
+					deps.emitText(deps.renderParallelWorkList(workers, artifactsByWorker, { groupByProject }), "list", "trail · parallel work");
 					return;
 				}
 				while (true) {
-					const result = await deps.showParallelWorkDashboard(workers, artifactsByWorker);
+					const result = await deps.showParallelWorkDashboard(workers, artifactsByWorker, { groupByProject });
 					if (!result) return;
 					if (result.action === "peek") {
 						await deps.showText(`${workerSourceLabel(result.entry.worker)} · ${deps.parallelKindLabel(result.entry.artifact.kind)}`, deps.formatArtifact(result.entry.artifact));
@@ -313,7 +415,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				} else {
 					const [summaries, workers] = await Promise.all([
 						deps.checkpointStore.listSummaries(opts),
-						deps.workerStore.list(),
+						deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) }),
 					]);
 					if (summaries.length === 0 && workers.length === 0) {
 						deps.notify("Trail has nothing to load — try /trail checkpoint or /trail spawn", "error");
@@ -461,6 +563,16 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						continue;
 					}
 					await tellWorker(workerRef, undefined, result.artifact);
+					return;
+				}
+				if (result.action === "verdict" && result.artifact) {
+					const workerId = trailMetaString(result.artifact, "workerId") ?? artifactWorkerRef(result.artifact);
+					const worker = workerId ? await findVerdictWorker(workerId) : undefined;
+					if (!worker) {
+						deps.notify("Trail worker not found for this item", "error");
+						continue;
+					}
+					await runVerdict(worker);
 					return;
 				}
 				if (!result.artifact) return;

@@ -43,10 +43,11 @@ test("Trail grammar parses load and unload commands", () => {
 	if (!invalid.ok) assert.match(invalid.message, /Usage: \/trail unload/);
 });
 
-test("Trail grammar parses list with --include-consumed and --workers", () => {
+test("Trail grammar parses list with --include-consumed, --workers, and --all", () => {
 	assert.deepEqual(parseTrailCommand("list"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: false } });
 	assert.deepEqual(parseTrailCommand("list --include-consumed"), { ok: true, intent: { kind: "list", includeConsumed: true, workers: false } });
 	assert.deepEqual(parseTrailCommand("list --workers"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: true } });
+	assert.deepEqual(parseTrailCommand("list --all"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: true, allProjects: true } });
 });
 
 test("Trail grammar parses spawn", () => {
@@ -60,8 +61,9 @@ test("Trail grammar parses spawn", () => {
 
 test("Trail grammar parses workers dashboard", () => {
 	assert.deepEqual(parseTrailCommand("workers"), { ok: true, intent: { kind: "workers" } });
+	assert.deepEqual(parseTrailCommand("workers --all"), { ok: true, intent: { kind: "workers", allProjects: true } });
 	assert.ok(TRAIL_COMMANDS.includes("workers"));
-	assert.match(trailUsage(true), /\/trail workers/);
+	assert.match(trailUsage(true), /\/trail workers \[--all\]/);
 	const invalid = parseTrailCommand("workers extra");
 	assert.equal(invalid.ok, false);
 });
@@ -82,15 +84,18 @@ test("Trail grammar parses kinds + respawn", () => {
 	assert.equal(invalid.ok, false);
 });
 
-test("Trail grammar parses worker tell and attention commands", () => {
+test("Trail grammar parses worker tell, verdict, and attention commands", () => {
 	assert.deepEqual(parseTrailCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseTrailCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });
 	assert.deepEqual(parseTrailCommand("ask w1 nope"), { ok: true, intent: { kind: "tell", worker: "w1", text: "nope" } });
+	assert.deepEqual(parseTrailCommand("verdict"), { ok: true, intent: { kind: "verdict" } });
+	assert.deepEqual(parseTrailCommand("verdict w1"), { ok: true, intent: { kind: "verdict", worker: "w1" } });
 	assert.deepEqual(parseTrailCommand("wait should I include checkpoints?"), { ok: true, intent: { kind: "worker-state", state: "needs_input", text: "should I include checkpoints?" } });
 	assert.deepEqual(parseTrailCommand("done summary ready"), { ok: true, intent: { kind: "worker-state", state: "ready", text: "summary ready" } });
 	assert.deepEqual(parseTrailCommand("done"), { ok: true, intent: { kind: "worker-state", state: "ready", text: undefined } });
 	assert.deepEqual(parseTrailCommand("fail model timed out"), { ok: true, intent: { kind: "worker-state", state: "failed", text: "model timed out" } });
 	assert.ok(TRAIL_COMMANDS.includes("tell"));
+	assert.ok(TRAIL_COMMANDS.includes("verdict"));
 	assert.match(trailUsage(), /\/trail tell w<N> \[text\]/);
 	assert.match(trailUsage(true), /\/trail tell w<N> \[text\]/);
 	assert.equal(parseTrailCommand("reply w1 nope").ok, false);

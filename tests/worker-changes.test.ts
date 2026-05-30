@@ -83,6 +83,27 @@ test("promote worker change set applies whole patch to parent", async () => {
 	}
 });
 
+test("promote worker change set applies copied workspace patch outside git repos", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "trail-worker-copy-promote-"));
+	const workspace = path.join(os.tmpdir(), `${path.basename(root)}-workspace`);
+	try {
+		await writeFile(path.join(root, "app.txt"), "one\n", "utf8");
+		const created = createWorkerWorkspace(root, workspace);
+		assert.equal(created.kind, "copy");
+		await writeFile(path.join(workspace, "app.txt"), "one\ntwo\n", "utf8");
+		await writeFile(path.join(workspace, "new.txt"), "new\n", "utf8");
+
+		const result = promoteWorkerChangeSet({ ...worker(root, workspace, created.snapshotHead ?? ""), worktree: created }, root);
+
+		assert.equal(result.ok, true, result.message);
+		assert.equal(await readFile(path.join(root, "app.txt"), "utf8"), "one\ntwo\n");
+		assert.equal(await readFile(path.join(root, "new.txt"), "utf8"), "new\n");
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("promote does not warn when parent still matches dirty spawn snapshot", async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), "trail-worker-dirty-promote-"));
 	const workspace = path.join(os.tmpdir(), `${path.basename(root)}-workspace`);

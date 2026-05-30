@@ -77,7 +77,7 @@ test("Navigator Review queue ranks attention before timestamp", () => {
 	const view = navigatorViewModel(initialNavigatorState(), artifacts);
 
 	assert.deepEqual(view.items.map((item) => item.artifact.id), ["question", "error"]);
-	assert.equal(view.items[0]?.primaryAction, "tellWorker");
+	assert.equal(view.items[0]?.primaryAction, "openVerdict");
 	assert.equal(view.items[0]?.reasonId, "workerNeedsInput");
 });
 
@@ -151,7 +151,7 @@ test("Worker needs input card surfaces question as bullet and needs-decision cat
 
 	assert.equal(item.category, "needs-decision");
 	assert.equal(item.statusChip, "needs reply");
-	assert.equal(item.primaryAction, "tellWorker");
+	assert.equal(item.primaryAction, "openVerdict");
 	assert.ok(item.headline.startsWith("w2 needs input"), `headline=${item.headline}`);
 });
 
@@ -171,6 +171,7 @@ test("Worker failed card maps to failed-blocked", () => {
 
 	assert.equal(item.category, "failed-blocked");
 	assert.equal(item.statusChip, "failed");
+	assert.equal(item.primaryAction, "openVerdict");
 	assert.ok(item.headline.startsWith("w3 failed"), `headline=${item.headline}`);
 });
 
@@ -209,7 +210,7 @@ test("Worker change set artifact maps to promoteable patch card", () => {
 
 	assert.equal(item.category, "patch-proposed");
 	assert.equal(item.statusChip, "change set");
-	assert.equal(item.primaryAction, "inspect");
+	assert.equal(item.primaryAction, "openVerdict");
 	assert.equal(item.actions.includes("promoteWorker"), true);
 });
 

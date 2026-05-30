@@ -38,9 +38,13 @@ export type WorkerQuestion = {
 	answeredAt?: string;
 };
 
+export type WorkerWorkspaceKind = "git" | "copy";
+
 export type WorkerWorktree = {
 	path: string;
 	baseCwd: string;
+	/** Omitted on legacy statuses; treat as git worktree. */
+	kind?: WorkerWorkspaceKind;
 	baseRoot?: string;
 	parentCwd?: string;
 	baseHead?: string;
@@ -55,6 +59,8 @@ export type WorkerStatus = {
 	tmuxWindowId?: string;
 	task: string;
 	cwd: string;
+	/** Canonical project root (git toplevel realpath, or cwd realpath for non-repos) that launched this worker. */
+	projectRoot?: string;
 	kind?: string;
 	parentWorkerId?: string;
 	depth?: number;

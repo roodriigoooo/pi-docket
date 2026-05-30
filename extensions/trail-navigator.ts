@@ -12,6 +12,7 @@ export type ReviewActionId =
 	| "openFile"
 	| "promoteWorker"
 	| "tellWorker"
+	| "openVerdict"
 	| "attachReference"
 	| "injectFull"
 	| "copyArtifact"
@@ -266,8 +267,9 @@ export function reviewCategoryLabel(category: ReviewCategory | undefined): strin
 }
 
 function primaryAction(artifact: Artifact): ReviewActionId {
-	if (artifactWorkerStatus(artifact) === "needs_input") return "tellWorker";
-	if (isWorkerChangeSet(artifact)) return "inspect";
+	const status = artifactWorkerStatus(artifact);
+	if (status === "needs_input" || status === "failed") return "openVerdict";
+	if (isWorkerChangeSet(artifact)) return "openVerdict";
 	if (artifact.kind === "file" && !artifactHasDiff(artifact)) return "openFile";
 	return "inspect";
 }
@@ -402,6 +404,8 @@ function cardProvenance(artifact: Artifact): string {
 
 function reviewActions(artifact: Artifact): ReviewActionId[] {
 	const actions: ReviewActionId[] = ["inspect"];
+	const status = artifactWorkerStatus(artifact);
+	if (status === "needs_input" || status === "failed" || isWorkerChangeSet(artifact)) actions.push("openVerdict");
 	if (isWorkerChangeSet(artifact)) actions.push("promoteWorker");
 	if (artifact.kind === "file") actions.push("openFile");
 	if (artifactWorkerRef(artifact)) actions.push("tellWorker");

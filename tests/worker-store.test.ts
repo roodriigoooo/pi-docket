@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, readWorkerStatusSync, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
+import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, projectKey, readWorkerStatusSync, workerInProject, workerProjectKey, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
 
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
@@ -30,6 +30,8 @@ async function seedWorker(root: string, partial: Partial<WorkerStatus> & { id: s
 		createdAt: partial.createdAt ?? "2026-05-01T00:00:00.000Z",
 		updatedAt: partial.updatedAt ?? "2026-05-01T00:00:00.000Z",
 		state: partial.state ?? "active",
+		...(partial.projectRoot ? { projectRoot: partial.projectRoot } : {}),
+		...(partial.worktree ? { worktree: partial.worktree } : {}),
 		...(partial.parentWorkerId ? { parentWorkerId: partial.parentWorkerId } : {}),
 		...(typeof partial.depth === "number" ? { depth: partial.depth } : {}),
 		...(partial.kind ? { kind: partial.kind } : {}),
@@ -126,12 +128,59 @@ test("worker workspace is seeded from parent dirty state", async () => {
 		const created = createWorkerWorkspace(tmp, workspace);
 
 		assert.equal(created?.path, workspace);
+		assert.equal(created?.kind, "git");
 		assert.ok(created?.snapshotHead);
 		assert.equal(await readFile(path.join(workspace, "tracked.txt"), "utf8"), "one\nparent dirty\n");
 		assert.equal(await readFile(path.join(workspace, "untracked.txt"), "utf8"), "parent untracked\n");
 		assert.equal(spawnSync("git", ["diff", "--quiet", "HEAD", "--"], { cwd: workspace }).status, 0);
 	} finally {
 		spawnSync("git", ["worktree", "remove", "--force", workspace], { cwd: tmp, stdio: "ignore" });
+		await rm(tmp, { recursive: true, force: true });
+	}
+});
+
+test("worker workspace falls back to copied git baseline for unborn repos", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-worker-unborn-test-"));
+	const workspace = path.join(os.tmpdir(), `${path.basename(tmp)}-workspace`);
+	try {
+		await rm(workspace, { recursive: true, force: true });
+		const git = (args: string[]) => {
+			const result = spawnSync("git", args, { cwd: tmp, encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr || result.error?.message);
+			return result.stdout.trim();
+		};
+		git(["init"]);
+		await writeFile(path.join(tmp, "draft.txt"), "unborn\n", "utf8");
+
+		const created = createWorkerWorkspace(tmp, workspace);
+
+		assert.equal(created.kind, "copy");
+		assert.equal(await realpath(created.baseRoot!), await realpath(tmp));
+		assert.ok(created.snapshotHead);
+		assert.equal(await readFile(path.join(workspace, "draft.txt"), "utf8"), "unborn\n");
+		assert.equal(spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: workspace }).status, 0);
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
+		await rm(tmp, { recursive: true, force: true });
+	}
+});
+
+test("worker workspace falls back to copied git baseline outside repos", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-worker-nonrepo-test-"));
+	const workspace = path.join(os.tmpdir(), `${path.basename(tmp)}-workspace`);
+	try {
+		await rm(workspace, { recursive: true, force: true });
+		await writeFile(path.join(tmp, "notes.txt"), "plain\n", "utf8");
+
+		const created = createWorkerWorkspace(tmp, workspace);
+
+		assert.equal(created.kind, "copy");
+		assert.equal(await realpath(created.baseRoot!), await realpath(tmp));
+		assert.ok(created.snapshotHead);
+		assert.equal(await readFile(path.join(workspace, "notes.txt"), "utf8"), "plain\n");
+		assert.equal(spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: workspace }).status, 0);
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
 		await rm(tmp, { recursive: true, force: true });
 	}
 });
@@ -192,6 +241,74 @@ test("worker store list sorts by createdAt", async () => {
 		await seedWorker(root, { id: "newer-b", index: 2, createdAt: "2026-05-01T00:00:00.000Z" });
 		const list = await store.list();
 		assert.deepEqual(list.map((w) => w.id), ["older-a", "newer-b"]);
+	});
+});
+
+test("projectKey returns git toplevel or realpath cwd", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-project-key-test-"));
+	const outside = await mkdtemp(path.join(os.tmpdir(), "trail-project-key-outside-"));
+	try {
+		const git = (args: string[], cwd = tmp) => {
+			const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+			assert.equal(result.status, 0, result.stderr || result.error?.message);
+		};
+		git(["init"]);
+		await mkdir(path.join(tmp, "src"), { recursive: true });
+		assert.equal(projectKey(path.join(tmp, "src")), await realpath(tmp));
+		assert.equal(projectKey(outside), await realpath(outside));
+		const link = path.join(os.tmpdir(), `${path.basename(tmp)}-link`);
+		await rm(link, { recursive: true, force: true });
+		await symlink(tmp, link);
+		assert.equal(projectKey(path.join(link, "src")), await realpath(tmp));
+		await rm(link, { recursive: true, force: true });
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+		await rm(outside, { recursive: true, force: true });
+	}
+});
+
+test("worker project key falls back through legacy worktree fields", async () => {
+	const project = await mkdtemp(path.join(os.tmpdir(), "trail-worker-project-test-"));
+	const workspace = await mkdtemp(path.join(os.tmpdir(), "trail-worker-workspace-project-test-"));
+	try {
+		const worker = {
+			id: "legacy",
+			index: 1,
+			tmuxSession: "trail-worker-legacy",
+			task: "legacy",
+			cwd: workspace,
+			worktree: { path: workspace, baseCwd: project, baseRoot: project, parentCwd: path.join(project, "src") },
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			state: "active",
+		} as WorkerStatus;
+		assert.equal(workerProjectKey(worker), projectKey(project));
+		assert.equal(workerInProject(worker, projectKey(project)), true);
+	} finally {
+		await rm(project, { recursive: true, force: true });
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("worker store list filters by project root", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		const projectA = await mkdtemp(path.join(os.tmpdir(), "trail-worker-project-a-"));
+		const projectB = await mkdtemp(path.join(os.tmpdir(), "trail-worker-project-b-"));
+		try {
+			await mkdir(root, { recursive: true });
+			await seedWorker(root, { id: "a", index: 1, projectRoot: projectKey(projectA) });
+			await seedWorker(root, { id: "b", index: 2, projectRoot: projectKey(projectB) });
+			await seedWorker(root, { id: "legacy-a", index: 3, cwd: path.join(projectA, "worker"), worktree: { path: path.join(projectA, "worker"), baseCwd: projectA, baseRoot: projectA, parentCwd: projectA } });
+
+			assert.deepEqual((await store.list({ projectRoot: projectKey(projectA) })).map((w) => w.id), ["a", "legacy-a"]);
+			assert.deepEqual((await store.list({ projectRoot: projectKey(projectB) })).map((w) => w.id), ["b"]);
+			assert.equal((await store.list()).length, 3);
+		} finally {
+			await rm(projectA, { recursive: true, force: true });
+			await rm(projectB, { recursive: true, force: true });
+		}
 	});
 });
 

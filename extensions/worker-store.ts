@@ -4,7 +4,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
-import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
@@ -29,7 +29,7 @@ export type WorkerStore = {
 	statusFile(id: string): string;
 	artifactsFile(id: string): string;
 	taskFile(id: string): string;
-	list(): Promise<WorkerStatus[]>;
+	list(options?: { projectRoot?: string }): Promise<WorkerStatus[]>;
 	find(id: string): Promise<WorkerStatus | undefined>;
 	readArtifacts(id: string): Promise<Artifact[]>;
 	writeStatus(snapshot: WorkerStatus): Promise<void>;
@@ -164,6 +164,28 @@ function gitOutput(cwd: string, args: string[], options: { input?: string; env?:
 	return result.stdout.trim() || undefined;
 }
 
+function realpathKey(value: string): string {
+	const resolved = path.resolve(value);
+	try {
+		return fsSync.realpathSync.native(resolved);
+	} catch {
+		try { return fsSync.realpathSync(resolved); } catch { return resolved; }
+	}
+}
+
+export function projectKey(cwd: string): string {
+	const root = gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+	return realpathKey(root ?? cwd);
+}
+
+export function workerProjectKey(worker: WorkerStatus): string {
+	return worker.projectRoot ? realpathKey(worker.projectRoot) : projectKey(worker.worktree?.baseRoot ?? worker.worktree?.parentCwd ?? worker.cwd);
+}
+
+export function workerInProject(worker: WorkerStatus, key: string): boolean {
+	return workerProjectKey(worker) === realpathKey(key);
+}
+
 function gitStatus(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): { status: number | null; stderr: string; error?: Error } {
 	const result = spawnSync("git", args, { cwd, encoding: "utf8", input: options.input, env: options.env ? { ...process.env, ...options.env } : undefined, maxBuffer: 20 * 1024 * 1024 });
 	return { status: result.status, stderr: result.stderr.trim(), ...(result.error ? { error: result.error } : {}) };
@@ -186,6 +208,16 @@ function copyUntrackedFiles(baseRoot: string, targetRoot: string): void {
 	}
 }
 
+function copyWorkspaceFiles(sourceRoot: string, targetRoot: string): void {
+	fsSync.rmSync(targetRoot, { recursive: true, force: true });
+	fsSync.mkdirSync(path.dirname(targetRoot), { recursive: true });
+	fsSync.cpSync(sourceRoot, targetRoot, {
+		recursive: true,
+		errorOnExist: false,
+		filter: (source) => !source.split(path.sep).includes(".git"),
+	});
+}
+
 function createBaselineCommit(worktreePath: string, parent: string | undefined): string | undefined {
 	gitStatus(worktreePath, ["add", "-A"]);
 	const changed = gitStatus(worktreePath, ["diff", "--cached", "--quiet", parent ?? "HEAD"]).status !== 0;
@@ -205,14 +237,23 @@ function createBaselineCommit(worktreePath: string, parent: string | undefined):
 	return commit;
 }
 
-export function createWorkerWorkspace(baseCwd: string, target: string): { path: string; baseCwd: string; baseRoot?: string; parentCwd?: string; baseHead?: string; snapshotHead?: string } | undefined {
-	if (gitOutput(baseCwd, ["rev-parse", "--is-inside-work-tree"]) !== "true") return undefined;
-	const baseRoot = gitOutput(baseCwd, ["rev-parse", "--show-toplevel"]);
-	const baseHead = gitOutput(baseCwd, ["rev-parse", "HEAD"]);
-	const result = spawnSync("git", ["worktree", "add", "--detach", target, baseHead ?? "HEAD"], { cwd: baseCwd, encoding: "utf8" });
+function createCopiedWorkspace(baseCwd: string, sourceRoot: string, target: string): WorkerWorktree {
+	copyWorkspaceFiles(sourceRoot, target);
+	gitStatus(target, ["init"]);
+	const snapshotHead = createBaselineCommit(target, undefined);
+	return { kind: "copy", path: target, baseCwd, baseRoot: sourceRoot, parentCwd: baseCwd, ...(snapshotHead ? { baseHead: snapshotHead, snapshotHead } : {}) };
+}
+
+export function createWorkerWorkspace(baseCwd: string, target: string): WorkerWorktree {
+	const inRepo = gitOutput(baseCwd, ["rev-parse", "--is-inside-work-tree"]) === "true";
+	const baseRoot = inRepo ? gitOutput(baseCwd, ["rev-parse", "--show-toplevel"]) : undefined;
+	const root = baseRoot ?? baseCwd;
+	const baseHead = inRepo ? gitOutput(baseCwd, ["rev-parse", "--verify", "HEAD"]) : undefined;
+	if (!inRepo || !baseHead) return createCopiedWorkspace(baseCwd, root, target);
+
+	const result = spawnSync("git", ["worktree", "add", "--detach", target, baseHead], { cwd: baseCwd, encoding: "utf8" });
 	if (result.error || result.status !== 0) throw new Error(result.stderr.trim() || result.error?.message || "git worktree add failed");
 	try {
-		const root = baseRoot ?? baseCwd;
 		const dirtyPatch = gitRawOutput(root, ["diff", "--binary", "HEAD"]);
 		if (dirtyPatch) {
 			const applied = gitStatus(target, ["apply", "--binary", "--whitespace=nowarn"], { input: dirtyPatch });
@@ -220,14 +261,18 @@ export function createWorkerWorkspace(baseCwd: string, target: string): { path: 
 		}
 		copyUntrackedFiles(root, target);
 		const snapshotHead = createBaselineCommit(target, baseHead);
-		return { path: target, baseCwd, baseRoot: root, parentCwd: baseCwd, ...(baseHead ? { baseHead } : {}), ...(snapshotHead ? { snapshotHead } : {}) };
+		return { kind: "git", path: target, baseCwd, baseRoot: root, parentCwd: baseCwd, baseHead, ...(snapshotHead ? { snapshotHead } : {}) };
 	} catch (err) {
-		removeGitWorktree({ path: target, baseCwd });
+		removeWorkerWorkspace({ kind: "git", path: target, baseCwd });
 		throw err;
 	}
 }
 
-function removeGitWorktree(worktree: { path: string; baseCwd: string }): void {
+function removeWorkerWorkspace(worktree: Pick<WorkerWorktree, "path" | "baseCwd" | "kind">): void {
+	if (worktree.kind === "copy") {
+		fsSync.rmSync(worktree.path, { recursive: true, force: true });
+		return;
+	}
 	spawnSync("git", ["worktree", "remove", "--force", worktree.path], { cwd: worktree.baseCwd, stdio: "ignore" });
 }
 
@@ -332,7 +377,7 @@ export function createWorkerStore(): WorkerStore {
 			return path.join(workerDir(id), "task.md");
 		},
 
-		async list(): Promise<WorkerStatus[]> {
+		async list(options: { projectRoot?: string } = {}): Promise<WorkerStatus[]> {
 			const root = workersRoot();
 			let entries: string[];
 			try {
@@ -345,7 +390,9 @@ export function createWorkerStore(): WorkerStore {
 				const status = await readJson<WorkerStatus | undefined>(path.join(root, name, "status.json"), undefined);
 				if (status?.id) out.push(status);
 			}
-			return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+			const projectRoot = options.projectRoot ? projectKey(options.projectRoot) : undefined;
+			const scoped = projectRoot ? out.filter((worker) => workerInProject(worker, projectRoot)) : out;
+			return scoped.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 		},
 
 		async find(id: string): Promise<WorkerStatus | undefined> {
@@ -409,6 +456,7 @@ export function createWorkerStore(): WorkerStore {
 
 		async spawn(input: SpawnInput): Promise<WorkerStatus> {
 			ensureTmux();
+			const projectRoot = projectKey(input.cwd);
 			const id = makeWorkerId(input.task, input.idHint);
 			const dir = workerDir(id);
 			await fs.mkdir(dir, { recursive: true });
@@ -442,6 +490,7 @@ export function createWorkerStore(): WorkerStore {
 				tmuxSession: target,
 				task: input.task,
 				cwd: workerCwd,
+				projectRoot,
 				git: input.git,
 				worktree,
 				createdAt: now,
@@ -457,7 +506,7 @@ export function createWorkerStore(): WorkerStore {
 			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded });
 			const result = launchSharedWindow({ windowName, cwd: workerCwd, command });
 			if (!result.ok) {
-				if (worktree) removeGitWorktree(worktree);
+				if (worktree) removeWorkerWorkspace(worktree);
 				await fs.rm(dir, { recursive: true, force: true });
 				throw new Error(result.error || `tmux failed for ${id}`);
 			}
@@ -520,7 +569,7 @@ export function createWorkerStore(): WorkerStore {
 				}
 			}
 			killTmux(status.tmuxSession, status.tmuxWindowId);
-			if (status.worktree) removeGitWorktree(status.worktree);
+			if (status.worktree) removeWorkerWorkspace(status.worktree);
 			await fs.rm(workerDir(status.id), { recursive: true, force: true });
 			purged.push(status.id);
 			return purged;
