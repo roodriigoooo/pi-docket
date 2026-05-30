@@ -995,13 +995,13 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 	}
 	if (state === "failed") return [
 		{ id: "accept", label: "Retry", description: "relaunch worker" },
-		{ id: "reject", label: "Reject", description: "dismiss" },
+		{ id: "reject", label: "Dismiss", description: "drop from inbox" },
 		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
 		{ id: "chat", label: "Chat", description: "send follow-up" },
 	];
 	return [
-		{ id: "accept", label: "Accept", description: hasChangeSet ? "promote diff into your worktree" : "acknowledge" },
-		{ id: "reject", label: "Reject", description: hasChangeSet ? "discard · keep worktree" : "dismiss" },
+		{ id: "accept", label: hasChangeSet ? "Promote" : "Acknowledge", description: hasChangeSet ? "apply diff into your worktree" : "mark reviewed" },
+		{ id: "reject", label: hasChangeSet ? "Discard" : "Dismiss", description: hasChangeSet ? "drop changes · keep worktree" : "drop from inbox" },
 		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
 		{ id: "chat", label: "Chat", description: hasChangeSet ? "send back for revision" : "send follow-up" },
 	];
@@ -1063,6 +1063,7 @@ class TrailVerdictView implements Component {
 		private worker: WorkerStatus,
 		changeSet: Artifact | undefined,
 		private done: (result: TrailVerdictAction | null) => void,
+		private remaining = 0,
 	) {
 		this.changeSet = changeSet;
 		const question = primaryWorkerQuestion(worker);
@@ -1175,7 +1176,8 @@ class TrailVerdictView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const diffHint = this.changeSet ? "d full diff · " : "";
-		this.container.addChild(new Text(dim(`${diffHint}↑↓ move · Enter select · Esc cancel`), 1, 0));
+		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
+		this.container.addChild(new Text(dim(`${diffHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1183,10 +1185,10 @@ class TrailVerdictView implements Component {
 	}
 }
 
-async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<TrailVerdictAction | null> {
+async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus, remaining = 0): Promise<TrailVerdictAction | null> {
 	const state = deriveWorkerState(worker);
 	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
-	return ctx.ui.custom<TrailVerdictAction | null>((tui, theme, _kb, done) => new TrailVerdictView(tui, theme, worker, changeSet, done), {
+	return ctx.ui.custom<TrailVerdictAction | null>((tui, theme, _kb, done) => new TrailVerdictView(tui, theme, worker, changeSet, done, remaining), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
@@ -2359,6 +2361,10 @@ export default function trailExtension(pi: ExtensionAPI) {
 			const workers = promptWorkers.filter((worker) => workerInProject(worker, key));
 			const otherWorkers = promptWorkers.filter((worker) => !workerInProject(worker, key));
 			const otherProjectCount = new Set(otherWorkers.map(workerProjectKey)).size;
+			const otherWaiting = otherWorkers.filter((worker) => deriveWorkerState(worker, now) === "needs_input").length;
+			const otherFailed = otherWorkers.filter((worker) => deriveWorkerState(worker, now) === "failed").length;
+			const otherReady = otherWorkers.filter((worker) => { const derived = deriveWorkerState(worker, now); return derived === "ready" || derived === "ready_open_todos"; }).length;
+			const otherAttentionLabel = [otherWaiting ? `${otherWaiting} waiting` : "", otherFailed ? `${otherFailed} failed` : "", otherReady ? `${otherReady} ready` : ""].filter(Boolean).join(" · ");
 			if (workers.length === 0 && otherWorkers.length === 0) {
 				stopDockAnimation();
 				ctx.ui.setWidget("trail-workers", undefined);
@@ -2387,7 +2393,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						const summary = counts.workers > 0 ? (attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker")) : "no workers in this project";
 						const heading = `${accent(theme.bold("trail"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
-						const breadcrumb = otherWorkers.length > 0 ? dim(`↗ ${otherWorkers.length} worker${otherWorkers.length === 1 ? "" : "s"} in ${otherProjectCount} other project${otherProjectCount === 1 ? "" : "s"} · /trail workers --all`) : undefined;
+						const breadcrumb = otherWorkers.length > 0 ? dim(`↗ ${otherAttentionLabel || `${otherWorkers.length} worker${otherWorkers.length === 1 ? "" : "s"}`} in ${otherProjectCount} other project${otherProjectCount === 1 ? "" : "s"} · /trail workers --all`) : undefined;
 						return [
 							truncateToWidth(heading, width, ""),
 							...renderDockRows(theme, dockRows, rowWidth, renderNow),
@@ -2922,7 +2928,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 						if (!ok) return false;
 						result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true });
 					}
-					notifyTrail(pi, ctx, result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
+					notifyTrail(pi, ctx, result.ok ? `${result.message} Stop the worker to free its workspace.` : result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
@@ -2944,7 +2950,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
 				showText: (title, text) => showTextViewer(ctx, title, text),
 				showTrailBrowser: (catalog, artifacts, initialMode) => showTrailBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
-				showVerdict: (worker) => showWorkerVerdict(ctx, worker),
+				showVerdict: (worker, remaining) => showWorkerVerdict(ctx, worker, remaining),
 				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),
 				openFileOrArtifact: async (catalog, artifact) => {
 					const filePath = artifactFilePath(artifact, ctx.cwd);

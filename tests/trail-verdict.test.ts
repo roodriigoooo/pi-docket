@@ -45,8 +45,10 @@ test("verdictVerbs adapts labels and semantics by state", () => {
 		["Chat", "type a reply"],
 	]);
 	assert.equal(verdictVerbs("failed", false)[0]?.label, "Retry");
-	assert.match(verdictVerbs("ready", true)[0]?.description ?? "", /promote diff/);
-	assert.match(verdictVerbs("ready", false)[0]?.description ?? "", /acknowledge/);
+	assert.equal(verdictVerbs("failed", false)[1]?.label, "Dismiss");
+	assert.equal(verdictVerbs("ready", true)[0]?.label, "Promote");
+	assert.equal(verdictVerbs("ready", true)[1]?.label, "Discard");
+	assert.equal(verdictVerbs("ready", false)[0]?.label, "Acknowledge");
 });
 
 test("diffBar clamps width and proportions", () => {

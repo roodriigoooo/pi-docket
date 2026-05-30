@@ -72,7 +72,7 @@ export type TrailCommandRouterDeps = {
 	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection>;
 	showText(title: string, text: string): Promise<void>;
 	showTrailBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<TrailBrowserAction | null>;
-	showVerdict(worker: WorkerStatus): Promise<TrailVerdictAction | null>;
+	showVerdict(worker: WorkerStatus, remaining?: number): Promise<TrailVerdictAction | null>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	openFileOrArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	input(title: string, placeholder: string): Promise<string | undefined>;
@@ -182,26 +182,32 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 		return 100;
 	};
 
+	const rankedVerdictWorkers = async (exclude?: Set<string>): Promise<WorkerStatus[]> => {
+		const workers = await deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });
+		return workers
+			.filter((worker) => !exclude?.has(worker.id))
+			.map((worker) => ({ worker, rank: verdictCandidateRank(worker) }))
+			.filter((entry) => entry.rank < 100)
+			.sort((a, b) => a.rank - b.rank || Date.parse(b.worker.updatedAt) - Date.parse(a.worker.updatedAt))
+			.map((entry) => entry.worker);
+	};
+
 	const findVerdictWorker = async (ref?: string): Promise<WorkerStatus | undefined> => {
 		if (ref) {
 			const worker = await deps.workerStore.find(ref);
 			return worker && projectWorker(worker) ? worker : undefined;
 		}
-		const workers = await deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });
-		return workers
-			.map((worker) => ({ worker, rank: verdictCandidateRank(worker) }))
-			.filter((entry) => entry.rank < 100)
-			.sort((a, b) => a.rank - b.rank || Date.parse(b.worker.updatedAt) - Date.parse(a.worker.updatedAt))[0]?.worker;
+		return (await rankedVerdictWorkers())[0];
 	};
 
-	const runVerdict = async (worker: WorkerStatus): Promise<void> => {
+	const runVerdict = async (worker: WorkerStatus, remaining = 0): Promise<"advance" | "stop"> => {
 		if (!deps.hasUI) {
 			deps.notify("Trail verdict needs UI. Use /trail tell, /trail load, or /trail delete.", "error");
-			return;
+			return "stop";
 		}
 		while (true) {
-			const result = await deps.showVerdict(worker);
-			if (!result) return;
+			const result = await deps.showVerdict(worker, remaining);
+			if (!result) return "stop";
 			const latest = await deps.workerStore.find(result.worker.id) ?? result.worker;
 			const label = workerSourceLabel(latest);
 			const state = deriveWorkerState(latest);
@@ -214,20 +220,20 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			if (result.verb === "send") {
 				if (result.text) await deps.workerCommands.tell(label, result.text);
 				await deps.refreshWorkerDockWidget();
-				return;
+				return "advance";
 			}
 			if (result.verb === "rejectStop") {
-				if (!(await deps.confirmDeleteWorker(latest))) return;
+				if (!(await deps.confirmDeleteWorker(latest))) continue;
 				await deps.workerCommands.delete(label);
 				await deps.refreshWorkerDockWidget();
-				return;
+				return "advance";
 			}
 			if (result.verb === "chat") {
 				const text = (await deps.input(`Chat ${label}`, "message to worker"))?.trim();
-				if (!text) return;
+				if (!text) continue;
 				await deps.workerCommands.tell(label, changeSet ? `revise: ${text}` : text);
 				await deps.refreshWorkerDockWidget();
-				return;
+				return "advance";
 			}
 			if (result.verb === "accept") {
 				if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
@@ -236,18 +242,30 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
 				} else if (statusArtifact) deps.markArtifactDone(statusArtifact);
 				await deps.refreshWorkerDockWidget();
-				return;
+				return "advance";
 			}
 			if (result.verb === "reject") {
 				if (state === "needs_input") {
 					const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
-					if (!text) return;
+					if (!text) continue;
 					await deps.workerCommands.tell(label, text);
 				} else if (changeSet) deps.markArtifactDone(changeSet);
 				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
 				await deps.refreshWorkerDockWidget();
-				return;
+				return "advance";
 			}
+		}
+	};
+
+	const runVerdictQueue = async (first: WorkerStatus): Promise<void> => {
+		const resolved = new Set<string>();
+		let current: WorkerStatus | undefined = first;
+		while (current) {
+			const others = (await rankedVerdictWorkers(resolved)).filter((entry) => entry.id !== current!.id);
+			const outcome = await runVerdict(current, others.length);
+			if (outcome === "stop") return;
+			resolved.add(current.id);
+			current = (await rankedVerdictWorkers(resolved))[0];
 		}
 	};
 
@@ -282,7 +300,8 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					deps.notify("Trail worker needing verdict not found", "warning");
 					return;
 				}
-				await runVerdict(worker);
+				if (intent.worker) await runVerdict(worker);
+				else await runVerdictQueue(worker);
 				return;
 			}
 

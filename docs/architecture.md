@@ -1,6 +1,6 @@
 # Trail Architecture
 
-Trail is a pi extension. The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, checkpoint). A small attention queue ranks unresolved artifacts as **review items**. **Workers** are background pi processes; **checkpoints** are durable handoff packages.
+Trail is a pi extension. The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, checkpoint). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one is resolved against a single worker — reading only status fields and the deterministic change set, never the transcript. **Workers** are background pi processes; **checkpoints** are durable handoff packages.
 
 If you're contributing, read this end-to-end. If you're using Trail, the README and [configuration.md](./configuration.md) are what you want.
 
