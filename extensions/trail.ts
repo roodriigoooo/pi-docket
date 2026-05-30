@@ -946,10 +946,10 @@ async function showTrailBrowser(
 	});
 }
 
-type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat";
-export type VerdictVerb = { id: VerdictVerbId; label: string; description: string };
+type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send";
+export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
-type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean };
+type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string };
 
 function artifactChangedFiles(artifact: Artifact | undefined): Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> {
 	return Array.isArray(artifact?.meta?.changedFiles) ? artifact.meta.changedFiles as Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> : [];
@@ -978,13 +978,21 @@ function coloredDiffBar(theme: any, additions: number, deletions: number, width:
 	return `[${[...bar].map((char) => char === "█" ? theme.fg("success", char) : theme.fg("error", char)).join("")}]`;
 }
 
-export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean): VerdictVerb[] {
-	if (state === "needs_input") return [
-		{ id: "accept", label: "Accept", description: "approve · worker continues" },
-		{ id: "reject", label: "Reject", description: "redirect · stays alive" },
-		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
-		{ id: "chat", label: "Chat", description: "type a reply" },
-	];
+export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, options: string[] = []): VerdictVerb[] {
+	if (state === "needs_input") {
+		if (options.length > 0) return [
+			...options.map((option): VerdictVerb => ({ id: "send", label: option, description: "send to worker", send: option })),
+			{ id: "reject", label: "Steer", description: "something else · stays alive" },
+			{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
+			{ id: "chat", label: "Chat", description: "type a reply" },
+		];
+		return [
+			{ id: "accept", label: "Accept", description: "approve · worker continues" },
+			{ id: "reject", label: "Reject", description: "redirect · stays alive" },
+			{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
+			{ id: "chat", label: "Chat", description: "type a reply" },
+		];
+	}
 	if (state === "failed") return [
 		{ id: "accept", label: "Retry", description: "relaunch worker" },
 		{ id: "reject", label: "Reject", description: "dismiss" },
@@ -999,11 +1007,23 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean): 
 	];
 }
 
+function workerIntentLine(worker: WorkerStatus): string | undefined {
+	const summary = typeof worker.summary === "string" ? worker.summary : "";
+	const line = summary.split(/\r?\n/).map((part) => part.trim()).find((part) => part.length > 0);
+	return line && line.length > 0 ? line : undefined;
+}
+
+function primaryWorkerQuestion(worker: WorkerStatus) {
+	const questions = workerQuestions(worker);
+	return questions.length ? questions[questions.length - 1] : undefined;
+}
+
 export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact): VerdictPayload {
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input") {
 		const lines = workerQuestions(worker).map((question) => question.text);
-		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false };
+		const risk = primaryWorkerQuestion(worker)?.risk;
+		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}) };
 	}
 	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
 	const changedFiles = artifactChangedFiles(changeSet);
@@ -1020,7 +1040,8 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
 			return `${filePath}   +${additions}/-${deletions}`;
 		});
-		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true };
+		const intent = workerIntentLine(worker);
+		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true, ...(intent ? { intent } : {}) };
 	}
 	const lines = [worker.summary, ...(worker.recommended ?? [])].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
 	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
@@ -1032,6 +1053,8 @@ class TrailVerdictView implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 	private readonly changeSet?: Artifact;
+	private readonly options: string[];
+	private readonly recommend?: string;
 	private readonly timer?: NodeJS.Timeout;
 
 	constructor(
@@ -1042,6 +1065,11 @@ class TrailVerdictView implements Component {
 		private done: (result: TrailVerdictAction | null) => void,
 	) {
 		this.changeSet = changeSet;
+		const question = primaryWorkerQuestion(worker);
+		this.options = deriveWorkerState(worker) === "needs_input" && question?.options ? question.options : [];
+		this.recommend = question?.recommend;
+		const recommendIndex = this.recommend ? this.options.indexOf(this.recommend) : -1;
+		if (recommendIndex >= 0) this.selected = recommendIndex;
 		const state = deriveWorkerState(worker);
 		if (state === "starting" || state === "thinking") {
 			this.timer = setInterval(() => this.tui.requestRender(), DOCK_PULSE_INTERVAL_MS);
@@ -1056,7 +1084,7 @@ class TrailVerdictView implements Component {
 
 	handleInput(data: string): void {
 		const state = deriveWorkerState(this.worker);
-		const verbs = verdictVerbs(state, this.changeSet !== undefined);
+		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
 		const max = Math.max(0, verbs.length - 1);
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
 			this.finish(null);
@@ -1071,8 +1099,8 @@ class TrailVerdictView implements Component {
 			return;
 		}
 		else if (matchesKey(data, Key.enter)) {
-			const verb = verbs[this.selected]?.id;
-			if (verb) this.finish({ verb, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}) });
+			const verb = verbs[this.selected];
+			if (verb) this.finish({ verb: verb.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(verb.send !== undefined ? { text: verb.send } : {}) });
 			return;
 		}
 		this.invalidate();
@@ -1092,7 +1120,7 @@ class TrailVerdictView implements Component {
 		const listWidth = Math.max(30, innerWidth);
 		const state = deriveWorkerState(this.worker);
 		const payload = workerVerdictPayload(this.worker, this.changeSet);
-		const verbs = verdictVerbs(state, payload.hasChangeSet);
+		const verbs = verdictVerbs(state, payload.hasChangeSet, this.options);
 		this.selected = Math.min(this.selected, Math.max(0, verbs.length - 1));
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
@@ -1100,6 +1128,7 @@ class TrailVerdictView implements Component {
 		const text = (s: string) => this.theme.fg("text", s);
 		const border = (s: string) => this.theme.fg("border", s);
 		const divider = (s: string) => this.theme.fg("borderMuted", s);
+		const warning = (s: string) => this.theme.fg("warning", s);
 		const stateLabel = state === "ready_open_todos" ? "ready · open todos" : state.replace(/_/g, " ");
 		const active = state === "starting" || state === "thinking";
 		const glyph = active ? workerPulseGlyph() : "●";
@@ -1112,12 +1141,20 @@ class TrailVerdictView implements Component {
 		this.container.addChild(new Text(truncateToWidth(` ${head}`, listWidth - 2), 1, 0));
 		this.container.addChild(new Spacer(1));
 		if (payload.hasChangeSet) {
+			if (payload.intent) {
+				for (const wrapped of wrapPlainText(payload.intent, listWidth - 4, 2)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
+				this.container.addChild(new Spacer(1));
+			}
 			const hunk = payload.hunkCount === undefined ? "" : `   ${payload.hunkCount} hunk${payload.hunkCount === 1 ? "" : "s"}`;
 			const files = artifactChangedFiles(this.changeSet).length;
 			const stat = `${files} file${files === 1 ? "" : "s"}   +${payload.additions} / -${payload.deletions}   ${coloredDiffBar(this.theme, payload.additions, payload.deletions, 14)}${hunk}`;
 			this.container.addChild(new Text(truncateToWidth(` ${muted(stat)}`, listWidth - 2), 1, 0));
 			for (const line of payload.lines) this.container.addChild(new Text(truncateToWidth(`   ${dim(line)}`, listWidth - 2), 1, 0));
 		} else {
+			if (payload.risk) {
+				for (const wrapped of wrapPlainText(payload.risk, listWidth - 6, 2)) this.container.addChild(new Text(truncateToWidth(`  ${warning(`⚠ ${wrapped}`)}`, listWidth - 2), 1, 0));
+				this.container.addChild(new Spacer(1));
+			}
 			for (const line of payload.lines.slice(0, 5)) {
 				for (const wrapped of wrapPlainText(line, listWidth - 4, 3)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
 			}
@@ -1127,8 +1164,14 @@ class TrailVerdictView implements Component {
 			const verb = verbs[i]!;
 			const selected = i === this.selected;
 			const marker = selected ? accent("▸") : " ";
-			const labelText = selected ? accent(this.theme.bold(verb.label.padEnd(14))) : text(verb.label.padEnd(14));
-			this.container.addChild(new Text(truncateToWidth(` ${marker} ${labelText} ${dim(verb.description)}`, listWidth - 2), 1, 0));
+			if (verb.send !== undefined) {
+				const badge = this.recommend && verb.send === this.recommend ? muted(" · recommended") : "";
+				const optionLabel = selected ? accent(this.theme.bold(verb.label)) : text(verb.label);
+				this.container.addChild(new Text(truncateToWidth(` ${marker} ${optionLabel}${badge}`, listWidth - 2), 1, 0));
+			} else {
+				const labelText = selected ? accent(this.theme.bold(verb.label.padEnd(14))) : text(verb.label.padEnd(14));
+				this.container.addChild(new Text(truncateToWidth(` ${marker} ${labelText} ${dim(verb.description)}`, listWidth - 2), 1, 0));
+			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const diffHint = this.changeSet ? "d full diff · " : "";
@@ -1145,7 +1188,7 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
 	return ctx.ui.custom<TrailVerdictAction | null>((tui, theme, _kb, done) => new TrailVerdictView(tui, theme, worker, changeSet, done), {
 		overlay: true,
-		overlayOptions: { anchor: "center", width: "76%", minWidth: 72, maxHeight: "90%", margin: 1 },
+		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
 }
 
@@ -2421,7 +2464,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const applyWorkerState = async (ctx: ExtensionContext, state: WorkerProtocolState, text?: string, doneInput?: WorkerDoneInput): Promise<WorkerStatus | undefined> => {
+	const applyWorkerState = async (ctx: ExtensionContext, state: WorkerProtocolState, text?: string, doneInput?: WorkerDoneInput, questionMeta?: { risk?: string; options?: string[]; recommend?: string }): Promise<WorkerStatus | undefined> => {
 		if (!workerId) return undefined;
 		const store = createWorkerStore();
 		const current = await store.find(workerId);
@@ -2443,6 +2486,7 @@ export default function trailExtension(pi: ExtensionAPI) {
 			id: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`,
 			text: nextText ?? "",
 			createdAt: new Date().toISOString(),
+			...(nextState === "needs_input" && questionMeta ? questionMeta : {}),
 		}, nextDoneInput);
 		const updated = patch ? await store.patchStatus(workerId, patch) : current;
 		emitWorkerStateArtifact(ctx, nextState, nextText);
@@ -2538,12 +2582,23 @@ export default function trailExtension(pi: ExtensionAPI) {
 			label: "Trail Wait",
 			description: "Trail worker only: ask the parent session for input and mark this worker waiting.",
 			promptSnippet: "Ask parent for input when a Trail worker is blocked or ambiguity is non-trivial.",
-			promptGuidelines: ["See <trail_worker_guardrails> for the full list of situations that require trail_wait. Do not assume; do not run /trail wait via bash."],
-			parameters: Type.Object({ question: Type.String({ description: "Concise question for the parent session" }) }),
+			promptGuidelines: ["See <trail_worker_guardrails> for when to call trail_wait. When the decision has discrete answers, pass concrete `options` (and `recommend` your pick) and flag stakes via `risk`. Do not assume; do not run /trail wait via bash."],
+			parameters: Type.Object({
+				question: Type.String({ description: "Concise question for the parent session" }),
+				risk: Type.Optional(Type.String({ description: "One line on the stakes when this is irreversible or unauthorized (e.g. 'drops the sessions table'). Rendered as a warning on the parent's card." })),
+				options: Type.Optional(Type.Array(Type.String({ description: "A concrete choice the parent can pick" }), { description: "2–4 concrete options the parent can accept directly; the chosen one is sent back to you verbatim. Omit for open-ended questions." })),
+				recommend: Type.Optional(Type.String({ description: "Which option you would choose (must match one of `options`); pre-selected on the parent's card." })),
+			}),
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				markWorkerProtocolCalled();
-				await applyWorkerState(ctx, "needs_input", params.question);
-				return { content: [{ type: "text", text: workerProtocolResultText("needs_input") }], details: { state: "needs_input", question: params.question } };
+				const options = Array.isArray(params.options) ? params.options.map((option) => String(option).trim()).filter((option) => option.length > 0) : [];
+				const questionMeta = {
+					...(typeof params.risk === "string" && params.risk.trim() ? { risk: params.risk.trim() } : {}),
+					...(options.length ? { options } : {}),
+					...(typeof params.recommend === "string" && params.recommend.trim() ? { recommend: params.recommend.trim() } : {}),
+				};
+				await applyWorkerState(ctx, "needs_input", params.question, undefined, questionMeta);
+				return { content: [{ type: "text", text: workerProtocolResultText("needs_input") }], details: { state: "needs_input", question: params.question, ...questionMeta } };
 			},
 		});
 
@@ -2784,7 +2839,17 @@ export default function trailExtension(pi: ExtensionAPI) {
 			}
 			return null;
 		},
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => runTrailCommand(args, ctx),
+	});
+
+	// One-key path to the highest-attention decision. Only ever fires the verdict intent,
+	// which uses base-context members (ui/store/sessionManager) — safe to upcast the shortcut ctx.
+	pi.registerShortcut?.("ctrl+shift+d", {
+		description: "Trail: resolve the top worker decision",
+		handler: (ctx) => runTrailCommand("verdict", ctx as ExtensionCommandContext),
+	});
+
+	async function runTrailCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
 			const parsed = parseTrailCommand(args);
 			if (!parsed.ok) {
 				emitText(pi, ctx, `${parsed.message}\n\n${parsed.usage}`, "usage", "trail · usage");
@@ -2892,6 +2957,5 @@ export default function trailExtension(pi: ExtensionAPI) {
 				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),
 				parallelKindLabel,
 			}).handle(intent);
-		},
-	});
+	}
 }

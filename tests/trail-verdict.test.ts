@@ -73,3 +73,28 @@ test("workerVerdictPayload summarizes deterministic change set metadata", () => 
 	assert.equal(payload.hunkCount, 3);
 	assert.deepEqual(payload.lines, ["src/auth.ts   +8/-2", "test/auth.test.ts   +4/-1"]);
 });
+
+test("workerVerdictPayload surfaces worker intent alongside a change set", () => {
+	const withSummary = workerVerdictPayload(worker({ state: "ready", summary: "Added token-bucket limiter + tests\nfollow-up: wire config" }), changeSet);
+	assert.equal(withSummary.intent, "Added token-bucket limiter + tests");
+	assert.deepEqual(withSummary.lines, ["src/auth.ts   +8/-2", "test/auth.test.ts   +4/-1"]);
+	assert.equal(workerVerdictPayload(worker({ state: "ready" }), changeSet).intent, undefined);
+});
+
+test("verdictVerbs renders worker-proposed options as send verbs", () => {
+	const verbs = verdictVerbs("needs_input", false, ["Proceed as proposed", "Use migration-safe path"]);
+	assert.deepEqual(verbs.map((verb) => verb.id), ["send", "send", "reject", "rejectStop", "chat"]);
+	assert.deepEqual(verbs.slice(0, 2).map((verb) => verb.send), ["Proceed as proposed", "Use migration-safe path"]);
+	assert.equal(verbs[2]?.label, "Steer");
+	assert.deepEqual(verdictVerbs("needs_input", false).map((verb) => verb.label), ["Accept", "Reject", "Reject & stop", "Chat"]);
+});
+
+test("workerVerdictPayload surfaces structured risk on a waiting worker", () => {
+	const waiting = worker({
+		state: "needs_input",
+		questions: [{ id: "q1", text: "Drop the sessions table?", createdAt: "2026-01-01T00:00:00.000Z", risk: "irreversible: drops sessions", options: ["Proceed", "Migration-safe path"], recommend: "Migration-safe path" }],
+	});
+	const payload = workerVerdictPayload(waiting);
+	assert.equal(payload.risk, "irreversible: drops sessions");
+	assert.deepEqual(payload.lines, ["Drop the sessions table?"]);
+});

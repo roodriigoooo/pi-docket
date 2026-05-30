@@ -15,9 +15,10 @@ import type { WorkerStore } from "./worker-store.js";
 export type TrailBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
 
 export type TrailVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "send";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
+	text?: string;
 };
 
 export type ParallelWorkEntry = {
@@ -171,11 +172,13 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 	};
 
 	const verdictCandidateRank = (worker: WorkerStatus): number => {
+		// Rank on cheap derived state only — never stage/diff a worktree here. The change set is
+		// computed lazily for the single chosen worker when the card opens (showWorkerVerdict),
+		// so ranking N ready workers costs zero git calls instead of one stage+diff per worker.
 		const state = deriveWorkerState(worker);
 		if (state === "needs_input") return 0;
 		if (state === "failed") return 1;
-		if (workerHasChangeSet(worker)) return 2;
-		if (state === "ready" || state === "ready_open_todos") return 3;
+		if (state === "ready" || state === "ready_open_todos") return 2;
 		return 100;
 	};
 
@@ -207,6 +210,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			if (result.verb === "diff") {
 				if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet));
 				continue;
+			}
+			if (result.verb === "send") {
+				if (result.text) await deps.workerCommands.tell(label, result.text);
+				await deps.refreshWorkerDockWidget();
+				return;
 			}
 			if (result.verb === "rejectStop") {
 				if (!(await deps.confirmDeleteWorker(latest))) return;

@@ -287,7 +287,7 @@ export function parseTrailCommand(args: string): ParseResult {
 		if (extras.length > 0) return parseError("Usage: /trail workers [--all]");
 		return { ok: true, intent: { kind: "workers", ...(allProjects ? { allProjects } : {}) } };
 	}
-	if (command === "verdict") {
+	if (command === "verdict" || command === "v") {
 		if (rest.length > 1) return parseError("Usage: /trail verdict [w<N>]");
 		return { ok: true, intent: { kind: "verdict", ...(rest[0] ? { worker: rest[0] } : {}) } };
 	}

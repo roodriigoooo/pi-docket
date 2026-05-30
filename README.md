@@ -227,6 +227,8 @@ short version:
 
 workers run in hidden workspaces seeded from your current repo state. if a worker edits files, trail surfaces one change-set card with summary, diffstat, and actions: promote, diff, revise, or dismiss. promoting applies the whole change set after a clean preflight; trail does not merge anything silently.
 
+the **verdict card** is the focused decision surface for one worker. open it with `ctrl+shift+d` (jumps to the highest-attention decision), `/trail v` / `/trail verdict [w<N>]`, or `enter` on a worker row in the inbox. it reads only status fields + the deterministic change set — the worker's intent line, its question, or the diffstat (`+/-` with a proportional bar) — never the transcript or artifacts, so it costs zero model-context tokens. verbs adapt by state: accept (approve / promote / retry), reject (steer / dismiss), reject & stop (kill + remove workspace), chat (reply). `d` opens the full diff in an overlay without injecting it.
+
 if a worker calls `/trail wait ...` through bash by mistake, trail tries to catch it and record the intent. the tool protocol is still the real path.
 
 ### what a finished worker tells the parent

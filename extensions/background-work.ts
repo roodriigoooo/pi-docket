@@ -36,6 +36,12 @@ export type WorkerQuestion = {
 	text: string;
 	createdAt: string;
 	answeredAt?: string;
+	/** One-line stakes the worker flags (irreversible/unauthorized); shown as a warning on the verdict card. */
+	risk?: string;
+	/** Concrete choices the worker proposes; selecting one is sent back verbatim. Zero-token, status-only. */
+	options?: string[];
+	/** Which option the worker recommends (matches one of `options`); pre-selected on the card. */
+	recommend?: string;
 };
 
 export type WorkerWorkspaceKind = "git" | "copy";

@@ -53,6 +53,8 @@ For vague search/discovery tasks, do cheap discovery before asking: at most ~5 r
 
 **How:** one concise question per call. If multiple questions, list them as `1) … 2) …` inside one call. Then stop and wait. Do not continue working speculatively after calling `trail_wait`.
 
+When the decision has discrete answers, pass them as `options` (2–4 concrete choices) and `recommend` the one you would pick — the parent then gets a one-keystroke card with your proposed branches instead of a freeform reply, and the choice is sent back to you verbatim. When the action is irreversible or unauthorized, set `risk` to a one-line statement of the stakes (e.g. `drops the sessions table`). These fields are status-only and cost the parent zero tokens to review.
+
 **Do not** call `trail_wait` for trivial style/aesthetic preferences you can answer reasonably yourself.
 
 ### `trail_done` — mark output ready for parent review
