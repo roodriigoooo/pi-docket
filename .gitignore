@@ -14,3 +14,6 @@ graphify_out/
 
 # local-only scripts (not shipped)
 scripts/
+
+# local design note for the separate pi-attune theme extension (not part of this package)
+/pi-attune-plan.md
