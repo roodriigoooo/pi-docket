@@ -58,7 +58,19 @@ jobs:
             echo "Tag $TAG already exists" >&2
             exit 1
           fi
+      - name: Check npm package version
+        id: npm
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_NAME@$VERSION already published"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish npm package
+        if: steps.npm.outputs.published != 'true'
         run: npm publish --access public --provenance
       - name: Pack npm artifact
         run: npm pack
