@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run check
       - name: Resolve release version
@@ -59,6 +60,8 @@ jobs:
             exit 1
           fi
       - name: Publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
       - name: Pack npm artifact
         run: npm pack
