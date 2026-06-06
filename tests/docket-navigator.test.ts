@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { availableSources, episodesFromItems, filteredReviewItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewItemForArtifact, sameNavigatorSource } from "../extensions/trail-navigator.js";
+import { availableSources, episodesFromItems, filteredReviewItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewItemForArtifact, sameNavigatorSource } from "../extensions/docket-navigator.js";
 import type { Artifact, ArtifactKind } from "../extensions/types.js";
 
 function artifact(id: string, kind: ArtifactKind, timestamp: number, meta: Record<string, unknown> = {}, source?: string): Artifact {

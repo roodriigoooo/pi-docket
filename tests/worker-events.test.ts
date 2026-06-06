@@ -6,7 +6,7 @@ import os from "node:os";
 import { appendWorkerEventSync, tailWorkerEvents, workerEventFilePath, WORKER_EVENT_ROTATE_BYTES } from "../extensions/worker-events.js";
 
 async function temp(): Promise<string> {
-	return mkdtemp(path.join(os.tmpdir(), "trail-events-"));
+	return mkdtemp(path.join(os.tmpdir(), "docket-events-"));
 }
 
 test("appendWorkerEventSync writes NDJSON entries", async () => {

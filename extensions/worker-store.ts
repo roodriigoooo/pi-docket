@@ -9,11 +9,11 @@ import type { Artifact, GitSnapshot } from "./types.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
-export const WORKER_TMUX_PREFIX = "trail-worker-";
-export const TRAIL_WORKER_ENV = "TRAIL_WORKER_ID";
-export const WORKER_DASHBOARD_TMUX = "trail-workers";
+export const WORKER_TMUX_PREFIX = "docket-worker-";
+export const DOCKET_WORKER_ENV = "DOCKET_WORKER_ID";
+export const WORKER_DASHBOARD_TMUX = "docket-workers";
 /** Single tmux session that hosts every worker window. */
-export const SHARED_TMUX_SESSION = "trail-workers";
+export const SHARED_TMUX_SESSION = "docket-workers";
 
 export function workerWindowTarget(index: number): string {
 	return `${SHARED_TMUX_SESSION}:w${index}`;
@@ -72,7 +72,7 @@ export type SpawnInput = {
 };
 
 function workersRoot(): string {
-	return path.join(getAgentDir(), "trail", "workers");
+	return path.join(getAgentDir(), "docket", "workers");
 }
 
 function workerDir(id: string): string {
@@ -113,7 +113,7 @@ function workerExitPatchCommand(statusFile: string): string {
 }
 
 export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean }): string {
-	const piParts = [`${TRAIL_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
+	const piParts = [`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
 	if (input.resumeSeeded) piParts.push("--continue");
 	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
 	piParts.push(shellQuote(input.initialPrompt));
@@ -224,12 +224,12 @@ function createBaselineCommit(worktreePath: string, parent: string | undefined):
 	if (!changed) return parent;
 	const tree = gitOutput(worktreePath, ["write-tree"]);
 	if (!tree) return parent;
-	const commit = gitOutput(worktreePath, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", "Trail worker baseline"], {
+	const commit = gitOutput(worktreePath, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", "Docket worker baseline"], {
 		env: {
-			GIT_AUTHOR_NAME: "Trail",
-			GIT_AUTHOR_EMAIL: "trail@example.invalid",
-			GIT_COMMITTER_NAME: "Trail",
-			GIT_COMMITTER_EMAIL: "trail@example.invalid",
+			GIT_AUTHOR_NAME: "Docket",
+			GIT_AUTHOR_EMAIL: "docket@example.invalid",
+			GIT_COMMITTER_NAME: "Docket",
+			GIT_COMMITTER_EMAIL: "docket@example.invalid",
 		},
 	});
 	if (!commit) return parent;
@@ -577,13 +577,13 @@ export function createWorkerStore(): WorkerStore {
 	};
 }
 
-const TRAIL_INJECT_MARK = "[trail] ";
+const DOCKET_INJECT_MARK = "[docket] ";
 
 function sendKeysToWindow(target: string, text: string, windowId?: string): boolean {
 	if (!target) return false;
 	const sendTarget = windowId ?? target;
 	const shared = isSharedSessionTarget(target) || Boolean(windowId);
-	const literal = shared ? `${TRAIL_INJECT_MARK}${text}` : text;
+	const literal = shared ? `${DOCKET_INJECT_MARK}${text}` : text;
 	const literalResult = shared
 		? spawnSync("tmux", ["send-keys", "-t", sendTarget, "-l", literal], { stdio: "ignore" })
 		: spawnSync("tmux", ["send-keys", "-t", sendTarget, literal], { stdio: "ignore" });

@@ -40,7 +40,7 @@ export type WorkerKindRegistry = {
 
 const BUILTIN_DEFAULT: WorkerKind = {
 	name: DEFAULT_KIND_NAME,
-	description: "General-purpose Trail worker; matches pre-kinds behavior.",
+	description: "General-purpose Docket worker; matches pre-kinds behavior.",
 	readOnly: false,
 	defaultWorktree: true,
 	parentSeedPolicy: "full",
@@ -140,8 +140,8 @@ function bundledKindsDir(): string {
 
 function userKindsDir(cwd: string): string[] {
 	const out: string[] = [];
-	out.push(path.join(getAgentDir(), "trail", "worker-kinds"));
-	out.push(path.join(cwd, ".pi", "trail", "worker-kinds"));
+	out.push(path.join(getAgentDir(), "docket", "worker-kinds"));
+	out.push(path.join(cwd, ".pi", "docket", "worker-kinds"));
 	return out;
 }
 
@@ -239,7 +239,7 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 		register(kind: WorkerKind): () => void {
 			const normalized = normalizeName(kind.name);
 			if (!normalized || normalized === DEFAULT_KIND_NAME) {
-				throw new Error(`Trail: invalid worker kind name "${kind.name}"`);
+				throw new Error(`Docket: invalid worker kind name "${kind.name}"`);
 			}
 			const normalizedKind: WorkerKind = { ...kind, name: normalized, source: kind.source ?? "runtime" };
 			set(normalizedKind);
@@ -269,10 +269,10 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 
 export function workerKindGuardrailsAppendix(kind: WorkerKind): string {
 	const parts: string[] = [];
-	if (kind.readOnly) parts.push("- This worker is **read-only** by configuration. Do not edit files. If the task requires edits, call `trail_wait` and ask the parent to spawn a writable worker instead.");
+	if (kind.readOnly) parts.push("- This worker is **read-only** by configuration. Do not edit files. If the task requires edits, call `docket_wait` and ask the parent to spawn a writable worker instead.");
 	if (kind.maxArtifacts !== undefined) parts.push(`- Artifact cap for this kind: ${kind.maxArtifacts}. Stay focused.`);
-	if (kind.maxDurationSec !== undefined) parts.push(`- Soft time budget for this kind: ${kind.maxDurationSec}s. If you exceed it, call \`trail_done\` with partial findings rather than continuing silently.`);
-	if (kind.canSpawn.length > 0) parts.push(`- You may dispatch child workers via \`trail_spawn_child\` using only these kinds: ${kind.canSpawn.join(", ")}. Children inherit fleet/depth caps. Children's results return to you, not to the human user.`);
+	if (kind.maxDurationSec !== undefined) parts.push(`- Soft time budget for this kind: ${kind.maxDurationSec}s. If you exceed it, call \`docket_done\` with partial findings rather than continuing silently.`);
+	if (kind.canSpawn.length > 0) parts.push(`- You may dispatch child workers via \`docket_spawn_child\` using only these kinds: ${kind.canSpawn.join(", ")}. Children inherit fleet/depth caps. Children's results return to you, not to the human user.`);
 	if (kind.guardrailsAppend) parts.push(kind.guardrailsAppend.trim());
 	if (kind.systemPrompt) parts.push(`\n${kind.systemPrompt.trim()}`);
 	if (parts.length === 0) return "";

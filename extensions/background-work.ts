@@ -158,7 +158,7 @@ export function workerMascotFrame(worker: WorkerStatus | undefined, options: { n
 }
 
 export function workerMascotLines(worker: WorkerStatus | undefined, options: { now?: number } = {}): string[] {
-	const label = worker ? workerSourceLabel(worker) : "trail";
+	const label = worker ? workerSourceLabel(worker) : "docket";
 	return [
 		`  ${workerMascotFrame(worker, options)}`,
 		`  /|\\  ${label}`,
@@ -198,8 +198,8 @@ export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number
 		todos ? `todos:  ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
 		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,
-		`inbox:  /trail`,
-		`debug:  /trail workers`,
+		`inbox:  /docket`,
+		`debug:  /docket workers`,
 	].filter((line): line is string => line !== undefined).join("\n");
 }
 
@@ -386,16 +386,16 @@ export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): bool
 }
 
 export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string; kind?: string; depth?: number; parentWorkerLabel?: string }): string {
-	const kindLine = input.kind && input.kind !== "default" ? `You are operating under worker kind \`${input.kind}\`. Kind-specific rules are in <trail_worker_guardrails>.` : undefined;
-	const parentLine = input.parentWorkerLabel ? `You were dispatched by worker ${input.parentWorkerLabel} (depth ${input.depth ?? 1}). Your trail_done returns to that worker, not directly to the human user.` : undefined;
+	const kindLine = input.kind && input.kind !== "default" ? `You are operating under worker kind \`${input.kind}\`. Kind-specific rules are in <docket_worker_guardrails>.` : undefined;
+	const parentLine = input.parentWorkerLabel ? `You were dispatched by worker ${input.parentWorkerLabel} (depth ${input.depth ?? 1}). Your docket_done returns to that worker, not directly to the human user.` : undefined;
 	return [
-		`You are Trail worker ${input.label} (${input.id}).`,
+		`You are Docket worker ${input.label} (${input.id}).`,
 		`Your task is in ${input.taskFile}. Read it, then begin.`,
 		`Artifacts are auto-snapshotted to ${input.artifactsFile}.`,
 		input.worktreePath ? `Worker workspace: ${input.worktreePath}` : undefined,
 		kindLine,
 		parentLine,
-		"Operating rules and tool contracts live in <trail_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`trail_wait`, `trail_done`, `trail_fail`, `trail_todos`).",
+		"Operating rules and tool contracts live in <docket_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`docket_wait`, `docket_done`, `docket_fail`, `docket_todos`).",
 	].filter((line): line is string => line !== undefined).join("\n");
 }
 
@@ -452,9 +452,9 @@ export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolS
 }
 
 export function workerProtocolResultText(state: WorkerProtocolState): string {
-	if (state === "needs_input") return "Trail wait recorded. Stop now and wait for parent reply.";
-	if (state === "ready") return "Trail done recorded. Parent can review the worker output.";
-	return "Trail failure recorded. Parent can review the failure.";
+	if (state === "needs_input") return "Docket wait recorded. Stop now and wait for parent reply.";
+	if (state === "ready") return "Docket done recorded. Parent can review the worker output.";
+	return "Docket failure recorded. Parent can review the failure.";
 }
 
 export function workerProtocolMessage(state: WorkerProtocolState, text?: string): WorkerProtocolMessage {

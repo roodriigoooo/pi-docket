@@ -5,16 +5,16 @@ import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
 import type { LoadedArtifactContext, LoadResult } from "./loaded-artifact-context.js";
-import type { NavigatorMode } from "./trail-navigator.js";
-import type { CheckpointCreateOptions, TrailIntent } from "./trail-command-grammar.js";
+import type { NavigatorMode } from "./docket-navigator.js";
+import type { CheckpointCreateOptions, DocketIntent } from "./docket-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import { workerChangeSetArtifact } from "./worker-changes.js";
 import type { WorkerStore } from "./worker-store.js";
 
-export type TrailBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "checkpoint" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
+export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "save" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
 
-export type TrailVerdictAction = {
+export type DocketVerdictAction = {
 	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "send";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
@@ -38,9 +38,9 @@ export type LoadPickerSelection =
 	| null;
 
 type NotifyLevel = "info" | "warning" | "error";
-type TrailMessageKind = "notice" | "success" | "error" | "usage" | "list" | "action" | "help";
+type DocketMessageKind = "notice" | "success" | "error" | "usage" | "list" | "action" | "help";
 
-export type TrailCommandRouterDeps = {
+export type DocketCommandRouterDeps = {
 	hasUI: boolean;
 	workerId?: string;
 	projectRoot?: string;
@@ -50,9 +50,9 @@ export type TrailCommandRouterDeps = {
 	workerStore: WorkerStore;
 	checkpointStore: CheckpointStore;
 	notify(text: string, level: NotifyLevel): void;
-	emitText(text: string, kind: TrailMessageKind, heading?: string): void;
-	announce(subject: string, detail?: string, kind?: TrailMessageKind): void;
-	trailUsage(advanced?: boolean): string;
+	emitText(text: string, kind: DocketMessageKind, heading?: string): void;
+	announce(subject: string, detail?: string, kind?: DocketMessageKind): void;
+	docketUsage(advanced?: boolean): string;
 	renderArtifactList(artifacts: Artifact[]): string;
 	renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): string;
 	formatArtifact(artifact: Artifact): string;
@@ -71,8 +71,8 @@ export type TrailCommandRouterDeps = {
 	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): Promise<ParallelWorkAction>;
 	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection>;
 	showText(title: string, text: string): Promise<void>;
-	showTrailBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<TrailBrowserAction | null>;
-	showVerdict(worker: WorkerStatus, remaining?: number): Promise<TrailVerdictAction | null>;
+	showDocketBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<DocketBrowserAction | null>;
+	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	openFileOrArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	input(title: string, placeholder: string): Promise<string | undefined>;
@@ -90,7 +90,7 @@ export function buildAttachCommand(target: string): string {
 	return `tmux attach -t ${target}`;
 }
 
-function trailMetaString(artifact: Artifact, key: string): string | undefined {
+function docketMetaString(artifact: Artifact, key: string): string | undefined {
 	const value = artifact.meta?.[key];
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -110,23 +110,23 @@ function loadResultDetail(result: LoadResult): string {
 	const slot = result.slot;
 	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nattach: @${slot.slot}.<id>`;
 	const checkpoint = result.source.checkpoint;
-	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} checkpoint`;
+	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} bundle`;
 	return `${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`;
 }
 
-export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
+export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 	const announceLoadResult = (result: LoadResult): void => deps.announce(loadResultSubject(result), loadResultDetail(result), "success");
 
 	const showWorkerResult = async (ref: string, action: "show" | "use"): Promise<void> => {
 		const worker = await deps.workerStore.find(ref);
 		if (!worker) {
-			deps.notify("Trail worker not found", "error");
+			deps.notify("Docket worker not found", "error");
 			return;
 		}
 		if (action === "show") {
 			const artifacts = await deps.workerStore.readArtifacts(worker.id);
 			if (deps.hasUI) deps.showWorkerResult(worker, artifacts, true);
-			else deps.emitText(workerResultText(worker, artifacts), "list", `trail · ${workerSourceLabel(worker)}`);
+			else deps.emitText(workerResultText(worker, artifacts), "list", `docket · ${workerSourceLabel(worker)}`);
 			return;
 		}
 		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
@@ -150,13 +150,13 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			return;
 		}
 		if (!deps.hasUI) {
-			deps.notify("Usage: /trail tell w<N> <text>", "error");
+			deps.notify("Usage: /docket tell w<N> <text>", "error");
 			return;
 		}
 		const worker = await deps.workerStore.find(ref);
 		const label = worker ? workerSourceLabel(worker) : ref;
 		const questions = worker ? workerQuestions(worker).map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
-		const placeholder = artifact ? trailMetaString(artifact, "question") ?? artifact.title : questions;
+		const placeholder = artifact ? docketMetaString(artifact, "question") ?? artifact.title : questions;
 		const message = (await deps.input(`Tell ${label}`, placeholder ?? "instruction, answer, or follow-up"))?.trim();
 		if (!message) return;
 		await deps.workerCommands.tell(ref, message);
@@ -202,7 +202,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 
 	const runVerdict = async (worker: WorkerStatus, remaining = 0): Promise<"advance" | "stop"> => {
 		if (!deps.hasUI) {
-			deps.notify("Trail verdict needs UI. Use /trail tell, /trail load, or /trail delete.", "error");
+			deps.notify("Docket verdict needs UI. Use /docket tell, /docket load, or /docket delete.", "error");
 			return "stop";
 		}
 		while (true) {
@@ -270,9 +270,9 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 	};
 
 	return {
-		async handle(intent: TrailIntent): Promise<void> {
+		async handle(intent: DocketIntent): Promise<void> {
 			if (intent.kind === "help") {
-				deps.emitText(deps.trailUsage(intent.advanced === true), "help", intent.advanced === true ? "trail · help advanced" : "trail · help");
+				deps.emitText(deps.docketUsage(intent.advanced === true), "help", intent.advanced === true ? "docket · help advanced" : "docket · help");
 				return;
 			}
 
@@ -280,12 +280,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				const had = deps.loadedArtifacts.clearChips();
 				deps.refreshChipWidget();
 				const hadWorkerResult = deps.clearWorkerResult();
-				deps.notify(had || hadWorkerResult ? "Trail cleared" : "Trail had no chips", "info");
-				return;
-			}
-
-			if (intent.kind === "worker-result") {
-				await showWorkerResult(intent.worker, intent.action);
+				deps.notify(had || hadWorkerResult ? "Docket cleared" : "Docket had no chips", "info");
 				return;
 			}
 
@@ -297,7 +292,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			if (intent.kind === "verdict") {
 				const worker = await findVerdictWorker(intent.worker);
 				if (!worker) {
-					deps.notify("Trail worker needing verdict not found", "warning");
+					deps.notify("Docket worker needing verdict not found", "warning");
 					return;
 				}
 				if (intent.worker) await runVerdict(worker);
@@ -310,7 +305,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				if (intent.worker) {
 					const worker = await deps.workerStore.find(intent.worker);
 					if (!worker) {
-						deps.notify("Trail worker not found", "error");
+						deps.notify("Docket worker not found", "error");
 						return;
 					}
 					target = worker.tmuxSession;
@@ -323,20 +318,15 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 
 			if (intent.kind === "worker-state") {
 				if (!deps.workerId) {
-					deps.notify("Worker state commands only run inside a Trail worker", "warning");
+					deps.notify("Worker state commands only run inside a Docket worker", "warning");
 					return;
 				}
 				await deps.applyWorkerState(intent.state, intent.text);
 				return;
 			}
 
-			if (intent.kind === "checkpoint") {
+			if (intent.kind === "save") {
 				await deps.createCheckpoint(intent.options);
-				return;
-			}
-
-			if (intent.kind === "continue") {
-				await deps.checkpointCommands.continue(intent.idOrLast);
 				return;
 			}
 
@@ -375,7 +365,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				const { workers, artifactsByWorker } = await deps.readWorkersWithArtifacts({ allProjects: intent.allProjects === true });
 				const groupByProject = intent.allProjects === true;
 				if (!deps.hasUI) {
-					deps.emitText(deps.renderParallelWorkList(workers, artifactsByWorker, { groupByProject }), "list", "trail · parallel work");
+					deps.emitText(deps.renderParallelWorkList(workers, artifactsByWorker, { groupByProject }), "list", "docket · parallel work");
 					return;
 				}
 				while (true) {
@@ -417,7 +407,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 							deps.notify(`No answers yet for ${workerSourceLabel(result.worker)}`, "info");
 							return;
 						}
-						await deps.showTrailBrowser(await deps.catalog(), answers, "answers");
+						await deps.showDocketBrowser(await deps.catalog(), answers, "answers");
 						return;
 					}
 				}
@@ -435,7 +425,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				if (intent.ref) {
 					const checkpoint = await deps.checkpointStore.find(intent.ref, opts);
 					if (!checkpoint) {
-						deps.notify("Trail checkpoint not found", "error");
+						deps.notify("Docket bundle not found", "error");
 						return;
 					}
 					source = { kind: "checkpoint", checkpoint };
@@ -445,7 +435,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) }),
 					]);
 					if (summaries.length === 0 && workers.length === 0) {
-						deps.notify("Trail has nothing to load — try /trail checkpoint or /trail spawn", "error");
+						deps.notify("Docket has nothing to load — try /docket save or /docket spawn", "error");
 						return;
 					}
 					if (!deps.hasUI) {
@@ -455,7 +445,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 						while (true) {
 							const selected = await deps.showLoadPicker(summaries, workers, initial);
 							if (!selected) {
-								deps.notify("Trail load cancelled", "info");
+								deps.notify("Docket load cancelled", "info");
 								return;
 							}
 							if (selected.kind === "worker") {
@@ -464,7 +454,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 							}
 							if (selected.action === "preview") {
 								const md = await deps.checkpointStore.readMarkdown(selected.summary.entry);
-								await deps.showText(`Trail checkpoint ${selected.summary.entry.id}`, md);
+								await deps.showText(`Docket checkpoint ${selected.summary.entry.id}`, md);
 								continue;
 							}
 							source = { kind: "checkpoint", checkpoint: selected.summary.entry };
@@ -478,7 +468,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					announceLoadResult(result);
 					if (source.kind === "worker") await deps.refreshWorkerDockWidget();
 				} catch (err) {
-					deps.notify(`Trail load failed: ${String(err)}`, "error");
+					deps.notify(`Docket load failed: ${String(err)}`, "error");
 				}
 				return;
 			}
@@ -488,7 +478,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					const slots = deps.loadedArtifacts.slots().map((entry) => entry.slot);
 					for (const slot of slots) deps.loadedArtifacts.unloadSlot(slot);
 					if (slots.length) deps.announce(`unloaded ${slots.length} slot${slots.length === 1 ? "" : "s"}`, slots.join(", "));
-					else deps.notify("Trail had no loaded slots", "info");
+					else deps.notify("Docket had no loaded slots", "info");
 					return;
 				}
 				if (intent.targetKind === "worker") {
@@ -500,7 +490,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				const targetId = checkpoint?.id ?? intent.target;
 				const removed = deps.loadedArtifacts.unloadSource("checkpoint", targetId);
 				if (removed) deps.announce(`unloaded ${removed.slot}`, removed.sourceId);
-				else deps.notify("Trail checkpoint not loaded", "warning");
+				else deps.notify("Docket checkpoint not loaded", "warning");
 				return;
 			}
 
@@ -515,11 +505,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				if (intent.query) artifacts = (await catalog.search(intent.query)).filter((artifact) => artifact.kind === "response");
 				else artifacts = artifacts.filter((artifact) => artifact.kind === "response");
 				if (artifacts.length === 0) {
-					deps.notify(intent.query ? `Trail answers found no matches for: ${intent.query}` : "Trail has no answers yet", "info");
+					deps.notify(intent.query ? `Docket answers found no matches for: ${intent.query}` : "Docket has no answers yet", "info");
 					return;
 				}
 				if (!deps.hasUI) {
-					deps.emitText(deps.renderArtifactList(artifacts), "list", intent.query ? `trail · answers "${intent.query}"` : "trail · answers");
+					deps.emitText(deps.renderArtifactList(artifacts), "list", intent.query ? `docket · answers "${intent.query}"` : "docket · answers");
 					return;
 				}
 			}
@@ -528,11 +518,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				initialMode = "log";
 				artifacts = await catalog.search(intent.query);
 				if (artifacts.length === 0) {
-					deps.notify(`Trail search found no artifacts for: ${intent.query}`, "info");
+					deps.notify(`Docket search found no artifacts for: ${intent.query}`, "info");
 					return;
 				}
 				if (!deps.hasUI) {
-					deps.emitText(deps.renderArtifactList(artifacts), "list", `trail · search "${intent.query}"`);
+					deps.emitText(deps.renderArtifactList(artifacts), "list", `docket · search "${intent.query}"`);
 					return;
 				}
 			}
@@ -540,11 +530,11 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 			if (intent.kind === "artifact") {
 				const artifact = catalog.find(intent.idOrRef);
 				if (!artifact) {
-					deps.notify("Trail artifact not found", "error");
+					deps.notify("Docket artifact not found", "error");
 					return;
 				}
 				deps.markArtifactDone(artifact);
-				if (intent.action === "ref" || intent.action === "inject") {
+				if (intent.action === "ref") {
 					const r = deps.loadedArtifacts.toggleChip(artifact, "ref");
 					deps.refreshChipWidget();
 					deps.announceChipChange(artifact, "ref", r);
@@ -554,29 +544,29 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					deps.announceChipChange(artifact, "full", r);
 				} else {
 					const ok = await deps.copyText(catalog.fullText(artifact));
-					deps.notify(ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
+					deps.notify(ok ? `Docket copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
 				}
 				return;
 			}
 
 			if (!deps.hasUI) {
-				deps.emitText(deps.renderArtifactList(artifacts), "list", `trail · ${initialMode}`);
+				deps.emitText(deps.renderArtifactList(artifacts), "list", `docket · ${initialMode}`);
 				return;
 			}
 
 			while (true) {
-				const result = await deps.showTrailBrowser(catalog, artifacts, initialMode);
+				const result = await deps.showDocketBrowser(catalog, artifacts, initialMode);
 				if (!result) return;
-				if (result.action === "checkpoint") {
+				if (result.action === "save") {
 					await deps.createHandoffCheckpoint();
 					return;
 				}
 				if (result.action === "search") {
-					const query = (await deps.input("Search Trail", "commands, errors, files, answers..."))?.trim();
+					const query = (await deps.input("Search Docket", "commands, errors, files, answers..."))?.trim();
 					if (!query) continue;
 					const matches = await catalog.search(query);
 					if (matches.length === 0) {
-						deps.notify(`Trail search found no artifacts for: ${query}`, "info");
+						deps.notify(`Docket search found no artifacts for: ${query}`, "info");
 						continue;
 					}
 					artifacts = matches;
@@ -586,17 +576,17 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 				if (result.action === "tellWorker" && result.artifact) {
 					const workerRef = artifactWorkerRef(result.artifact);
 					if (!workerRef) {
-						deps.notify("Trail worker not found for this item", "error");
+						deps.notify("Docket worker not found for this item", "error");
 						continue;
 					}
 					await tellWorker(workerRef, undefined, result.artifact);
 					return;
 				}
 				if (result.action === "verdict" && result.artifact) {
-					const workerId = trailMetaString(result.artifact, "workerId") ?? artifactWorkerRef(result.artifact);
+					const workerId = docketMetaString(result.artifact, "workerId") ?? artifactWorkerRef(result.artifact);
 					const worker = workerId ? await findVerdictWorker(workerId) : undefined;
 					if (!worker) {
-						deps.notify("Trail worker not found for this item", "error");
+						deps.notify("Docket worker not found for this item", "error");
 						continue;
 					}
 					await runVerdict(worker);
@@ -627,7 +617,7 @@ export function createTrailCommandRouter(deps: TrailCommandRouterDeps) {
 					deps.announceChipChange(artifact, "full", r);
 				} else if (result.action === "copy") {
 					const ok = await deps.copyText(catalog.fullText(artifact));
-					deps.notify(ok ? `Trail copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
+					deps.notify(ok ? `Docket copied ${artifact.id}` : "No clipboard command found", ok ? "info" : "warning");
 				}
 				return;
 			}

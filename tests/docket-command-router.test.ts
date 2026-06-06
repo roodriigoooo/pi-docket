@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createTrailCommandRouter, type TrailCommandRouterDeps } from "../extensions/trail-command-router.js";
+import { createDocketCommandRouter, type DocketCommandRouterDeps } from "../extensions/docket-command-router.js";
 import type { ArtifactCatalog } from "../extensions/artifact-catalog.js";
 import type { CheckpointCommands } from "../extensions/checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "../extensions/checkpoint-store.js";
@@ -12,7 +12,7 @@ import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
 const checkpoint: CheckpointIndexEntry = { id: "ck-1", mode: "handoff", file: "/tmp/ck.md", createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo", consumeOnUse: true };
 const summary: CheckpointSummary = { entry: checkpoint, artifactCount: 1, estimatedTokens: 1, files: 0, errors: 0, commands: 0 };
-const worker: WorkerStatus = { id: "worker-1", index: 2, tmuxSession: "trail-worker-1", task: "inspect bug", cwd: "/repo", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "ready", summary: "ship the fix" };
+const worker: WorkerStatus = { id: "worker-1", index: 2, tmuxSession: "docket-worker-1", task: "inspect bug", cwd: "/repo", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "ready", summary: "ship the fix" };
 const workerStatus: Artifact = { id: "w2.status", displayId: "w2.status", ref: "worker-status:worker-1:0", kind: "response", title: "w2 ready: ship the fix", subtitle: "inspect bug", body: "worker: w2\nstate: ready\nmessage:\nship the fix", timestamp: 1, meta: { workerId: "worker-1", workerLabel: "w2", workerStatus: "ready", summary: "ship the fix" } };
 
 function fakeCatalog(): ArtifactCatalog {
@@ -29,7 +29,7 @@ function fakeCatalog(): ArtifactCatalog {
 	};
 }
 
-function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
+function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 	const calls: string[] = [];
 	const loadedArtifacts = {
 		clearChips: () => { calls.push("clearChips"); return true; },
@@ -77,7 +77,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		list: async () => [worker],
 		readArtifacts: async () => [workerStatus],
 	} as unknown as WorkerStore;
-	const deps: TrailCommandRouterDeps = {
+	const deps: DocketCommandRouterDeps = {
 		hasUI: false,
 		workerCommands,
 		checkpointCommands,
@@ -87,7 +87,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		notify: (text) => { calls.push(`notify:${text}`); },
 		emitText: (_text, kind, heading) => { calls.push(`emit:${kind}:${heading ?? ""}`); },
 		announce: (subject) => { calls.push(`announce:${subject}`); },
-		trailUsage: () => "usage",
+		docketUsage: () => "usage",
 		renderArtifactList: () => "artifacts",
 		renderParallelWorkList: () => "workers",
 		formatArtifact: (item) => item.title,
@@ -106,7 +106,7 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		showParallelWorkDashboard: async () => null,
 		showLoadPicker: async () => null,
 		showText: async () => { calls.push("showText"); },
-		showTrailBrowser: async () => null,
+		showDocketBrowser: async () => null,
 		showVerdict: async () => null,
 		showArtifact: async () => { calls.push("showArtifact"); },
 		openFileOrArtifact: async () => { calls.push("openFileOrArtifact"); },
@@ -117,46 +117,34 @@ function harness(overrides: Partial<TrailCommandRouterDeps> = {}) {
 		parallelKindLabel: (kind) => kind,
 		...overrides,
 	};
-	return { calls, router: createTrailCommandRouter(deps) };
+	return { calls, router: createDocketCommandRouter(deps) };
 }
 
-test("Trail Command Router handles clear through loaded artifact context", async () => {
+test("Docket Command Router handles clear through loaded artifact context", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "clear" });
-	assert.deepEqual(calls, ["clearChips", "refreshChips", "clearWorkerResult", "notify:Trail cleared"]);
+	assert.deepEqual(calls, ["clearChips", "refreshChips", "clearWorkerResult", "notify:Docket cleared"]);
 });
 
-test("Trail Command Router loads default checkpoint without UI", async () => {
+test("Docket Command Router loads default checkpoint without UI", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "load", refKind: "checkpoint" });
 	assert.deepEqual(calls, ["loadSource:checkpoint", "announce:loaded c1 · 1 artifact"]);
 });
 
-test("Trail Command Router routes worker delete and refreshes dock", async () => {
+test("Docket Command Router routes worker delete and refreshes dock", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "delete", target: "w2", targetKind: "worker" });
 	assert.deepEqual(calls, ["worker.delete", "refreshWorkers"]);
 });
 
-test("Trail Command Router shows worker result without UI", async () => {
-	const { calls, router } = harness();
-	await router.handle({ kind: "worker-result", worker: "w2", action: "show" });
-	assert.deepEqual(calls, ["emit:list:trail · w2"]);
-});
-
-test("Trail Command Router uses worker result as a prompt chip", async () => {
-	const { calls, router } = harness();
-	await router.handle({ kind: "worker-result", worker: "w2", action: "use" });
-	assert.deepEqual(calls, ["loadSource:worker", "toggleChip", "refreshChips", "showWorkerResult", "announceChip", "refreshWorkers"]);
-});
-
-test("Trail Command Router handles artifact ref chips through context", async () => {
+test("Docket Command Router handles artifact ref chips through context", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "artifact", action: "ref", idOrRef: "a1" });
 	assert.deepEqual(calls, ["done:command:1", "toggleChip", "refreshChips", "announceChip"]);
 });
 
-test("Trail Command Router verdict accept approves waiting worker without loading artifacts", async () => {
+test("Docket Command Router verdict accept approves waiting worker without loading artifacts", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
 	const { calls, router } = harness({
 		hasUI: true,

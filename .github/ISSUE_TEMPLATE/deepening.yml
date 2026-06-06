@@ -1,5 +1,5 @@
 name: Deepening opportunity
-description: Propose architecture work to make Trail deeper and more testable
+description: Propose architecture work to make Docket deeper and more testable
 labels: [architecture]
 body:
   - type: textarea

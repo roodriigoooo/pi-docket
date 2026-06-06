@@ -8,7 +8,7 @@ function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
 	return {
 		id: "worker-1",
 		index: 1,
-		tmuxSession: "trail-worker-1",
+		tmuxSession: "docket-worker-1",
 		task: "inspect worker flow",
 		cwd: "/repo",
 		createdAt: "2026-01-01T00:00:00.000Z",

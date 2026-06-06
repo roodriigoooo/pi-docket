@@ -1,5 +1,5 @@
-import { createArtifactCatalog, type ArtifactCatalog, type TrailRuntimeContext } from "./artifact-catalog.js";
-import { loadConfig, type TrailConfig } from "./trail-config.js";
+import { createArtifactCatalog, type ArtifactCatalog, type DocketRuntimeContext } from "./artifact-catalog.js";
+import { loadConfig, type DocketConfig } from "./docket-config.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { workerShortLabel, type WorkerStatus } from "./background-work.js";
 
@@ -47,8 +47,8 @@ export type ChipExpansion = {
 };
 
 export type LoadedArtifactContextDeps = {
-	loadConfig?: (cwd: string) => Promise<TrailConfig>;
-	createCatalog?: (ctx: TrailRuntimeContext, config: TrailConfig, carryover: Artifact[]) => ArtifactCatalog;
+	loadConfig?: (cwd: string) => Promise<DocketConfig>;
+	createCatalog?: (ctx: DocketRuntimeContext, config: DocketConfig, carryover: Artifact[]) => ArtifactCatalog;
 	readCheckpointArtifacts: (checkpoint: CheckpointIndexEntry) => Promise<Artifact[]>;
 	readWorkerArtifacts: (worker: WorkerStatus) => Promise<Artifact[]>;
 };
@@ -68,7 +68,7 @@ export type LoadedArtifactContext = {
 	drainCheckpointConsumes(markConsumed: (checkpoint: CheckpointIndexEntry) => Promise<void>): Promise<void>;
 	toggleChip(artifact: Artifact, mode: ChipMode): ChipToggleResult;
 	clearChips(): boolean;
-	expandChipsForSubmit(ctx: TrailRuntimeContext, userText: string): Promise<ChipExpansion>;
+	expandChipsForSubmit(ctx: DocketRuntimeContext, userText: string): Promise<ChipExpansion>;
 };
 
 function namespaceCarryover(artifacts: Artifact[], slot: string): Artifact[] {
@@ -79,8 +79,8 @@ function namespaceCarryover(artifacts: Artifact[], slot: string): Artifact[] {
 }
 
 function renderChipBlock(chip: Chip, content: string): string {
-	const opener = `<<trail @${chip.displayId} ${chip.mode}>>`;
-	const closer = `<</trail>>`;
+	const opener = `<<docket @${chip.displayId} ${chip.mode}>>`;
+	const closer = `<</docket>>`;
 	return `${opener}\n${content}\n${closer}`;
 }
 
@@ -202,7 +202,7 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 			chips = [];
 			return true;
 		},
-		async expandChipsForSubmit(ctx: TrailRuntimeContext, userText: string): Promise<ChipExpansion> {
+		async expandChipsForSubmit(ctx: DocketRuntimeContext, userText: string): Promise<ChipExpansion> {
 			if (chips.length === 0) return { text: userText, expanded: 0, missing: [] };
 			const config = await (deps.loadConfig ?? loadConfig)(ctx.cwd);
 			const catalog = (deps.createCatalog ?? createArtifactCatalog)(ctx, config, carryoverArtifacts());
@@ -218,8 +218,8 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 				blocks.push(renderChipBlock(chip, body));
 			}
 			if (blocks.length === 0) return { text: userText, expanded: 0, missing };
-			const header = `<<trail-context: ${blocks.length} reference${blocks.length === 1 ? "" : "s"}>>`;
-			const footer = `<</trail-context>>`;
+			const header = `<<docket-context: ${blocks.length} reference${blocks.length === 1 ? "" : "s"}>>`;
+			const footer = `<</docket-context>>`;
 			const wrapped = `${header}\n${blocks.join("\n\n")}\n${footer}`;
 			const text = userText.trim() ? `${wrapped}\n\n${userText}` : wrapped;
 			return { text, expanded: blocks.length, missing };

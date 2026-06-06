@@ -15,7 +15,7 @@ function git(cwd: string, args: string[], input?: string): string {
 }
 
 async function makeRepo(): Promise<{ root: string; workerPath: string; head: string; cleanup: () => Promise<void> }> {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-worker-changes-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-worker-changes-"));
 	git(root, ["init"]);
 	git(root, ["config", "user.name", "Test"]);
 	git(root, ["config", "user.email", "test@example.invalid"]);
@@ -40,7 +40,7 @@ function worker(root: string, workerPath: string, snapshotHead: string): WorkerS
 	return {
 		id: "worker-1",
 		index: 1,
-		tmuxSession: "trail-worker-1",
+		tmuxSession: "docket-worker-1",
 		task: "edit app text",
 		cwd: workerPath,
 		worktree: { path: workerPath, baseCwd: root, baseRoot: root, parentCwd: root, baseHead: snapshotHead, snapshotHead },
@@ -84,7 +84,7 @@ test("promote worker change set applies whole patch to parent", async () => {
 });
 
 test("promote worker change set applies copied workspace patch outside git repos", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-worker-copy-promote-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-worker-copy-promote-"));
 	const workspace = path.join(os.tmpdir(), `${path.basename(root)}-workspace`);
 	try {
 		await writeFile(path.join(root, "app.txt"), "one\n", "utf8");
@@ -105,7 +105,7 @@ test("promote worker change set applies copied workspace patch outside git repos
 });
 
 test("promote does not warn when parent still matches dirty spawn snapshot", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-worker-dirty-promote-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-worker-dirty-promote-"));
 	const workspace = path.join(os.tmpdir(), `${path.basename(root)}-workspace`);
 	try {
 		git(root, ["init"]);

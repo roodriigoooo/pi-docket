@@ -1,12 +1,12 @@
 name: Feature request
-description: Suggest a Trail capability
+description: Suggest a Docket capability
 labels: [enhancement]
 body:
   - type: textarea
     id: use-case
     attributes:
       label: Use case
-      description: What workflow should Trail support?
+      description: What workflow should Docket support?
     validations:
       required: true
   - type: textarea

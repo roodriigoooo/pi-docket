@@ -124,7 +124,7 @@ class CheckpointSelectorView implements Component {
 		const muted = (s: string) => this.theme.fg("muted", s);
 		const warning = (s: string) => this.theme.fg("warning", s);
 		const stats = checkpointSelectionStats(this.artifacts, this.state);
-		const header = `${accent(this.theme.bold("trail · checkpoint"))} ${dim(this.mode)} ${dim("·")} ${stats.selected}/${stats.total} selected ${dim("·")} ~${stats.estimatedTokens} tok`;
+		const header = `${accent(this.theme.bold("docket · checkpoint"))} ${dim(this.mode)} ${dim("·")} ${stats.selected}/${stats.total} selected ${dim("·")} ~${stats.estimatedTokens} tok`;
 		container.addChild(new Text(truncateToWidth(header, innerWidth - 2), 1, 0));
 
 		const windowSize = 14;

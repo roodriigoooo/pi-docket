@@ -7,7 +7,7 @@ function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
 	return {
 		id: "worker-1",
 		index: 2,
-		tmuxSession: "trail-worker-1",
+		tmuxSession: "docket-worker-1",
 		task: "inspect failing tests",
 		cwd: "/repo",
 		createdAt: "2026-01-01T00:00:00.000Z",
@@ -49,7 +49,7 @@ test("Background Work protocol patch clears questions for ready and failed state
 		summary: "done",
 		lastError: undefined,
 	});
-	assert.equal(workerProtocolResultText("failed"), "Trail failure recorded. Parent can review the failure.");
+	assert.equal(workerProtocolResultText("failed"), "Docket failure recorded. Parent can review the failure.");
 });
 
 test("Background Work stores structured done outcomes", () => {
@@ -110,7 +110,7 @@ test("Background Work formats live worker launch banner", () => {
 	assert.equal(workerLaunchSubject(worker({ state: "active" }), { now: Date.parse("2026-01-01T00:00:00.400Z") }), "spawned w2 · thinking");
 	assert.equal(workerLaunchSubject(worker({ state: "ready", summary: "done" })), "spawned w2(^_^) · ready");
 	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done" })), /status: w2\(\^_\^\) done/);
-	assert.match(workerLaunchDetail(worker()), /inbox:  \/trail/);
+	assert.match(workerLaunchDetail(worker()), /inbox:  \/docket/);
 });
 
 test("Background Work surfaces kind in chip and launch detail", () => {

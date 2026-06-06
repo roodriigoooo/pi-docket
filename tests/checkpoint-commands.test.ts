@@ -75,7 +75,7 @@ test("Checkpoint Commands delete respects cancelled confirmation", async () => {
 
 	assert.equal(deleted, false);
 	assert.deepEqual(purged, []);
-	assert.deepEqual(notifications, ["Trail delete cancelled"]);
+	assert.deepEqual(notifications, ["Docket delete cancelled"]);
 });
 
 test("Checkpoint Commands list emits checkpoint table", async () => {
@@ -99,6 +99,6 @@ test("Checkpoint Commands UI continue can preview then start selected checkpoint
 
 	await commands.continue();
 
-	assert.deepEqual(shown, ["Trail checkpoint ck-1"]);
+	assert.deepEqual(shown, ["Docket checkpoint ck-1"]);
 	assert.deepEqual(sessions, [{ id: "ck-1", content: "checkpoint markdown" }]);
 });

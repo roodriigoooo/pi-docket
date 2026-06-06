@@ -90,7 +90,7 @@ export function formatReadyEmbedMessage(worker: WorkerStatus): ReadyEmbed | unde
 	const subject = headline ? `${label}${tag} ready · ${truncate(headline, 60)}` : `${label}${tag} ready`;
 	return {
 		subject,
-		heading: "trail · worker ready",
+		heading: "docket · worker ready",
 		content: lines.join("\n"),
 		title: `${label}${tag} ready`,
 		subtitle: headline ? truncate(headline, 100) : "ready",

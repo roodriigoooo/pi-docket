@@ -14,7 +14,7 @@ function entry(id: string, timestamp: string, message: unknown) {
 }
 
 async function fixtureCatalog() {
-	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "trail-catalog-test-"));
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "docket-catalog-test-"));
 	await fs.mkdir(path.join(cwd, "src"), { recursive: true });
 	await fs.writeFile(path.join(cwd, "src/a.ts"), "export const current = true;\n", "utf8");
 	const longFailure = "boom ".repeat(260);
@@ -74,7 +74,7 @@ async function fixtureCatalog() {
 		{
 			id: "ck1",
 			type: "custom",
-			customType: "trail:checkpoint",
+			customType: "docket:checkpoint",
 			timestamp: "2026-01-01T00:08:00.000Z",
 			data: { id: "checkpoint-1", mode: "handoff", file: "/tmp/checkpoint-1.md", note: "carry on" }
 		},
@@ -94,7 +94,7 @@ test("Artifact Catalog extracts artifacts and supports stable lookup/reference/s
 	assert.equal(catalog.find(error.displayId), error);
 	assert.equal(catalog.find(error.ref), error);
 	assert.match(catalog.reference(error), /Avoid repeating this failure/);
-	assert.match(catalog.fullText(error), /# Trail artifact/);
+	assert.match(catalog.fullText(error), /# Docket artifact/);
 
 	const matches = await catalog.search("boom");
 	assert.ok(matches.some((artifact) => artifact.ref === error.ref));
@@ -120,7 +120,7 @@ test("Artifact Catalog inspects edit file artifacts as diffs", async () => {
 
 	const inspected = await catalog.inspect(file);
 	assert.match(inspected.title, /diff/);
-	assert.match(inspected.text, /Trail diff view/);
+	assert.match(inspected.text, /Docket diff view/);
 	assert.match(inspected.text, /\+export const current = true/);
 });
 
@@ -135,13 +135,13 @@ test("Artifact Catalog selects restart-oriented artifacts and shapes checkpoint 
 	assert.match(String(payload[0]?.body), /boom/);
 });
 
-test("Artifact Catalog accepts explicit Trail producer metadata on custom messages", () => {
+test("Artifact Catalog accepts explicit Docket producer metadata on custom messages", () => {
 	const branch = [
 		entry("m1", "2026-01-01T00:00:00.000Z", {
 			role: "custom",
 			customType: "pi-subagents",
 			content: text("# fallback heading\nworker answer body"),
-			details: { trail: { title: "Worker: auth plan", subtitle: "pi-subagents worker", kind: "response" } }
+			details: { docket: { title: "Worker: auth plan", subtitle: "pi-subagents worker", kind: "response" } }
 		}),
 	];
 	const catalog = createArtifactCatalog({ cwd: "/tmp/project", sessionManager: { getBranch: () => branch } }, { maxArtifacts: 10, maxBodyChars: 2000 });
@@ -158,5 +158,5 @@ test("Reference lists keep file guidance once", async () => {
 	const refs = buildReferenceList([...files, ...files], cwd);
 	assert.equal((refs.match(/Use current file contents/g) ?? []).length, 0);
 	assert.equal((refs.match(/File refs point to current disk paths/g) ?? []).length, 1);
-	assert.equal((refs.match(/Reference Trail/g) ?? []).length, 2);
+	assert.equal((refs.match(/Reference Docket/g) ?? []).length, 2);
 });

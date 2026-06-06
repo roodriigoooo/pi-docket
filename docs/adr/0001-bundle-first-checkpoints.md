@@ -1,6 +1,8 @@
 # Bundle-first checkpoints
 
-A checkpoint is a frozen **artifact bundle** (`<id>.artifacts.json`) plus a small deterministic **orientation header** — not a model-written summary. `continue` opens a fresh session, **mounts** the bundle at zero model-context tokens, and injects only the header (git, files touched, errors, the human-authored note); artifacts are chipped on demand. The model summarizer becomes an opt-in `--summarize` layer, off the default path. The four modes (`handoff/compact/debug/review`) are dropped in favour of one default selection (errors + files + recent decisions) that the interactive selector prunes.
+Superseded in public UX by [ADR-0002](./0002-rename-to-docket.md): users now see **evidence bundles** via `/docket save` and `/docket load`; Pi owns session continuation. Internal storage still uses checkpoint type names for compatibility.
+
+A checkpoint is a frozen **artifact bundle** (`<id>.artifacts.json`) plus a small deterministic **orientation header** — not a model-written summary. The old `continue` path opened a fresh session, **mounted** the bundle at zero model-context tokens, and injected only the header (git, files touched, errors, the human-authored note); artifacts were chipped on demand. The model summarizer became an opt-in `--summarize` layer, off the default path. The four modes (`handoff/compact/debug/review`) were dropped in favour of one default selection (errors + files + recent decisions) that the interactive selector prunes.
 
 ## Status
 
@@ -8,7 +10,7 @@ accepted
 
 ## Considered options
 
-- **Summary-first (previous default):** the summarizer ran on every checkpoint and `continue` injected its prose. Rejected: it contradicts Trail's stated thesis ("it keeps the useful artifacts around" rather than "compressing everything into a summary"), pays a model call per checkpoint, bloats the fresh session's context, and lets the model *invent* decisions/next-steps — the one thing its own system prompt warned against.
+- **Summary-first (previous default):** the summarizer ran on every checkpoint and `continue` injected its prose. Rejected: it contradicts Docket's stated thesis ("it keeps the useful artifacts around" rather than "compressing everything into a summary"), pays a model call per checkpoint, bloats the fresh session's context, and lets the model *invent* decisions/next-steps — the one thing its own system prompt warned against.
 - **Keep four modes:** rejected once the summarizer left the hot path — the modes reduced to thin kind-orderings that the interactive selector already supersedes.
 
 ## Consequences

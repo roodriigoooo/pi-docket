@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/trail.js";
+import { diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/docket.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
 import type { Artifact } from "../extensions/types.js";
 
@@ -8,7 +8,7 @@ function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
 	return {
 		id: "worker-1",
 		index: 1,
-		tmuxSession: "trail-workers:w1",
+		tmuxSession: "docket-workers:w1",
 		task: "inspect auth",
 		cwd: "/repo",
 		createdAt: "2026-01-01T00:00:00.000Z",

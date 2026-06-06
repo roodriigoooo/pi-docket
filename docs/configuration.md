@@ -1,9 +1,9 @@
 # Configuration
 
-Trail reads two files and merges them, project overriding global:
+Docket reads two files and merges them, project overriding global:
 
-1. `~/.pi/agent/trail.json` — global
-2. `<project>/.pi/trail.json` — project
+1. `~/.pi/agent/docket.json` — global
+2. `<project>/.pi/docket.json` — project
 
 Both optional. Defaults below.
 
@@ -33,23 +33,23 @@ Both optional. Defaults below.
     "pruneAfterHours": 24,
     "tmuxStatusLine": false,
     "captureTerminal": false,
-    "guardrailsPath": "~/.pi/agent/trail/my-worker-rules.md"
+    "guardrailsPath": "~/.pi/agent/docket/my-worker-rules.md"
   }
 }
 ```
 
-## Core artifact + checkpoint knobs
+## Core artifact + bundle knobs
 
 | key | default | meaning |
 |---|---|---|
 | `maxArtifacts` | 300 | hard cap on artifacts kept per session. older entries fall off. |
 | `maxBodyChars` | 6000 | truncate any single artifact body to this many chars before storing. |
-| `checkpointArtifacts` | 24 | initial artifact pool a checkpoint considers before user prune. |
-| `consumedRetentionDays` | 7 | how long `--once` checkpoints stay on disk after first use. |
+| `checkpointArtifacts` | 24 | initial artifact pool a saved bundle considers before user prune. Internal key name kept for storage compatibility. |
+| `consumedRetentionDays` | 7 | how long `--once` bundles stay on disk after first use. |
 
 ## Summarizer (opt-in)
 
-Checkpoints are bundle-first: by default `/trail checkpoint` writes a deterministic orientation header and never calls a model ([ADR-0001](./adr/0001-bundle-first-checkpoints.md)). The summarizer only runs when you pass `--summarize`; these keys tune it when you do.
+Evidence bundles are bundle-first: by default `/docket save` writes a deterministic orientation header and never calls a model ([ADR-0001](./adr/0001-bundle-first-checkpoints.md)). The summarizer only runs when you pass `--summarize`; these keys tune it when you do.
 
 | key | default | meaning |
 |---|---|---|
@@ -60,20 +60,20 @@ Checkpoints are bundle-first: by default `/trail checkpoint` writes a determinis
 | `summarizer.maxInputChars` | 36000 | cap input fed into summarizer. |
 | `summarizer.timeoutMs` | 120000 | abort summarization after this many ms; fall back to the bundle header. |
 
-`/trail checkpoint --model <provider/model>` and `--max-output <tokens>` override per call.
+`/docket save --model <provider/model>` and `--max-output <tokens>` override per call.
 
 ## Worker fleet
 
 | key | default | meaning |
 |---|---|---|
-| `worker.maxActive` | 8 | reject `/trail spawn` once this many workers are starting/active/idle/needs_input. |
-| `worker.maxSpawnDepth` | 2 | bound `trail_spawn_child` recursion (top-level worker = depth 0). |
-| `worker.defaultKind` | `default` | kind used when `/trail spawn` is invoked without `--as`. |
+| `worker.maxActive` | 8 | reject `/docket spawn` once this many workers are starting/active/idle/needs_input. |
+| `worker.maxSpawnDepth` | 2 | bound `docket_spawn_child` recursion (top-level worker = depth 0). |
+| `worker.defaultKind` | `default` | kind used when `/docket spawn` is invoked without `--as`. |
 | `worker.dockIdleHideMinutes` | 30 | hide `ended` workers from the dock after this many minutes; 0 keeps them. |
 | `worker.pruneAfterHours` | 24 | auto-prune `ended` worker dirs after this many hours; 0 disables. |
-| `worker.tmuxStatusLine` | false | write a compact summary to `trail-workers`' `status-right`. |
+| `worker.tmuxStatusLine` | false | write a compact summary to `docket-workers`' `status-right`. |
 | `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
-| `worker.autoRespawn` | false | reserved; today `/trail respawn` is manual. |
+| `worker.autoRespawn` | false | reserved; today `/docket respawn` is manual. |
 | `worker.autoEmbedSummary` | true | when a worker reaches `ready`, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session. Set false to keep the parent JSONL purely manual — the inbox card still shows up; nothing is auto-injected. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
 
@@ -83,8 +83,8 @@ Checkpoints are bundle-first: by default `/trail checkpoint` writes a determinis
 
 A *kind* is a markdown file with YAML frontmatter. Drop into either:
 
-- `~/.pi/agent/trail/worker-kinds/*.md` — user-global
-- `<project>/.pi/trail/worker-kinds/*.md` — project-scoped
+- `~/.pi/agent/docket/worker-kinds/*.md` — user-global
+- `<project>/.pi/docket/worker-kinds/*.md` — project-scoped
 
 Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/` and reload on every command.
 
@@ -93,7 +93,7 @@ Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/`
 | field | default | meaning |
 |---|---|---|
 | `name` | — | required; kebab-case slug used by `--as` |
-| `description` | — | one-line shown in `/trail kinds` |
+| `description` | — | one-line shown in `/docket kinds` |
 | `model` | parent | optional model override (`provider/model` string) |
 | `thinking` | `medium` | `off` / `low` / `medium` / `high` |
 | `read_only` | false | when true, appendix tells the worker not to edit files |
@@ -101,15 +101,15 @@ Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/`
 | `parent_seed` | `full` | `full` to seed parent session JSONL; `none` for a fresh worker |
 | `max_artifacts` | — | soft cap surfaced as guidance; not enforced |
 | `max_duration_sec` | — | soft cap surfaced as guidance |
-| `can_spawn` | none | comma-list of kinds this worker may dispatch via `trail_spawn_child` |
+| `can_spawn` | none | comma-list of kinds this worker may dispatch via `docket_spawn_child` |
 | `layout` | `single` | `split-events` opens a right pane with `tail -F events.ndjson` |
 | `guardrails_append` | — | extra guardrail lines folded into the kind appendix |
 
-The MD body is appended to the universal guardrails — it never replaces them. The protocol contract (`trail_wait`/`trail_done`/`trail_fail`/`trail_todos`) is the same for every kind.
+The MD body is appended to the universal guardrails — it never replaces them. The protocol contract (`docket_wait`/`docket_done`/`docket_fail`/`docket_todos`) is the same for every kind.
 
 ### Example: a `reviewer` kind
 
-`~/.pi/agent/trail/worker-kinds/reviewer.md`:
+`~/.pi/agent/docket/worker-kinds/reviewer.md`:
 
 ```markdown
 ---
@@ -122,7 +122,7 @@ max_duration_sec: 180
 thinking: high
 ---
 
-You are a code reviewer. Read the diff vs HEAD, then call `trail_done` with:
+You are a code reviewer. Read the diff vs HEAD, then call `docket_done` with:
 - `outcome: findings` (or `no_evidence` when the diff is clean)
 - `summary`: one sentence on what changed and overall risk
 - `evidence`: file:line refs for each concrete finding
@@ -132,12 +132,12 @@ You are a code reviewer. Read the diff vs HEAD, then call `trail_done` with:
 Spawn it:
 
 ```bash
-/trail spawn --as reviewer audit the diff for missing error handling
+/docket spawn --as reviewer audit the diff for missing error handling
 ```
 
 ### Example: a model + child spawn override
 
-`<project>/.pi/trail/worker-kinds/architect.md`:
+`<project>/.pi/docket/worker-kinds/architect.md`:
 
 ```markdown
 ---
@@ -152,7 +152,7 @@ layout: split-events
 ---
 
 You are an architect. Produce an ordered plan: what to change, in which order,
-and which files each step touches. Use `trail_spawn_child` with `--as scout`
+and which files each step touches. Use `docket_spawn_child` with `--as scout`
 when you need to ground a step in real code instead of guessing.
 ```
 
@@ -161,7 +161,7 @@ when you need to ground a step in real code instead of guessing.
 Other pi extensions can contribute kinds at runtime:
 
 ```ts
-globalThis.__trail?.registerWorkerKind({
+globalThis.__docket?.registerWorkerKind({
   name: "linkcheck",
   description: "Verify external links in markdown",
   readOnly: true,
@@ -174,18 +174,18 @@ See [architecture.md](./architecture.md) for the full extension surface.
 
 ## Storage paths
 
-Checkpoint state:
+Bundle state:
 
-- `~/.pi/agent/trail/checkpoints/<id>.md`
-- `~/.pi/agent/trail/checkpoints/<id>.artifacts.json`
-- `~/.pi/agent/trail/events.ndjson`
-- `~/.pi/agent/trail/index.json` (compatibility snapshot)
+- `~/.pi/agent/docket/checkpoints/<id>.md`
+- `~/.pi/agent/docket/checkpoints/<id>.artifacts.json`
+- `~/.pi/agent/docket/events.ndjson`
+- `~/.pi/agent/docket/index.json` (compatibility snapshot)
 
 Worker state:
 
-- `~/.pi/agent/trail/workers/<id>/task.md`
-- `~/.pi/agent/trail/workers/<id>/status.json`
-- `~/.pi/agent/trail/workers/<id>/artifacts.json`
-- `~/.pi/agent/trail/workers/<id>/events.ndjson`
-- `~/.pi/agent/trail/workers/<id>/session/` — seeded pi session JSONL
-- `~/.pi/agent/trail/workers/<id>/workspace/` — detached git worktree
+- `~/.pi/agent/docket/workers/<id>/task.md`
+- `~/.pi/agent/docket/workers/<id>/status.json`
+- `~/.pi/agent/docket/workers/<id>/artifacts.json`
+- `~/.pi/agent/docket/workers/<id>/events.ndjson`
+- `~/.pi/agent/docket/workers/<id>/session/` — seeded pi session JSONL
+- `~/.pi/agent/docket/workers/<id>/workspace/` — detached git worktree

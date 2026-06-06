@@ -168,10 +168,10 @@ export type DockRow = {
 };
 
 const SKIP_TOOL_EVENT_NAMES = new Set([
-	"trail_wait",
-	"trail_done",
-	"trail_fail",
-	"trail_todos",
+	"docket_wait",
+	"docket_done",
+	"docket_fail",
+	"docket_todos",
 ]);
 
 function truncateTool(text: string, max = 60): string {

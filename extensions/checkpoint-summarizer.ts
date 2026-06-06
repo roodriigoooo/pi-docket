@@ -36,7 +36,7 @@ export type CheckpointSummarizer = {
 
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
-	return `${text.slice(0, max)}\n\n[Trail truncated ${text.length - max} chars]`;
+	return `${text.slice(0, max)}\n\n[Docket truncated ${text.length - max} chars]`;
 }
 
 function checkpointSystemPrompt(mode: CheckpointMode, maxOutputTokens: number): string {
@@ -47,7 +47,7 @@ function checkpointSystemPrompt(mode: CheckpointMode, maxOutputTokens: number): 
 		review: "Focus on review state: changed files, design decisions, risks, test status, and what a reviewer should inspect next.",
 	};
 	return [
-		"You are Trail, a context distillation assistant for Pi coding sessions.",
+		"You are Docket, a context distillation assistant for Pi coding sessions.",
 		"Summarize session artifacts into a fresh-session checkpoint.",
 		"Optimize for fresh-session continuation, not transcript preservation.",
 		"Include only restart-critical context: goal, current state, decisions, failed attempts, dead ends, next steps, and references.",
@@ -99,7 +99,7 @@ export function createCheckpointSummarizer(): CheckpointSummarizer {
 					return provider && rest.length ? input.modelRegistry.find(provider, rest.join("/")) : undefined;
 				})()
 				: input.activeModel;
-			if (!model) throw new Error("No Trail summarizer model configured and no active model selected");
+			if (!model) throw new Error("No Docket summarizer model configured and no active model selected");
 
 			const auth = await input.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok || !auth.apiKey) throw new Error(auth.ok ? `No API key for ${model.provider}` : auth.error);
@@ -115,10 +115,10 @@ export function createCheckpointSummarizer(): CheckpointSummarizer {
 				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: maxOutputTokens, timeoutMs: input.config.timeoutMs },
 			);
 			const summary = response.content.filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n").trim();
-			if (!summary) throw new Error("Trail summarizer returned empty checkpoint");
+			if (!summary) throw new Error("Docket summarizer returned empty checkpoint");
 
 			const lines: string[] = [];
-			lines.push(`# Trail checkpoint ${input.id}`);
+			lines.push(`# Docket checkpoint ${input.id}`);
 			lines.push("");
 			lines.push(`mode: ${input.mode}`);
 			lines.push("summary: llm");
@@ -133,7 +133,7 @@ export function createCheckpointSummarizer(): CheckpointSummarizer {
 			lines.push("");
 			lines.push(summary);
 			lines.push("");
-			lines.push("## Trail artifact references");
+			lines.push("## Docket artifact references");
 			lines.push(input.references);
 			return lines.join("\n");
 		},

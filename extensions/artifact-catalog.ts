@@ -8,7 +8,7 @@ export type ArtifactCatalogConfig = {
 	maxBodyChars: number;
 };
 
-export type TrailRuntimeContext = {
+export type DocketRuntimeContext = {
 	cwd: string;
 	sessionManager: { getBranch(): unknown[] };
 };
@@ -33,7 +33,7 @@ type ToolCallInfo = {
 	timestamp?: number;
 };
 
-const CHECKPOINT_CUSTOM_TYPE = "trail:checkpoint";
+const CHECKPOINT_CUSTOM_TYPE = "docket:checkpoint";
 
 export function textFromContent(content: unknown): string {
 	if (typeof content === "string") return content;
@@ -63,7 +63,7 @@ function toolCallsFromContent(content: unknown): Array<{ id: string; name: strin
 
 export function truncateText(text: string, max: number): string {
 	if (text.length <= max) return text;
-	return `${text.slice(0, max)}\n\n[Trail truncated ${text.length - max} chars]`;
+	return `${text.slice(0, max)}\n\n[Docket truncated ${text.length - max} chars]`;
 }
 
 function firstLine(text: string, fallback: string): string {
@@ -98,7 +98,7 @@ function diffStats(diff: string): string | undefined {
 
 export function formatArtifact(artifact: Artifact): string {
 	const lines = [
-		`# Trail artifact ${artifact.displayId}`,
+		`# Docket artifact ${artifact.displayId}`,
 		`ref: ${artifact.ref}`,
 		`kind: ${artifact.kind}`,
 		artifact.entryId ? `entry: ${artifact.entryId}` : undefined,
@@ -173,7 +173,7 @@ function fileArtifactFromTool(call: ToolCallInfo, entry: any, cwd: string): Omit
 	};
 }
 
-function buildArtifacts(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig): Artifact[] {
+function buildArtifacts(ctx: DocketRuntimeContext, config: ArtifactCatalogConfig): Artifact[] {
 	const branch = ctx.sessionManager.getBranch();
 	const calls = new Map<string, ToolCallInfo>();
 	const artifacts: Artifact[] = [];
@@ -207,12 +207,12 @@ function buildArtifacts(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig)
 		const timestamp = Date.parse(entry.timestamp);
 
 		if (msg?.role === "custom") {
-			const trailMeta = asRecord(asRecord(msg.details)?.trail);
+			const docketMeta = asRecord(asRecord(msg.details)?.docket);
 			const text = textFromContent(msg.content).trim();
-			if (trailMeta && text) {
-				const kind = isArtifactKind(trailMeta.kind) ? trailMeta.kind : "response";
-				const title = asString(trailMeta.title) ?? firstHeading(text) ?? firstLine(text, "extension output");
-				const subtitle = asString(trailMeta.subtitle) ?? asString(msg.customType) ?? "extension output";
+			if (docketMeta && text) {
+				const kind = isArtifactKind(docketMeta.kind) ? docketMeta.kind : "response";
+				const title = asString(docketMeta.title) ?? firstHeading(text) ?? firstLine(text, "extension output");
+				const subtitle = asString(docketMeta.subtitle) ?? asString(msg.customType) ?? "extension output";
 				push({
 					kind,
 					title,
@@ -220,7 +220,7 @@ function buildArtifacts(ctx: TrailRuntimeContext, config: ArtifactCatalogConfig)
 					body: text,
 					entryId: entry.id,
 					timestamp,
-					meta: { customType: msg.customType, trail: trailMeta },
+					meta: { customType: msg.customType, docket: docketMeta },
 				});
 			}
 			continue;
@@ -354,15 +354,15 @@ function buildArtifactReference(artifact: Artifact, cwd: string, options: { incl
 		const file = artifactFilePath(artifact, cwd);
 		const guidance = options.includeFileGuidance === false ? "" : " Use current file contents from disk if needed; do not paste file contents unless asked.";
 		return file
-			? `Reference Trail ${ref}: file \`${path.relative(cwd, file) || file}\` (${artifact.title}).${guidance}`
-			: `Reference Trail ${ref}: file artifact \`${artifact.title}\`. ${artifact.subtitle}`;
+			? `Reference Docket ${ref}: file \`${path.relative(cwd, file) || file}\` (${artifact.title}).${guidance}`
+			: `Reference Docket ${ref}: file artifact \`${artifact.title}\`. ${artifact.subtitle}`;
 	}
-	if (artifact.kind === "command") return `Reference Trail ${ref}: command ${artifact.title} (${artifact.subtitle}). Use result only if relevant; avoid repeating failed command unless correcting it.`;
-	if (artifact.kind === "error") return `Reference Trail ${ref}: prior error ${artifact.title} (${artifact.subtitle}). Avoid repeating this failure unless explicitly fixing it.`;
-	if (artifact.kind === "prompt") return `Reference Trail ${ref}: prior user prompt \"${truncateText(artifact.title, 160)}\".`;
-	if (artifact.kind === "response") return `Reference Trail ${ref}: prior model response \"${truncateText(artifact.title, 160)}\".`;
-	if (artifact.kind === "code") return `Reference Trail ${ref}: ${artifact.title} (${artifact.subtitle}). Inspect artifact before reusing exact code.`;
-	return `Reference Trail ${ref}: ${artifact.title}. ${artifact.subtitle}`;
+	if (artifact.kind === "command") return `Reference Docket ${ref}: command ${artifact.title} (${artifact.subtitle}). Use result only if relevant; avoid repeating failed command unless correcting it.`;
+	if (artifact.kind === "error") return `Reference Docket ${ref}: prior error ${artifact.title} (${artifact.subtitle}). Avoid repeating this failure unless explicitly fixing it.`;
+	if (artifact.kind === "prompt") return `Reference Docket ${ref}: prior user prompt \"${truncateText(artifact.title, 160)}\".`;
+	if (artifact.kind === "response") return `Reference Docket ${ref}: prior model response \"${truncateText(artifact.title, 160)}\".`;
+	if (artifact.kind === "code") return `Reference Docket ${ref}: ${artifact.title} (${artifact.subtitle}). Inspect artifact before reusing exact code.`;
+	return `Reference Docket ${ref}: ${artifact.title}. ${artifact.subtitle}`;
 }
 
 export function buildReferenceList(artifacts: Artifact[], cwd: string): string {
@@ -388,7 +388,7 @@ async function inspectTextForArtifact(artifact: Artifact, cwd: string): Promise<
 	if (diff) {
 		return {
 			title: file ? `${file} diff` : `${artifact.title} diff`,
-			text: [`# Trail diff view`, file ? `path: ${file}` : undefined, `artifact: ${artifact.ref} (${artifact.displayId}) ${artifact.title}`, `viewing: edit diff`, "", diff]
+			text: [`# Docket diff view`, file ? `path: ${file}` : undefined, `artifact: ${artifact.ref} (${artifact.displayId}) ${artifact.title}`, `viewing: edit diff`, "", diff]
 				.filter((line): line is string => line !== undefined)
 				.join("\n"),
 		};
@@ -396,19 +396,19 @@ async function inspectTextForArtifact(artifact: Artifact, cwd: string): Promise<
 	if (!file) return { title: artifact.title, text: formatArtifact(artifact) };
 	try {
 		const stat = await fs.stat(file);
-		if (!stat.isFile()) return { title: artifact.title, text: `${formatArtifact(artifact)}\n\n[Trail: ${file} is not a file]` };
+		if (!stat.isFile()) return { title: artifact.title, text: `${formatArtifact(artifact)}\n\n[Docket: ${file} is not a file]` };
 		const content = await fs.readFile(file, "utf8");
 		return {
 			title: file,
-			text: [`# Trail file view`, `path: ${file}`, `artifact: ${artifact.ref} (${artifact.displayId}) ${artifact.title}`, `viewing: current file contents`, "", content].join("\n"),
+			text: [`# Docket file view`, `path: ${file}`, `artifact: ${artifact.ref} (${artifact.displayId}) ${artifact.title}`, `viewing: current file contents`, "", content].join("\n"),
 		};
 	} catch (err) {
-		return { title: artifact.title, text: `${formatArtifact(artifact)}\n\n[Trail could not read current file: ${String(err)}]` };
+		return { title: artifact.title, text: `${formatArtifact(artifact)}\n\n[Docket could not read current file: ${String(err)}]` };
 	}
 }
 
 export function createArtifactCatalog(
-	ctx: TrailRuntimeContext,
+	ctx: DocketRuntimeContext,
 	config: ArtifactCatalogConfig,
 	carryover: Artifact[] = [],
 ): ArtifactCatalog {

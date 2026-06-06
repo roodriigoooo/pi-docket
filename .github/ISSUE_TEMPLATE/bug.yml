@@ -1,5 +1,5 @@
 name: Bug report
-description: Report incorrect Trail behavior
+description: Report incorrect Docket behavior
 labels: [bug]
 body:
   - type: textarea
@@ -16,7 +16,7 @@ body:
       description: Commands, session steps, config, and Pi version.
       placeholder: |
         pi --version
-        /trail ...
+        /docket ...
     validations:
       required: true
   - type: textarea

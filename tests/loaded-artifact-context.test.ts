@@ -36,7 +36,7 @@ const checkpoint: CheckpointIndexEntry = {
 const worker: WorkerStatus = {
 	id: "worker-1",
 	index: 2,
-	tmuxSession: "trail-worker-1",
+	tmuxSession: "docket-worker-1",
 	task: "inspect bug",
 	cwd: "/repo",
 	createdAt: "2026-01-01T00:00:00.000Z",
@@ -95,9 +95,9 @@ test("Loaded Artifact context expands ref and full chips into submit text", asyn
 
 	assert.equal(result.expanded, 2);
 	assert.deepEqual(result.missing, []);
-	assert.match(result.text, /<<trail-context: 2 references>>/);
-	assert.ok(result.text.includes("<<trail @c1 ref>>\nref:c1\n<</trail>>"));
-	assert.ok(result.text.includes("<<trail @f1 full>>\nfull:f1\n<</trail>>"));
+	assert.match(result.text, /<<docket-context: 2 references>>/);
+	assert.ok(result.text.includes("<<docket @c1 ref>>\nref:c1\n<</docket>>"));
+	assert.ok(result.text.includes("<<docket @f1 full>>\nfull:f1\n<</docket>>"));
 	assert.match(result.text, /\n\ncontinue$/);
 });
 

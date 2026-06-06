@@ -41,11 +41,11 @@ export type CheckpointStore = {
 };
 
 function checkpointDir(): string {
-	return path.join(getAgentDir(), "trail", "checkpoints");
+	return path.join(getAgentDir(), "docket", "checkpoints");
 }
 
 function checkpointIndexFile(): string {
-	return path.join(getAgentDir(), "trail", "index.json");
+	return path.join(getAgentDir(), "docket", "index.json");
 }
 
 function checkpointMarkdownFile(id: string): string {

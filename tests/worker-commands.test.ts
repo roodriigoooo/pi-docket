@@ -8,7 +8,7 @@ import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
 const worker: WorkerStatus = {
 	id: "worker-1",
 	index: 2,
-	tmuxSession: "trail-worker-1",
+	tmuxSession: "docket-worker-1",
 	task: "inspect bug now please",
 	cwd: "/repo",
 	createdAt: "2026-01-01T00:00:00.000Z",
@@ -71,7 +71,7 @@ function deps(workers = [worker]) {
 		maxActive: () => 8,
 		captureTerminal: () => false,
 		notify: (text) => notifications.push(text),
-		announce: (subject, detail, kind, _trail, meta) => announcements.push({ subject, detail, kind, meta }),
+		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
 	});
 	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded };
@@ -90,8 +90,8 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	assert.equal(spawned[0]?.worktree, true); // default kind has defaultWorktree=true
 	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
 	assert.match(announcements[0]?.detail ?? "", /status: w2 inspect bug now please/);
-	assert.match(announcements[0]?.detail ?? "", /inbox:  \/trail/);
-	assert.match(announcements[0]?.detail ?? "", /debug:  \/trail workers/);
+	assert.match(announcements[0]?.detail ?? "", /inbox:  \/docket/);
+	assert.match(announcements[0]?.detail ?? "", /debug:  \/docket workers/);
 	assert.deepEqual(announcements[0]?.meta, { workerId: "worker-1" });
 });
 
@@ -155,7 +155,7 @@ test("Worker Commands reports missing worker", async () => {
 
 	await commands.load("w2");
 
-	assert.deepEqual(notifications, ["Trail worker not found"]);
+	assert.deepEqual(notifications, ["Docket worker not found"]);
 });
 
 test("workerCompletionCandidates returns recent worker labels", async () => {

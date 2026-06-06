@@ -11,7 +11,7 @@ function makeStatus(partial: Partial<WorkerStatus> & { id: string; index: number
 	return {
 		id: partial.id,
 		index: partial.index,
-		tmuxSession: `trail-worker-${partial.id}`,
+		tmuxSession: `docket-worker-${partial.id}`,
 		task: partial.task ?? "demo",
 		cwd: partial.cwd ?? "/repo",
 		createdAt: partial.createdAt ?? "2026-05-01T00:00:00.000Z",
@@ -32,7 +32,7 @@ async function seedWorkerDir(root: string, id: string, index: number, artifactsC
 }
 
 test("WorkerSnapshotCache caches reads by mtime", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-"));
 	try {
 		const { statusFile, artifactsFile } = await seedWorkerDir(root, "alpha", 1, "[]");
 		const cache = new WorkerSnapshotCache(root);
@@ -56,7 +56,7 @@ test("WorkerSnapshotCache caches reads by mtime", async () => {
 });
 
 test("WorkerSnapshotCache drops removed worker directories", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-rm-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-rm-"));
 	try {
 		await seedWorkerDir(root, "alpha", 1, "[]");
 		await seedWorkerDir(root, "beta", 2, "[]");
@@ -75,14 +75,14 @@ test("WorkerSnapshotCache drops removed worker directories", async () => {
 });
 
 test("WorkerSnapshotCache yields empty snapshot when root missing", async () => {
-	const cache = new WorkerSnapshotCache(path.join(os.tmpdir(), `trail-cache-missing-${Date.now()}`));
+	const cache = new WorkerSnapshotCache(path.join(os.tmpdir(), `docket-cache-missing-${Date.now()}`));
 	const snap = await cache.snapshot();
 	assert.equal(snap.workers.length, 0);
 	assert.equal(snap.artifactsByWorker.size, 0);
 });
 
 test("WorkerSnapshotCache keeps a sticky recent-event buffer across snapshots", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-events-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-events-"));
 	try {
 		await seedWorkerDir(root, "alpha", 1, "[]");
 		const cache = new WorkerSnapshotCache(root);
@@ -105,7 +105,7 @@ test("WorkerSnapshotCache keeps a sticky recent-event buffer across snapshots", 
 });
 
 test("WorkerSnapshotCache caps recent-event buffer", async () => {
-	const root = await mkdtemp(path.join(os.tmpdir(), "trail-dock-cache-cap-"));
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-cap-"));
 	try {
 		await seedWorkerDir(root, "alpha", 1, "[]");
 		const cache = new WorkerSnapshotCache(root);

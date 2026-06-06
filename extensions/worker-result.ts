@@ -63,7 +63,7 @@ export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [
 		body && body !== summary ? `answer:\n${body}` : undefined,
 		questions ? `needs input:\n${questions}` : undefined,
 		todos.length ? `progress:\n${todos.join("\n")}` : undefined,
-		`actions: /trail use ${label} · /trail ask ${label}`,
+		`actions: /docket use ${label} · /docket ask ${label}`,
 		result && !resultIsStatus ? `ref: @${result.displayId}` : undefined,
 	].filter((line): line is string => line !== undefined).join("\n");
 }

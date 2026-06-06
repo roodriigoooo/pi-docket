@@ -7,12 +7,11 @@ export type CheckpointCreateOptions = {
 	maxOutputTokens?: number;
 };
 
-export type TrailIntent =
+export type DocketIntent =
 	| { kind: "help"; advanced?: boolean }
 	| { kind: "browse"; mode?: "review" | "answers" | "log" }
 	| { kind: "clear" }
-	| { kind: "checkpoint"; options: CheckpointCreateOptions }
-	| { kind: "continue"; idOrLast?: string }
+	| { kind: "save"; options: CheckpointCreateOptions }
 	| { kind: "delete"; target: string | undefined; targetKind: "checkpoint" | "worker" }
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean; allProjects?: boolean }
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
@@ -22,19 +21,18 @@ export type TrailIntent =
 	| { kind: "respawn"; target: string }
 	| { kind: "workers"; allProjects?: boolean }
 	| { kind: "verdict"; worker?: string }
-	| { kind: "worker-result"; worker: string; action: "show" | "use" }
 	| { kind: "tell"; worker: string; text?: string }
 	| { kind: "attach"; worker?: string }
 	| { kind: "worker-state"; state: "needs_input" | "ready" | "failed"; text?: string }
 	| { kind: "answers"; query?: string }
 	| { kind: "search"; query: string }
-	| { kind: "artifact"; action: "ref" | "inject" | "inject-full" | "copy"; idOrRef: string };
+	| { kind: "artifact"; action: "ref" | "inject-full" | "copy"; idOrRef: string };
 
 export type ParseResult =
-	| { ok: true; intent: TrailIntent }
+	| { ok: true; intent: DocketIntent }
 	| { ok: false; message: string; usage: string };
 
-export const TRAIL_COMMANDS = ["answers", "log", "search", "checkpoint", "continue", "resume", "spawn", "respawn", "result", "use", "ask", "tell", "verdict", "attach", "wait", "done", "fail", "workers", "kinds", "load", "unload", "delete", "list", "ref", "inject", "inject-full", "copy", "clear", "help"] as const;
+export const DOCKET_COMMANDS = ["answers", "attach", "clear", "copy", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -45,56 +43,50 @@ function stripWorkerPrefix(value: string): { id: string; isWorker: boolean } {
 	return { id: value, isWorker: false };
 }
 
-const CHECKPOINT_USAGE = "/trail checkpoint [--once] [--summarize [--model <provider/model>] [--max-output <tokens>]] [--] [note]";
+const SAVE_USAGE = "/docket save [--once] [--summarize [--model <provider/model>] [--max-output <tokens>]] [--] [note]";
 const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--summarize"]);
 const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
-export function trailUsage(advanced = false): string {
+export function docketUsage(advanced = false): string {
 	const primary = [
-		"Trail · core loop:",
-		"/trail                         open inbox",
-		"/trail spawn [--fresh] [--as <kind>] <task>  start background worker (seeds parent session by default)",
-		"/trail tell w<N> [text]        reply to a worker",
-		"/trail verdict [w<N>]          decide worker outcome (accept/reject/chat)",
-		"/trail attach [w<N>]           print/copy tmux attach command for the shared worker session",
-		"/trail w<N>                    show worker result above editor",
-		"/trail checkpoint [flags] [note]   create a handoff checkpoint",
-		"/trail continue [id|last]      resume from a checkpoint",
+		"Docket · core loop:",
+		"/docket                         open decision docket",
+		"/docket spawn [--fresh] [--as <kind>] <task>  start explicit background worker",
+		"/docket tell w<N> [text]        reply to a worker",
+		"/docket attach [w<N>]           print/copy tmux attach command for the shared worker session",
+		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
+		"/docket load [id|last|w<N>]     mount bundle/worker artifacts without model tokens",
 		"",
-		"more: /trail help advanced",
+		"more: /docket help advanced",
 	];
 	if (!advanced) return primary.join("\n");
 	return [
 		...primary,
 		"",
-		"Trail · advanced:",
-		"/trail answers [query]         browse assistant/worker answers",
-		"/trail log                     audit timeline grouped by episode",
-		"/trail search <query>          ranked artifact search",
-		"/trail workers [--all]         worker dashboard",
-		"/trail kinds                   list registered worker kinds",
-		"/trail respawn <w<N>|all>      relaunch a worker whose tmux window died",
-		"/trail use w<N>                attach worker result to next prompt",
-		"/trail ask w<N> [text]         alias for tell",
-		"/trail result w<N>             alias for /trail w<N>",
-		"/trail resume [id|last]        alias for continue",
-		CHECKPOINT_USAGE,
-		"/trail load [id|last|w<N>] [--include-consumed]   mount checkpoint or worker artifacts (no model tokens)",
-		"/trail unload <id|w<N>|all>    drop a loaded slot",
-		"/trail delete [id|last|w<N>]",
-		"/trail list [--include-consumed] [--workers|--all]",
-		"/trail ref <artifact-id>       attach compact chip (@id) above editor",
-		"/trail inject <artifact-id>    alias for ref",
-		"/trail inject-full <artifact-id>  attach full chip (@id*) above editor",
-		"/trail copy <artifact-id>      copy artifact to clipboard",
-		"/trail clear                   drop all pending chips",
-		"/trail wait <question>         worker fallback: ask parent for input",
-		"/trail done [summary]          worker fallback: mark output ready",
-		"/trail fail <reason>           worker fallback: mark work failed",
+		"Docket · advanced:",
+		"/docket answers [query]         browse assistant/worker answers",
+		"/docket log                     audit timeline grouped by episode",
+		"/docket search <query>          ranked artifact search",
+		"/docket workers [--all]         worker dashboard",
+		"/docket verdict [w<N>]          decide worker outcome (accept/reject/chat)",
+		"/docket kinds                   list registered worker kinds",
+		"/docket respawn <w<N>|all>      relaunch a worker whose tmux window died",
+		SAVE_USAGE,
+		"/docket load [id|last|w<N>] [--include-consumed]   mount bundle or worker artifacts (no model tokens)",
+		"/docket unload <id|w<N>|all>    drop a loaded slot",
+		"/docket delete [id|last|w<N>]",
+		"/docket list [--include-consumed] [--workers|--all]",
+		"/docket ref <artifact-id>       attach compact chip (@id) above editor",
+		"/docket inject-full <artifact-id>  attach full chip (@id*) above editor",
+		"/docket copy <artifact-id>      copy artifact to clipboard",
+		"/docket clear                   drop all pending chips",
+		"/docket wait <question>         worker fallback: ask parent for input",
+		"/docket done [summary]          worker fallback: mark output ready",
+		"/docket fail <reason>           worker fallback: mark work failed",
 	].join("\n");
 }
 
-function parseError(message: string, usage = trailUsage()): ParseResult {
+function parseError(message: string, usage = docketUsage()): ParseResult {
 	return { ok: false, message, usage };
 }
 
@@ -139,25 +131,19 @@ function tokenize(input: string): { ok: true; tokens: string[] } | { ok: false; 
 	return { ok: true, tokens };
 }
 
-function parseContinueCommand(rest: string[]): ParseResult {
-	if (rest.length === 0) return { ok: true, intent: { kind: "continue" } };
-	if (rest.length > 1) return parseError("Usage: /trail continue [id|last]");
-	return { ok: true, intent: { kind: "continue", idOrLast: rest[0]! } };
-}
-
 function parseDeleteCommand(rest: string[]): ParseResult {
 	if (rest.length === 0) return { ok: true, intent: { kind: "delete", target: undefined, targetKind: "checkpoint" } };
-	if (rest.length > 1) return parseError("Usage: /trail delete [id|last|w:<worker>]");
+	if (rest.length > 1) return parseError("Usage: /docket delete [id|last|w:<worker>]");
 	const { id, isWorker } = stripWorkerPrefix(rest[0]!);
 	return { ok: true, intent: { kind: "delete", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
 }
 
-function requireArtifactArg(action: "ref" | "inject" | "inject-full" | "copy", rest: string[]): ParseResult {
-	if (rest.length !== 1) return parseError(`Usage: /trail ${action} <artifact-id>`);
+function requireArtifactArg(action: "ref" | "inject-full" | "copy", rest: string[]): ParseResult {
+	if (rest.length !== 1) return parseError(`Usage: /docket ${action} <artifact-id>`);
 	return { ok: true, intent: { kind: "artifact", action, idOrRef: rest[0]! } };
 }
 
-function parseCheckpoint(tokens: string[]): ParseResult {
+function parseSave(tokens: string[]): ParseResult {
 	let consumeOnUse = false;
 	let summarize = false;
 	let model: string | undefined;
@@ -177,49 +163,47 @@ function parseCheckpoint(tokens: string[]): ParseResult {
 		}
 		if (VALUE_FLAGS.has(token)) {
 			const value = tokens[++i];
-			if (!value) return parseError(`Missing value for ${token}`, CHECKPOINT_USAGE);
+			if (!value) return parseError(`Missing value for ${token}`, SAVE_USAGE);
 			if (token === "--model") model = value;
 			else {
 				const parsed = Number(value);
-				if (!Number.isInteger(parsed) || parsed <= 0) return parseError("--max-output must be a positive integer", CHECKPOINT_USAGE);
+				if (!Number.isInteger(parsed) || parsed <= 0) return parseError("--max-output must be a positive integer", SAVE_USAGE);
 				maxOutputTokens = parsed;
 			}
 			// --model/--max-output only make sense with a summary; imply it.
 			summarize = true;
 			continue;
 		}
-		if (token.startsWith("--")) return parseError(`Unknown checkpoint flag: ${token}`, CHECKPOINT_USAGE);
+		if (token.startsWith("--")) return parseError(`Unknown save flag: ${token}`, SAVE_USAGE);
 		noteParts.push(token);
 	}
 
-	return { ok: true, intent: { kind: "checkpoint", options: { note: noteParts.join(" "), consumeOnUse, summarize, model, maxOutputTokens } } };
+	return { ok: true, intent: { kind: "save", options: { note: noteParts.join(" "), consumeOnUse, summarize, model, maxOutputTokens } } };
 }
 
-export function parseTrailWorkerShellCommand(command: string): Extract<TrailIntent, { kind: "worker-state" }> | undefined {
+export function parseDocketWorkerShellCommand(command: string): Extract<DocketIntent, { kind: "worker-state" }> | undefined {
 	const lines = command.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
 	if (lines.length !== 1) return undefined;
 	const line = lines[0]!.trim();
-	const match = line.match(/^\/?trail(?:\s+([\s\S]*))?$/);
+	const match = line.match(/^\/?docket(?:\s+([\s\S]*))?$/);
 	if (!match) return undefined;
-	const parsed = parseTrailCommand(match[1] ?? "");
+	const parsed = parseDocketCommand(match[1] ?? "");
 	if (!parsed.ok || parsed.intent.kind !== "worker-state") return undefined;
 	return parsed.intent;
 }
 
-export function parseTrailCommand(args: string): ParseResult {
+export function parseDocketCommand(args: string): ParseResult {
 	const tokenized = tokenize(args.trim());
 	if (!tokenized.ok) return parseError(tokenized.message);
-	const [command = "browse", ...rest] = tokenized.tokens;
+	const [command = "", ...rest] = tokenized.tokens;
 
-	if (WORKER_SHORT.test(command) && rest.length === 0) return { ok: true, intent: { kind: "worker-result", worker: command, action: "show" } };
-	if (command === "browse" || command === "review") return { ok: true, intent: { kind: "browse", mode: "review" } };
+	if (command === "") return { ok: true, intent: { kind: "browse", mode: "review" } };
 	if (command === "log") return { ok: true, intent: { kind: "browse", mode: "log" } };
 	if (command === "help" || command === "--help" || command === "-h") {
 		const advanced = rest.some((token) => token === "advanced" || token === "--advanced" || token === "all" || token === "--all");
 		return { ok: true, intent: { kind: "help", ...(advanced ? { advanced: true } : {}) } };
 	}
-	if (command === "checkpoint" || command === "ckpt") return parseCheckpoint(rest);
-	if (command === "continue" || command === "resume" || command === "r") return parseContinueCommand(rest);
+	if (command === "save") return parseSave(rest);
 	if (command === "delete") return parseDeleteCommand(rest);
 	if (command === "list") {
 		let includeConsumed = false;
@@ -232,7 +216,7 @@ export function parseTrailCommand(args: string): ParseResult {
 			else if (token === "--all") { workers = true; allProjects = true; }
 			else extras.push(token);
 		}
-		if (extras.length > 0) return parseError("Usage: /trail list [--include-consumed] [--workers|--all]");
+		if (extras.length > 0) return parseError("Usage: /docket list [--include-consumed] [--workers|--all]");
 		return { ok: true, intent: { kind: "list", includeConsumed, workers, ...(allProjects ? { allProjects } : {}) } };
 	}
 	if (command === "load") {
@@ -242,14 +226,14 @@ export function parseTrailCommand(args: string): ParseResult {
 			if (token === "--include-consumed") includeConsumed = true;
 			else positional.push(token);
 		}
-		if (positional.length > 1) return parseError("Usage: /trail load [id|last|w:<worker>] [--include-consumed]");
+		if (positional.length > 1) return parseError("Usage: /docket load [id|last|w:<worker>] [--include-consumed]");
 		const raw = positional[0];
 		if (!raw) return { ok: true, intent: { kind: "load", ref: undefined, includeConsumed, refKind: "checkpoint" } };
 		const { id, isWorker } = stripWorkerPrefix(raw);
 		return { ok: true, intent: { kind: "load", ref: id, includeConsumed, refKind: isWorker ? "worker" : "checkpoint" } };
 	}
 	if (command === "unload") {
-		if (rest.length !== 1) return parseError("Usage: /trail unload <id|w:<worker>|all>");
+		if (rest.length !== 1) return parseError("Usage: /docket unload <id|w:<worker>|all>");
 		const raw = rest[0]!;
 		if (raw === "all") return { ok: true, intent: { kind: "unload", target: "all", targetKind: "all" } };
 		const { id, isWorker } = stripWorkerPrefix(raw);
@@ -266,7 +250,7 @@ export function parseTrailCommand(args: string): ParseResult {
 			else if (token === "--fresh") fresh = true;
 			else if (token === "--as" || token === "-a") {
 				const value = rest[++i];
-				if (!value) return parseError("Usage: /trail spawn [--fresh] [--as <kind>] <task>");
+				if (!value) return parseError("Usage: /docket spawn [--fresh] [--as <kind>] <task>");
 				as = value;
 			} else if (token.startsWith("--as=")) {
 				as = token.slice("--as=".length);
@@ -274,7 +258,7 @@ export function parseTrailCommand(args: string): ParseResult {
 				taskParts.push(token);
 			}
 		}
-		if (taskParts.length === 0) return parseError("Usage: /trail spawn [--fresh] [--as <kind>] <task>");
+		if (taskParts.length === 0) return parseError("Usage: /docket spawn [--fresh] [--as <kind>] <task>");
 		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}), ...(as ? { as } : {}) } };
 	}
 	if (command === "workers") {
@@ -284,57 +268,52 @@ export function parseTrailCommand(args: string): ParseResult {
 			if (token === "--all") allProjects = true;
 			else extras.push(token);
 		}
-		if (extras.length > 0) return parseError("Usage: /trail workers [--all]");
+		if (extras.length > 0) return parseError("Usage: /docket workers [--all]");
 		return { ok: true, intent: { kind: "workers", ...(allProjects ? { allProjects } : {}) } };
 	}
-	if (command === "verdict" || command === "v") {
-		if (rest.length > 1) return parseError("Usage: /trail verdict [w<N>]");
+	if (command === "verdict") {
+		if (rest.length > 1) return parseError("Usage: /docket verdict [w<N>]");
 		return { ok: true, intent: { kind: "verdict", ...(rest[0] ? { worker: rest[0] } : {}) } };
 	}
 	if (command === "kinds") {
-		if (rest.length > 0) return parseError("Usage: /trail kinds");
+		if (rest.length > 0) return parseError("Usage: /docket kinds");
 		return { ok: true, intent: { kind: "kinds" } };
 	}
 	if (command === "respawn") {
-		if (rest.length !== 1) return parseError("Usage: /trail respawn <w<N>|all>");
+		if (rest.length !== 1) return parseError("Usage: /docket respawn <w<N>|all>");
 		return { ok: true, intent: { kind: "respawn", target: rest[0]! } };
 	}
-	if (command === "result" || command === "use") {
-		if (rest.length !== 1) return parseError(`Usage: /trail ${command} w<N>`);
-		const { id } = stripWorkerPrefix(rest[0]!);
-		return { ok: true, intent: { kind: "worker-result", worker: id, action: command === "use" ? "use" : "show" } };
-	}
-	if (command === "ask" || command === "tell") {
-		if (rest.length < 1) return parseError(`Usage: /trail ${command} w<N> [text]`);
+	if (command === "tell") {
+		if (rest.length < 1) return parseError("Usage: /docket tell w<N> [text]");
 		return { ok: true, intent: { kind: "tell", worker: rest[0]!, text: rest.length > 1 ? rest.slice(1).join(" ") : undefined } };
 	}
 	if (command === "attach") {
 		if (rest.length === 0) return { ok: true, intent: { kind: "attach" } };
-		if (rest.length > 1) return parseError("Usage: /trail attach [w<N>]");
+		if (rest.length > 1) return parseError("Usage: /docket attach [w<N>]");
 		return { ok: true, intent: { kind: "attach", worker: rest[0]! } };
 	}
 	if (command === "wait") {
-		if (rest.length === 0) return parseError("Usage: /trail wait <question>");
+		if (rest.length === 0) return parseError("Usage: /docket wait <question>");
 		return { ok: true, intent: { kind: "worker-state", state: "needs_input", text: rest.join(" ") } };
 	}
 	if (command === "done") {
 		return { ok: true, intent: { kind: "worker-state", state: "ready", text: rest.length ? rest.join(" ") : undefined } };
 	}
 	if (command === "fail") {
-		if (rest.length === 0) return parseError("Usage: /trail fail <reason>");
+		if (rest.length === 0) return parseError("Usage: /docket fail <reason>");
 		return { ok: true, intent: { kind: "worker-state", state: "failed", text: rest.join(" ") } };
 	}
 	if (command === "answers") {
 		return { ok: true, intent: { kind: "answers", query: rest.length ? rest.join(" ") : undefined } };
 	}
 	if (command === "clear") {
-		if (rest.length > 0) return parseError("Usage: /trail clear");
+		if (rest.length > 0) return parseError("Usage: /docket clear");
 		return { ok: true, intent: { kind: "clear" } };
 	}
-	if (command === "search" || command === "s") {
-		if (rest.length === 0) return parseError(`Usage: /trail ${command} <query>`);
+	if (command === "search") {
+		if (rest.length === 0) return parseError("Usage: /docket search <query>");
 		return { ok: true, intent: { kind: "search", query: rest.join(" ") } };
 	}
-	if (command === "ref" || command === "inject" || command === "inject-full" || command === "copy") return requireArtifactArg(command, rest);
-	return parseError(`Unknown Trail command: ${command}`);
+	if (command === "ref" || command === "inject-full" || command === "copy") return requireArtifactArg(command, rest);
+	return parseError(`Unknown Docket command: ${command}`);
 }

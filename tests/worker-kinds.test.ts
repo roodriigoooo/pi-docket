@@ -96,7 +96,7 @@ test("workerKindGuardrailsAppendix only emits sections when kind has bespoke rul
 	assert.match(rich, /read-only/);
 	assert.match(rich, /Artifact cap for this kind: 50/);
 	assert.match(rich, /time budget for this kind: 60s/);
-	assert.match(rich, /trail_spawn_child/);
+	assert.match(rich, /docket_spawn_child/);
 	assert.match(rich, /researcher/);
 	assert.match(rich, /Be brief\./);
 });

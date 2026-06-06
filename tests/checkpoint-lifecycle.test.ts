@@ -117,7 +117,7 @@ test("Checkpoint Lifecycle warns and does not persist when no artifacts selected
 	await lifecycle.create(options);
 	assert.deepEqual(fakeStore.saves, []);
 	assert.deepEqual(fakePi.appended, []);
-	assert.deepEqual(notifications, ["Trail found no artifacts to checkpoint"]);
+	assert.deepEqual(notifications, ["Docket found no artifacts to checkpoint"]);
 });
 
 test("Checkpoint Lifecycle default flow saves bundle header, appends session entry, and labels leaf", async () => {
@@ -135,16 +135,16 @@ test("Checkpoint Lifecycle default flow saves bundle header, appends session ent
 	await lifecycle.create(options);
 	assert.equal(fakeStore.saves.length, 1);
 	assert.equal(fakeStore.saves[0].id, "ck-test");
-	assert.match(fakeStore.saves[0].markdown, /# Trail checkpoint ck-test/);
+	assert.match(fakeStore.saves[0].markdown, /# Docket checkpoint ck-test/);
 	assert.match(fakeStore.saves[0].markdown, /note: fix tests/);
 	// Bundle-first: orientation sections present, artifact referenced (not dumped).
 	assert.match(fakeStore.saves[0].markdown, /## Next steps/);
 	assert.match(fakeStore.saves[0].markdown, /## Mounted artifacts/);
 	assert.match(fakeStore.saves[0].markdown, /\$ npm test/);
 	assert.doesNotMatch(fakeStore.saves[0].markdown, /## Artifact excerpts/);
-	assert.deepEqual(fakePi.appended.map((entry) => entry.customType), ["trail:checkpoint"]);
-	assert.deepEqual(fakePi.labels, [{ leaf: "leaf-1", label: "trail:ck-test" }]);
-	assert.deepEqual(notifications, ["Trail checkpoint saved: ck-test"]);
+	assert.deepEqual(fakePi.appended.map((entry) => entry.customType), ["docket:checkpoint"]);
+	assert.deepEqual(fakePi.labels, [{ leaf: "leaf-1", label: "docket:ck-test" }]);
+	assert.deepEqual(notifications, ["Docket checkpoint saved: ck-test"]);
 });
 
 test("Checkpoint Lifecycle saves only artifacts accepted by selector", async () => {
@@ -183,7 +183,7 @@ test("Checkpoint Lifecycle cancel during artifact selection does not persist", a
 	await lifecycle.create(options);
 	assert.deepEqual(fakeStore.saves, []);
 	assert.deepEqual(fakePi.appended, []);
-	assert.deepEqual(notifications, ["Trail checkpoint cancelled"]);
+	assert.deepEqual(notifications, ["Docket checkpoint cancelled"]);
 });
 
 test("Checkpoint Lifecycle cancel during review does not persist", async () => {
@@ -203,7 +203,7 @@ test("Checkpoint Lifecycle cancel during review does not persist", async () => {
 	await lifecycle.create(options);
 	assert.deepEqual(fakeStore.saves, []);
 	assert.deepEqual(fakePi.appended, []);
-	assert.deepEqual(notifications, ["Trail checkpoint cancelled"]);
+	assert.deepEqual(notifications, ["Docket checkpoint cancelled"]);
 });
 
 test("Checkpoint Lifecycle falls back to bundle header when summarizer fails", async () => {
@@ -221,6 +221,6 @@ test("Checkpoint Lifecycle falls back to bundle header when summarizer fails", a
 
 	await lifecycle.create({ ...options, summarize: true });
 	assert.equal(fakeStore.saves.length, 1);
-	assert.match(fakeStore.saves[0].markdown, /# Trail checkpoint ck-test/);
-	assert.match(notifications[0] ?? "", /Trail summarizer failed; using bundle header: Error: model down/);
+	assert.match(fakeStore.saves[0].markdown, /# Docket checkpoint ck-test/);
+	assert.match(notifications[0] ?? "", /Docket summarizer failed; using bundle header: Error: model down/);
 });

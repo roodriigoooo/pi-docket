@@ -8,7 +8,7 @@ function makeWorker(partial: Partial<WorkerStatus> & { id: string; index: number
 	return {
 		id: partial.id,
 		index: partial.index,
-		tmuxSession: `trail-worker-${partial.id}`,
+		tmuxSession: `docket-worker-${partial.id}`,
 		task: partial.task ?? "demo task",
 		cwd: partial.cwd ?? "/repo",
 		createdAt: partial.createdAt ?? "2026-05-01T00:00:00.000Z",
@@ -64,9 +64,9 @@ function event(kind: WorkerEvent["kind"], payload: Record<string, unknown>): Wor
 
 test("dockEventSubLine picks latest non-protocol tool when thinking", () => {
 	const events: WorkerEvent[] = [
-		event("tool", { tool: "trail_todos" }),
+		event("tool", { tool: "docket_todos" }),
 		event("tool", { tool: "read", target: "src/foo.ts" }),
-		event("tool", { tool: "trail_wait" }),
+		event("tool", { tool: "docket_wait" }),
 	];
 	assert.equal(dockEventSubLine(events, "thinking"), "tool: read src/foo.ts");
 });

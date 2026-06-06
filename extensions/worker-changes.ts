@@ -129,15 +129,15 @@ function markWorkspacePromoted(worker: WorkerStatus): void {
 	const tree = gitOutput(workspace, ["write-tree"])?.trim();
 	const parent = gitOutput(workspace, ["rev-parse", "HEAD"])?.trim();
 	if (!tree || !parent) return;
-	const commit = spawnSync("git", ["commit-tree", tree, "-p", parent, "-m", "Trail promoted worker changes"], {
+	const commit = spawnSync("git", ["commit-tree", tree, "-p", parent, "-m", "Docket promoted worker changes"], {
 		cwd: workspace,
 		encoding: "utf8",
 		env: {
 			...process.env,
-			GIT_AUTHOR_NAME: "Trail",
-			GIT_AUTHOR_EMAIL: "trail@example.invalid",
-			GIT_COMMITTER_NAME: "Trail",
-			GIT_COMMITTER_EMAIL: "trail@example.invalid",
+			GIT_AUTHOR_NAME: "Docket",
+			GIT_AUTHOR_EMAIL: "docket@example.invalid",
+			GIT_COMMITTER_NAME: "Docket",
+			GIT_COMMITTER_EMAIL: "docket@example.invalid",
 		},
 	});
 	const promotedHead = commit.status === 0 ? commit.stdout.trim() : undefined;

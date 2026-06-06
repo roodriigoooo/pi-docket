@@ -1,19 +1,19 @@
 # Contributing
 
-Thanks for helping improve Trail.
+Thanks for helping improve Docket.
 
 ## Local setup
 
 ```bash
 npm install
 npm run check
-pi --no-extensions -e ./extensions/trail.ts --mode json --no-session "/trail help"
+pi --no-extensions -e ./extensions/docket.ts --mode json --no-session "/docket help"
 ```
 
 Interactive development:
 
 ```bash
-pi --no-extensions -e ./extensions/trail.ts
+pi --no-extensions -e ./extensions/docket.ts
 ```
 
 ## Architecture language
@@ -28,13 +28,13 @@ Use these terms in issues and PRs:
 - **Leverage** — what callers get from depth
 - **Locality** — what maintainers get from depth
 
-Trail domain terms:
+Docket domain terms:
 
 - **Artifact** — structured object derived from session activity
-- **Artifact Catalog** — owns artifact extraction, identity, lookup, references, search, and checkpoint payloads
+- **Artifact Catalog** — owns artifact extraction, identity, lookup, references, search, and bundle payloads
 - **Reference** — compact prompt-safe pointer to an artifact
-- **Checkpoint** — distilled continuation package for a fresh session
-- **Checkpoint Lifecycle** — owns checkpoint creation flow
+- **Evidence bundle** — durable artifact package saved with `/docket save`; not a Pi session continuation mechanism
+- **Bundle Lifecycle** — owns bundle creation flow (internal files still use checkpoint naming for compatibility)
 - **Navigator** — interactive artifact browser
 
 ## PR expectations
@@ -43,7 +43,7 @@ Trail domain terms:
 - Prefer deepening existing modules over adding shallow helpers.
 - Add or update smoke tests when command behavior changes.
 - Update README when commands, flags, config, or storage changes.
-- If introducing a new Trail term, update docs/architecture.md.
+- If introducing a new Docket term, update docs/architecture.md.
 
 ## Release checklist
 
@@ -51,5 +51,6 @@ Trail domain terms:
 2. `npm run smoke:help`
 3. `npm run pack:dry`
 4. Update `CHANGELOG.md`
-5. Tag release: `git tag v0.1.x`
-6. Publish if stable: `npm publish --access public`
+5. For releases with dedicated notes, add `docs/releases/<version>.md`
+6. Tag release: `git tag v0.4.x`
+7. Publish if stable: `npm publish --access public`

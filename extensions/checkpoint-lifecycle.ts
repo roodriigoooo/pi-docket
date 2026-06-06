@@ -4,8 +4,8 @@ import { showCheckpointSelector } from "./checkpoint-selector.js";
 import { createCheckpointStore, type CheckpointStore } from "./checkpoint-store.js";
 import { createCheckpointSummarizer, type CheckpointSummarizer } from "./checkpoint-summarizer.js";
 import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
-import { loadConfig, type TrailConfig } from "./trail-config.js";
-import type { CheckpointCreateOptions } from "./trail-command-grammar.js";
+import { loadConfig, type DocketConfig } from "./docket-config.js";
+import type { CheckpointCreateOptions } from "./docket-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry, GitSnapshot } from "./types.js";
 
 export type CheckpointLifecycle = {
@@ -15,8 +15,8 @@ export type CheckpointLifecycle = {
 type NotifyLevel = "info" | "warning" | "error";
 
 type CheckpointLifecycleDeps = {
-	loadConfig?: (cwd: string) => Promise<TrailConfig>;
-	createCatalog?: (ctx: ExtensionCommandContext, config: TrailConfig) => ArtifactCatalog;
+	loadConfig?: (cwd: string) => Promise<DocketConfig>;
+	createCatalog?: (ctx: ExtensionCommandContext, config: DocketConfig) => ArtifactCatalog;
 	store?: CheckpointStore;
 	summarizer?: CheckpointSummarizer;
 	makeId?: () => string;
@@ -49,7 +49,7 @@ function buildOrientationHeader(
 	const errors = artifacts.filter((a) => a.kind === "error");
 
 	const lines: string[] = [];
-	lines.push(`# Trail checkpoint ${id}`);
+	lines.push(`# Docket checkpoint ${id}`);
 	lines.push("");
 	lines.push("mode: handoff");
 	lines.push(`cwd: ${ctx.cwd}`);
@@ -77,7 +77,7 @@ function buildOrientationHeader(
 	lines.push(errors.length ? errors.slice(0, 8).map((a) => `- ${a.title}: ${a.subtitle}`).join("\n") : "- (none captured)");
 	lines.push("");
 	lines.push("## Mounted artifacts");
-	lines.push("This checkpoint's artifacts are mounted at zero token cost. Read current file contents from disk; chip an artifact with `/trail ref <ref>` when you need its detail.");
+	lines.push("This checkpoint's artifacts are mounted at zero token cost. Read current file contents from disk; chip an artifact with `/docket ref <ref>` when you need its detail.");
 	lines.push("");
 	lines.push(references);
 	return lines.join("\n");
@@ -85,7 +85,7 @@ function buildOrientationHeader(
 
 function defaultNotify(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: string, level: NotifyLevel): void {
 	if (ctx.hasUI) ctx.ui.notify(text, level);
-	else pi.sendMessage({ customType: "trail", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } }, { triggerTurn: false });
+	else pi.sendMessage({ customType: "docket", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } }, { triggerTurn: false });
 }
 
 export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: ExtensionCommandContext, deps: CheckpointLifecycleDeps = {}): Promise<CheckpointLifecycle> {
@@ -108,7 +108,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 	const draftMarkdown = async (id: string, options: CheckpointCreateOptions, artifacts: Artifact[], git?: GitSnapshot): Promise<string> => {
 		const header = buildOrientationHeader(ctx, id, options.note, options.consumeOnUse, artifacts, buildReferenceList(artifacts, ctx.cwd), git);
 		if (!options.summarize || !config.summarizer.enabled) return header;
-		if (ctx.hasUI) ctx.ui.notify("Trail summarizing checkpoint...", "info");
+		if (ctx.hasUI) ctx.ui.notify("Docket summarizing checkpoint...", "info");
 		try {
 			return await summarizer.summarize({
 				id,
@@ -127,7 +127,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 				overrides: { model: options.model, maxOutputTokens: options.maxOutputTokens },
 			});
 		} catch (err) {
-			notify(`Trail summarizer failed; using bundle header: ${String(err)}`, "warning");
+			notify(`Docket summarizer failed; using bundle header: ${String(err)}`, "warning");
 			return header;
 		}
 	};
@@ -135,7 +135,7 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 	const reviewMarkdown = async (markdown: string): Promise<string | null> => {
 		if (deps.reviewMarkdown) return deps.reviewMarkdown(markdown);
 		if (!ctx.hasUI) return markdown;
-		const edited = await ctx.ui.editor("Edit Trail checkpoint", markdown);
+		const edited = await ctx.ui.editor("Edit Docket checkpoint", markdown);
 		if (edited === undefined) return null;
 		return edited;
 	};
@@ -155,26 +155,26 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 	};
 
 	const labelSession = (id: string, entry: CheckpointIndexEntry): void => {
-		pi.appendEntry("trail:checkpoint", entry);
+		pi.appendEntry("docket:checkpoint", entry);
 		const leaf = ctx.sessionManager.getLeafId();
-		if (leaf) pi.setLabel(leaf, `trail:${id}`);
+		if (leaf) pi.setLabel(leaf, `docket:${id}`);
 	};
 
 	return {
 		async create(options: CheckpointCreateOptions): Promise<void> {
 			const candidates = selectArtifacts();
 			if (candidates.length === 0) {
-				notify("Trail found no artifacts to checkpoint", "warning");
+				notify("Docket found no artifacts to checkpoint", "warning");
 				return;
 			}
 
 			const artifacts = await reviewArtifactSelection(candidates, options);
 			if (artifacts === null) {
-				notify("Trail checkpoint cancelled", "info");
+				notify("Docket checkpoint cancelled", "info");
 				return;
 			}
 			if (artifacts.length === 0) {
-				notify("Trail found no artifacts to checkpoint", "warning");
+				notify("Docket found no artifacts to checkpoint", "warning");
 				return;
 			}
 
@@ -183,13 +183,13 @@ export async function createCheckpointLifecycle(pi: ExtensionAPI, ctx: Extension
 			const draft = await draftMarkdown(id, options, artifacts, git);
 			const markdown = await reviewMarkdown(draft);
 			if (markdown === null) {
-				notify("Trail checkpoint cancelled", "info");
+				notify("Docket checkpoint cancelled", "info");
 				return;
 			}
 
 			const entry = await persistCheckpoint(id, options, markdown, artifacts, git);
 			labelSession(id, entry);
-			notify(`Trail checkpoint saved: ${id}${options.consumeOnUse ? " (once)" : ""}`, "info");
+			notify(`Docket checkpoint saved: ${id}${options.consumeOnUse ? " (once)" : ""}`, "info");
 		},
 	};
 }

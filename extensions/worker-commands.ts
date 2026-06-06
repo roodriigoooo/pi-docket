@@ -8,7 +8,7 @@ import { workerProjectKey, type WorkerStore } from "./worker-store.js";
 export type WorkerCompletionCandidate = { value: string; label: string };
 
 type NotifyLevel = "info" | "warning" | "error";
-type TrailMessageKind = "list" | "success" | "action";
+type DocketMessageKind = "list" | "success" | "action";
 
 type WorkerCommandsDeps = {
 	store: WorkerStore;
@@ -20,7 +20,7 @@ type WorkerCommandsDeps = {
 	maxActive(): number;
 	captureTerminal(): boolean;
 	notify(text: string, level: NotifyLevel): void;
-	announce(subject: string, detail?: string, kind?: TrailMessageKind, trail?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
+	announce(subject: string, detail?: string, kind?: DocketMessageKind, docket?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
@@ -67,7 +67,7 @@ function formatWorkerTell(worker: WorkerStatus, text: string): string {
 }
 
 function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: boolean } = {}): string {
-	if (workers.length === 0) return "No Trail workers";
+	if (workers.length === 0) return "No Docket workers";
 	const lineFor = (w: WorkerStatus) => {
 		const label = workerShortLabel(w.index).padEnd(4);
 		const state = (w.state ?? "?").padEnd(8);
@@ -87,7 +87,7 @@ function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: b
 }
 
 function formatKindList(kinds: WorkerKind[]): string {
-	if (kinds.length === 0) return "No Trail worker kinds registered";
+	if (kinds.length === 0) return "No Docket worker kinds registered";
 	return kinds.map((k) => {
 		const ro = k.readOnly ? "ro" : "rw";
 		const seed = k.parentSeedPolicy === "none" ? "fresh" : "seeded";
@@ -115,7 +115,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				if (requestedName) {
 					const known = deps.kinds.names();
 					if (!known.includes(requestedName)) {
-						deps.notify(`Trail: unknown worker kind "${requestedName}". Try /trail kinds. Falling back to default.`, "warning");
+						deps.notify(`Docket: unknown worker kind "${requestedName}". Try /docket kinds. Falling back to default.`, "warning");
 					}
 				}
 				const kind = deps.kinds.get(requestedName);
@@ -123,7 +123,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				if (max > 0) {
 					const active = await deps.store.countActive();
 					if (active >= max) {
-						deps.notify(`Trail: fleet cap reached (${active}/${max} active). Resolve or delete a worker before spawning another.`, "error");
+						deps.notify(`Docket: fleet cap reached (${active}/${max} active). Resolve or delete a worker before spawning another.`, "error");
 						return undefined;
 					}
 				}
@@ -154,14 +154,14 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				);
 				return worker;
 			} catch (err) {
-				deps.notify(`Trail spawn failed: ${String(err)}`, "error");
+				deps.notify(`Docket spawn failed: ${String(err)}`, "error");
 				return undefined;
 			}
 		},
 		async tell(ref: string, text: string): Promise<void> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
-				deps.notify("Trail worker not found", "error");
+				deps.notify("Docket worker not found", "error");
 				return;
 			}
 			const sent = await deps.store.sendInput(worker.id, formatWorkerTell(worker, text));
@@ -171,23 +171,23 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				"success",
 				{ kind: "prompt", title: `tell ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
 			);
-			else deps.notify(`Trail could not send message to ${workerShortLabel(worker.index)}`, "error");
+			else deps.notify(`Docket could not send message to ${workerShortLabel(worker.index)}`, "error");
 		},
 		async list(options: { allProjects?: boolean } = {}): Promise<void> {
 			const projectRoot = options.allProjects ? undefined : deps.projectRoot;
-			deps.emitText(formatWorkerList(await deps.store.list({ ...(projectRoot ? { projectRoot } : {}) }), { groupByProject: options.allProjects === true }), "list", "trail · workers");
+			deps.emitText(formatWorkerList(await deps.store.list({ ...(projectRoot ? { projectRoot } : {}) }), { groupByProject: options.allProjects === true }), "list", "docket · workers");
 		},
 		async listKinds(): Promise<void> {
-			deps.emitText(formatKindList(deps.kinds.list()), "list", "trail · worker kinds");
+			deps.emitText(formatKindList(deps.kinds.list()), "list", "docket · worker kinds");
 		},
 		async delete(ref: string | undefined): Promise<void> {
 			if (!ref) {
-				deps.notify("Usage: /trail delete w<N>", "error");
+				deps.notify("Usage: /docket delete w<N>", "error");
 				return;
 			}
 			const worker = await deps.store.find(ref);
 			if (!worker) {
-				deps.notify("Trail worker not found", "error");
+				deps.notify("Docket worker not found", "error");
 				return;
 			}
 			deps.loadedArtifacts.unloadSource("worker", worker.id);
@@ -205,7 +205,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					return w ? [w] : [];
 				})();
 			if (candidates.length === 0) {
-				deps.notify(ALL ? "Trail: no relaunch-eligible workers" : "Trail worker not found", "warning");
+				deps.notify(ALL ? "Docket: no relaunch-eligible workers" : "Docket worker not found", "warning");
 				return;
 			}
 			const ok: string[] = [];
@@ -220,29 +220,29 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				}
 			}
 			if (ok.length > 0) deps.announce(`respawned ${ok.length} worker${ok.length === 1 ? "" : "s"}`, ok.join(", "), "success");
-			if (failed.length > 0) deps.notify(`Trail respawn failed for: ${failed.map((entry) => `${entry.label} (${entry.error})`).join(", ")}`, "error");
+			if (failed.length > 0) deps.notify(`Docket respawn failed for: ${failed.map((entry) => `${entry.label} (${entry.error})`).join(", ")}`, "error");
 		},
 		async load(ref: string | undefined): Promise<void> {
 			if (!ref) {
-				deps.notify("Usage: /trail load w<N>", "error");
+				deps.notify("Usage: /docket load w<N>", "error");
 				return;
 			}
 			try {
 				const worker = await deps.store.find(ref);
 				if (!worker) {
-					deps.notify("Trail worker not found", "error");
+					deps.notify("Docket worker not found", "error");
 					return;
 				}
 				await loadWorker(worker);
 			} catch (err) {
-				deps.notify(`Trail load failed: ${String(err)}`, "error");
+				deps.notify(`Docket load failed: ${String(err)}`, "error");
 			}
 		},
 		async unload(ref: string): Promise<void> {
 			const worker = await deps.store.find(ref);
 			const removed = worker ? deps.loadedArtifacts.unloadSource("worker", worker.id) : undefined;
 			if (removed) deps.announce(`unloaded ${removed.slot}`, worker ? workerSummaryName(worker) : undefined);
-			else deps.notify("Trail worker not loaded", "warning");
+			else deps.notify("Docket worker not loaded", "warning");
 		},
 		completionCandidates(): Promise<WorkerCompletionCandidate[]> {
 			return workerCompletionCandidates(deps.store, { ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });

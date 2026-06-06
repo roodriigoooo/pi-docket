@@ -71,8 +71,14 @@ jobs:
             echo "Release $TAG already exists" >&2
             exit 1
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            gh release create "$TAG" ./*.tgz --target "$GITHUB_SHA" --title "$TAG" --notes "Trail $TAG"
+          NOTES_FILE="docs/releases/${{ steps.version.outputs.version }}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            NOTES_ARGS=(--notes-file "$NOTES_FILE")
           else
-            gh release create "$TAG" ./*.tgz --title "$TAG" --notes "Trail $TAG"
+            NOTES_ARGS=(--notes "pi-docket $TAG")
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gh release create "$TAG" ./*.tgz --target "$GITHUB_SHA" --title "pi-docket $TAG" "${NOTES_ARGS[@]}"
+          else
+            gh release create "$TAG" ./*.tgz --title "pi-docket $TAG" "${NOTES_ARGS[@]}"
           fi

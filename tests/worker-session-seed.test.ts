@@ -11,7 +11,7 @@ async function createParentSession(cwd: string): Promise<string> {
 	const file = path.join(dir, "parent.jsonl");
 	const lines = [
 		JSON.stringify({ type: "session", version: 3, id: "parent-id", timestamp: "2026-05-01T00:00:00.000Z", cwd }),
-		JSON.stringify({ type: "custom", id: "e1", parentId: null, timestamp: "2026-05-01T00:00:01.000Z", customType: "trail:test", data: { hello: "world" } }),
+		JSON.stringify({ type: "custom", id: "e1", parentId: null, timestamp: "2026-05-01T00:00:01.000Z", customType: "docket:test", data: { hello: "world" } }),
 		JSON.stringify({ type: "message", id: "e2", parentId: "e1", timestamp: "2026-05-01T00:00:02.000Z", message: { role: "user", content: "hello" } }),
 		JSON.stringify({ type: "message", id: "e3", parentId: "e2", timestamp: "2026-05-01T00:00:03.000Z", message: { role: "assistant", content: "hi" } }),
 	];
@@ -20,7 +20,7 @@ async function createParentSession(cwd: string): Promise<string> {
 }
 
 test("seedWorkerSession copies parent JSONL into worker session dir", async () => {
-	const tmp = await mkdtemp(path.join(os.tmpdir(), "trail-seed-"));
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "docket-seed-"));
 	try {
 		const parentCwd = path.join(tmp, "parent");
 		await mkdir(parentCwd, { recursive: true });
@@ -42,7 +42,7 @@ test("seedWorkerSession copies parent JSONL into worker session dir", async () =
 		assert.equal(lines[0]!.type, "session");
 		assert.equal(lines[0]!.cwd, workerCwd);
 		assert.equal(lines[0]!.parentSession, parentFile);
-		assert.equal(lines.some((entry) => entry.type === "custom" && entry.customType === "trail:test"), true);
+		assert.equal(lines.some((entry) => entry.type === "custom" && entry.customType === "docket:test"), true);
 	} finally {
 		await rm(tmp, { recursive: true, force: true });
 	}

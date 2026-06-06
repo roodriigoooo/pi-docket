@@ -8,7 +8,7 @@ import type { WorkerStatus } from "../extensions/worker-store.js";
 const worker: WorkerStatus = {
 	id: "worker-1",
 	index: 1,
-	tmuxSession: "trail-worker-1",
+	tmuxSession: "docket-worker-1",
 	task: "assess mascot viability",
 	cwd: "/repo",
 	createdAt: "2026-01-01T00:00:00.000Z",
@@ -41,7 +41,7 @@ test("Worker Result presents latest answer before status metadata", () => {
 
 test("Worker Result falls back to status artifact when no answer exists", () => {
 	assert.equal(workerResultArtifact(worker, [status])?.displayId, "w1.status");
-	assert.match(workerResultText(worker, [status]), /actions: \/trail use w1 · \/trail ask w1/);
+	assert.match(workerResultText(worker, [status]), /actions: \/docket use w1 · \/docket ask w1/);
 });
 
 test("Worker Result falls back to latest response artifact", () => {

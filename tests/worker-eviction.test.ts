@@ -7,7 +7,7 @@ function makeWorker(partial: Partial<WorkerStatus> & { id: string; state: Worker
 	return {
 		id: partial.id,
 		index: partial.index ?? 1,
-		tmuxSession: partial.tmuxSession ?? `trail-workers:w${partial.index ?? 1}`,
+		tmuxSession: partial.tmuxSession ?? `docket-workers:w${partial.index ?? 1}`,
 		task: partial.task ?? "demo",
 		cwd: partial.cwd ?? "/repo",
 		createdAt: partial.createdAt ?? partial.updatedAt,

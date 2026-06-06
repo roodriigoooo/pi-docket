@@ -19,7 +19,7 @@ export type EventLog = {
 };
 
 function eventLogFile(): string {
-	return path.join(getAgentDir(), "trail", "events.ndjson");
+	return path.join(getAgentDir(), "docket", "events.ndjson");
 }
 
 async function ensureParent(file: string): Promise<void> {

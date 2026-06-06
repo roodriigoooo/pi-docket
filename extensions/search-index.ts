@@ -39,7 +39,7 @@ function includes(text: string, query: string): boolean {
 
 function formatSearchDocument(artifact: Artifact, metadata: string): string {
 	return [
-		`# Trail artifact ${artifact.displayId}`,
+		`# Docket artifact ${artifact.displayId}`,
 		`ref: ${artifact.ref}`,
 		`kind: ${artifact.kind}`,
 		artifact.entryId ? `entry: ${artifact.entryId}` : undefined,
@@ -87,7 +87,7 @@ function safeFileName(index: number, document: ArtifactSearchDocument): string {
 }
 
 async function runRipgrepAdapter(query: string, documents: ArtifactSearchDocument[]): Promise<Set<string>> {
-	const tempDir = await fs.mkdtemp(path.join(tmpdir(), "pi-trail-search-"));
+	const tempDir = await fs.mkdtemp(path.join(tmpdir(), "pi-docket-search-"));
 	try {
 		const byFile = new Map<string, string>();
 		for (let i = 0; i < documents.length; i++) {

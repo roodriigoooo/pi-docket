@@ -29,22 +29,22 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 	const deleteCheckpoint = async (idOrLast: string): Promise<boolean> => {
 		const checkpoint = await deps.store.find(idOrLast || "last", { includeConsumed: true });
 		if (!checkpoint) {
-			deps.notify("Trail checkpoint not found", "error");
+			deps.notify("Docket checkpoint not found", "error");
 			return false;
 		}
 		if (!(await deps.confirmDelete(checkpoint))) {
-			deps.notify("Trail delete cancelled", "info");
+			deps.notify("Docket delete cancelled", "info");
 			return false;
 		}
 		await deps.store.purge(checkpoint);
-		deps.notify(`Trail checkpoint deleted: ${checkpoint.id}`, "info");
+		deps.notify(`Docket checkpoint deleted: ${checkpoint.id}`, "info");
 		return true;
 	};
 
 	const continueCheckpoint = async (idOrLast: string): Promise<void> => {
 		const checkpoint = await deps.store.find(idOrLast || "last");
 		if (!checkpoint) {
-			deps.notify("Trail checkpoint not found", "error");
+			deps.notify("Docket checkpoint not found", "error");
 			return;
 		}
 		await deps.startSession(checkpoint, await deps.store.readMarkdown(checkpoint));
@@ -57,7 +57,7 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 		}
 		let summaries = await deps.store.listSummaries();
 		if (summaries.length === 0) {
-			deps.notify("Trail checkpoint not found", "error");
+			deps.notify("Docket checkpoint not found", "error");
 			return;
 		}
 		let selected = Math.max(0, summaries.length - 1);
@@ -69,7 +69,7 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 			if (result.action === "delete") {
 				if (!(await deps.confirmDelete(checkpoint))) continue;
 				await deps.store.purge(checkpoint);
-				deps.notify(`Trail checkpoint deleted: ${checkpoint.id}`, "info");
+				deps.notify(`Docket checkpoint deleted: ${checkpoint.id}`, "info");
 				summaries = await deps.store.listSummaries();
 				if (summaries.length === 0) return;
 				selected = Math.min(selected, summaries.length - 1);
@@ -77,13 +77,13 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 			}
 			const markdown = await deps.store.readMarkdown(checkpoint);
 			if (result.action === "preview") {
-				await deps.showText(`Trail checkpoint ${checkpoint.id}`, markdown);
+				await deps.showText(`Docket checkpoint ${checkpoint.id}`, markdown);
 				continue;
 			}
 			if (result.action === "edit") {
-				const edited = await deps.editText("Edit Trail checkpoint", markdown);
+				const edited = await deps.editText("Edit Docket checkpoint", markdown);
 				if (edited === undefined) {
-					deps.notify("Trail continue cancelled", "info");
+					deps.notify("Docket continue cancelled", "info");
 					return;
 				}
 				await deps.startSession(checkpoint, edited);
@@ -101,7 +101,7 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 		}
 		let summaries = await deps.store.listSummaries({ includeConsumed: true });
 		if (summaries.length === 0) {
-			deps.notify("Trail checkpoint not found", "error");
+			deps.notify("Docket checkpoint not found", "error");
 			return;
 		}
 		let selected = Math.max(0, summaries.length - 1);
@@ -111,12 +111,12 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 			selected = result.index;
 			const checkpoint = result.summary.entry;
 			if (result.action === "preview") {
-				await deps.showText(`Trail checkpoint ${checkpoint.id}`, await deps.store.readMarkdown(checkpoint));
+				await deps.showText(`Docket checkpoint ${checkpoint.id}`, await deps.store.readMarkdown(checkpoint));
 				continue;
 			}
 			if (!(await deps.confirmDelete(checkpoint))) continue;
 			await deps.store.purge(checkpoint);
-			deps.notify(`Trail checkpoint deleted: ${checkpoint.id}`, "info");
+			deps.notify(`Docket checkpoint deleted: ${checkpoint.id}`, "info");
 			summaries = await deps.store.listSummaries({ includeConsumed: true });
 			if (summaries.length === 0) return;
 			selected = Math.min(selected, summaries.length - 1);
@@ -140,8 +140,8 @@ export function createCheckpointCommands(deps: CheckpointCommandsDeps): Checkpoi
 					const tag = `${c.mode}${c.consumeOnUse ? ":once" : ""}${c.consumedAt ? ":consumed" : ""}`;
 					return `${c.id}\t${tag}\t${c.cwd}\t${c.note ?? ""}`;
 				}).join("\n")
-				: "No Trail checkpoints";
-			deps.emitText(lines, "list", "trail · checkpoints");
+				: "No Docket checkpoints";
+			deps.emitText(lines, "list", "docket · checkpoints");
 		},
 	};
 }
