@@ -22,14 +22,17 @@ export type DocketWorkerConfig = {
 	captureTerminal?: boolean;
 	/** When true, /docket offers to re-window orphan workers when the shared tmux session is gone but their dirs are still live. */
 	autoRespawn?: boolean;
-	/** When true (default), a short summary message is appended to the parent session when a worker reaches ready. Set false to keep the parent JSONL fully manual. */
+	/** When true, a short summary message is appended to the parent session when a worker reaches ready. Default false: nothing enters the parent JSONL automatically — the inbox card still surfaces the ready worker. */
 	autoEmbedSummary?: boolean;
 };
 
 export type DocketConfig = {
 	maxArtifacts: number;
 	maxBodyChars: number;
+	/** Canonical resolved field: initial artifact pool a saved bundle considers before user prune. */
 	checkpointArtifacts: number;
+	/** Public alias for checkpointArtifacts. Preferred in user config; checkpointArtifacts still accepted for back-compat. */
+	bundleArtifacts?: number;
 	consumedRetentionDays: number;
 	summarizer: CheckpointSummarizerConfig;
 	worker?: DocketWorkerConfig;
@@ -54,7 +57,7 @@ export const DEFAULT_CONFIG: DocketConfig = {
 		tmuxStatusLine: false,
 		captureTerminal: false,
 		autoRespawn: false,
-		autoEmbedSummary: true,
+		autoEmbedSummary: false,
 	},
 };
 
@@ -70,10 +73,16 @@ async function readJsonFile<T>(file: string, fallback: T): Promise<T> {
 export async function loadConfig(cwd: string): Promise<DocketConfig> {
 	const globalConfig = await readJsonFile<Partial<DocketConfig>>(path.join(getAgentDir(), "docket.json"), {});
 	const projectConfig = await readJsonFile<Partial<DocketConfig>>(path.join(cwd, ".pi", "docket.json"), {});
+	// `bundleArtifacts` is the public name; `checkpointArtifacts` stays accepted for back-compat. Project overrides global.
+	const bundleArtifacts =
+		projectConfig.bundleArtifacts ?? projectConfig.checkpointArtifacts ??
+		globalConfig.bundleArtifacts ?? globalConfig.checkpointArtifacts ??
+		DEFAULT_CONFIG.checkpointArtifacts;
 	return {
 		...DEFAULT_CONFIG,
 		...globalConfig,
 		...projectConfig,
+		checkpointArtifacts: bundleArtifacts,
 		summarizer: {
 			...DEFAULT_CONFIG.summarizer,
 			...(globalConfig.summarizer ?? {}),

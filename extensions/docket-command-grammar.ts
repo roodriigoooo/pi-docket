@@ -51,6 +51,7 @@ export function docketUsage(advanced = false): string {
 	const primary = [
 		"Docket · core loop:",
 		"/docket                         open decision docket",
+		"/docket verdict [w<N>]          resolve the top worker decision (accept/reject/chat)",
 		"/docket spawn [--fresh] [--as <kind>] <task>  start explicit background worker",
 		"/docket tell w<N> [text]        reply to a worker",
 		"/docket attach [w<N>]           print/copy tmux attach command for the shared worker session",
@@ -68,7 +69,6 @@ export function docketUsage(advanced = false): string {
 		"/docket log                     audit timeline grouped by episode",
 		"/docket search <query>          ranked artifact search",
 		"/docket workers [--all]         worker dashboard",
-		"/docket verdict [w<N>]          decide worker outcome (accept/reject/chat)",
 		"/docket kinds                   list registered worker kinds",
 		"/docket respawn <w<N>|all>      relaunch a worker whose tmux window died",
 		SAVE_USAGE,
@@ -80,9 +80,11 @@ export function docketUsage(advanced = false): string {
 		"/docket inject-full <artifact-id>  attach full chip (@id*) above editor",
 		"/docket copy <artifact-id>      copy artifact to clipboard",
 		"/docket clear                   drop all pending chips",
-		"/docket wait <question>         worker fallback: ask parent for input",
-		"/docket done [summary]          worker fallback: mark output ready",
-		"/docket fail <reason>           worker fallback: mark work failed",
+		"",
+		"Docket · worker fallback (run inside a worker only):",
+		"/docket wait <question>         ask parent for input and pause",
+		"/docket done [summary]          mark output ready for review",
+		"/docket fail <reason>           mark work failed",
 	].join("\n");
 }
 

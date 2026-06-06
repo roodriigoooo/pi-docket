@@ -97,6 +97,7 @@ Primary commands:
 | Command | Purpose |
 |---|---|
 | `/docket` | Open decision docket. |
+| `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
 | `/docket spawn [--fresh] [--as <kind>] <task>` | Start explicit background worker. |
 | `/docket tell w<N> [text]` | Reply to worker. |
 | `/docket attach [w<N>]` | Copy tmux attach command for shared worker session. |
@@ -108,7 +109,6 @@ Advanced commands:
 | Command | Purpose |
 |---|---|
 | `/docket workers [--all]` | Worker dashboard. |
-| `/docket verdict [w<N>]` | Resolve highest-attention worker decision. |
 | `/docket kinds` | List worker kinds. |
 | `/docket respawn <w<N>\|all>` | Relaunch worker whose tmux window died. |
 | `/docket answers [query]` | Browse assistant/worker answers. |

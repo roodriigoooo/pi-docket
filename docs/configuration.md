@@ -13,7 +13,7 @@ Both optional. Defaults below.
 {
   "maxArtifacts": 300,
   "maxBodyChars": 6000,
-  "checkpointArtifacts": 24,
+  "bundleArtifacts": 24,
   "consumedRetentionDays": 7,
 
   "summarizer": {
@@ -44,7 +44,7 @@ Both optional. Defaults below.
 |---|---|---|
 | `maxArtifacts` | 300 | hard cap on artifacts kept per session. older entries fall off. |
 | `maxBodyChars` | 6000 | truncate any single artifact body to this many chars before storing. |
-| `checkpointArtifacts` | 24 | initial artifact pool a saved bundle considers before user prune. Internal key name kept for storage compatibility. |
+| `bundleArtifacts` | 24 | initial artifact pool a saved bundle considers before user prune. `checkpointArtifacts` is accepted as a deprecated alias. |
 | `consumedRetentionDays` | 7 | how long `--once` bundles stay on disk after first use. |
 
 ## Summarizer (opt-in)
@@ -74,7 +74,7 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 | `worker.tmuxStatusLine` | false | write a compact summary to `docket-workers`' `status-right`. |
 | `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
 | `worker.autoRespawn` | false | reserved; today `/docket respawn` is manual. |
-| `worker.autoEmbedSummary` | true | when a worker reaches `ready`, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session. Set false to keep the parent JSONL purely manual — the inbox card still shows up; nothing is auto-injected. |
+| `worker.autoEmbedSummary` | false | when true, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session as a worker reaches `ready`. Default false keeps the parent JSONL fully manual — the inbox card still surfaces the ready worker; nothing is auto-injected. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
 
 `worker.guardrailsPath` replaces `extensions/worker-guardrails.md` from this package. Use it to pin team-wide policies into every worker.
