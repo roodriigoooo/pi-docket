@@ -174,39 +174,15 @@ const SKIP_TOOL_EVENT_NAMES = new Set([
 	"docket_todos",
 ]);
 
+export const WORKER_SILENCE_WARN_MS = 5 * 60 * 1000;
+export const NEEDS_INPUT_AGING_WARN_MS = 30 * 60 * 1000;
+
 function truncateTool(text: string, max = 60): string {
 	if (text.length <= max) return text;
 	return `${text.slice(0, Math.max(1, max - 1))}…`;
 }
 
-export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState): string | undefined {
-	if (!events?.length) return undefined;
-	if (state !== "thinking" && state !== "starting") return undefined;
-	for (let i = events.length - 1; i >= 0; i--) {
-		const event = events[i]!;
-		if (event.kind === "tool") {
-			const tool = typeof event.payload.tool === "string" ? event.payload.tool : undefined;
-			if (!tool || SKIP_TOOL_EVENT_NAMES.has(tool)) continue;
-			const target = typeof event.payload.target === "string" ? event.payload.target : undefined;
-			return truncateTool(target ? `tool: ${tool} ${target}` : `tool: ${tool}`);
-		}
-	}
-	for (let i = events.length - 1; i >= 0; i--) {
-		const event = events[i]!;
-		if (event.kind === "todo") {
-			const total = Number(event.payload.total ?? 0);
-			const completed = Number(event.payload.completed ?? 0);
-			const inProgress = Number(event.payload.inProgress ?? 0);
-			if (!Number.isFinite(total) || total <= 0) continue;
-			const active = inProgress > 0 ? ` · ${inProgress} active` : "";
-			return `todos ${completed}/${total}${active}`;
-		}
-	}
-	return undefined;
-}
-
-function relativeAgeLabel(updatedAtMs: number, now: number): string {
-	const ageMs = now - updatedAtMs;
+function ageLabelFromMs(ageMs: number): string {
 	if (!Number.isFinite(ageMs) || ageMs < 0) return "";
 	const seconds = Math.round(ageMs / 1000);
 	if (seconds < 60) return `${seconds}s`;
@@ -214,6 +190,65 @@ function relativeAgeLabel(updatedAtMs: number, now: number): string {
 	if (minutes < 60) return `${minutes}m`;
 	const hours = Math.round(minutes / 60);
 	return `${hours}h`;
+}
+
+function latestWorkerEventTs(events: WorkerEvent[] | undefined): number | undefined {
+	if (!events?.length) return undefined;
+	for (let i = events.length - 1; i >= 0; i--) {
+		const ts = Number(events[i]?.ts);
+		if (Number.isFinite(ts) && ts > 0) return ts;
+	}
+	return undefined;
+}
+
+function latestQuestionTs(worker: WorkerStatus | undefined): number | undefined {
+	if (!worker) return undefined;
+	const questions = workerQuestions(worker);
+	const latest = questions[questions.length - 1];
+	return latest ? Date.parse(latest.createdAt) : Date.parse(worker.updatedAt);
+}
+
+export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus } = {}): string | undefined {
+	const now = options.now ?? Date.now();
+	if (state === "needs_input") {
+		const questionTs = latestQuestionTs(options.worker);
+		const ageMs = questionTs === undefined ? 0 : now - questionTs;
+		if (ageMs >= NEEDS_INPUT_AGING_WARN_MS) return `waiting ${ageLabelFromMs(ageMs)} · reply, reject, or stop`;
+		return undefined;
+	}
+	if (state !== "thinking" && state !== "starting") return undefined;
+	let latestLine: string | undefined;
+	for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
+		const event = events?.[i];
+		if (!event || event.kind !== "tool") continue;
+		const tool = typeof event.payload.tool === "string" ? event.payload.tool : undefined;
+		if (!tool || SKIP_TOOL_EVENT_NAMES.has(tool)) continue;
+		const target = typeof event.payload.target === "string" ? event.payload.target : undefined;
+		latestLine = truncateTool(target ? `tool: ${tool} ${target}` : `tool: ${tool}`);
+		break;
+	}
+	if (!latestLine) {
+		for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
+			const event = events?.[i];
+			if (!event || event.kind !== "todo") continue;
+			const total = Number(event.payload.total ?? 0);
+			const completed = Number(event.payload.completed ?? 0);
+			const inProgress = Number(event.payload.inProgress ?? 0);
+			if (!Number.isFinite(total) || total <= 0) continue;
+			const active = inProgress > 0 ? ` · ${inProgress} active` : "";
+			latestLine = `todos ${completed}/${total}${active}`;
+			break;
+		}
+	}
+	const startedAt = Date.parse(options.worker?.createdAt ?? "");
+	const lastSignal = latestWorkerEventTs(events) ?? (Number.isFinite(startedAt) ? startedAt : undefined);
+	const silenceMs = lastSignal === undefined ? 0 : now - lastSignal;
+	if (silenceMs >= WORKER_SILENCE_WARN_MS) return latestLine ? `silent ${ageLabelFromMs(silenceMs)} · last ${latestLine}` : `silent ${ageLabelFromMs(silenceMs)} · p peek or attach`;
+	return latestLine;
+}
+
+function relativeAgeLabel(updatedAtMs: number, now: number): string {
+	return ageLabelFromMs(now - updatedAtMs);
 }
 
 function dockProgressLabel(row: WorkerActivityRow): string {
@@ -248,7 +283,7 @@ export function dockRowsForRender(
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
 		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
-		const eventLine = dockEventSubLine(events, row.state);
+		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker });
 		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,

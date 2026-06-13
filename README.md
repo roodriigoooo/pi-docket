@@ -214,6 +214,10 @@ Workers have:
 
 Worker artifacts never enter model context automatically except for the short ready summary, if enabled. Full evidence stays on disk until loaded or attached.
 
+Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before the first edit or mutating command. The bundled `patcher` kind uses this by default.
+
+The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. Docket does not auto-kill or auto-respawn for either warning. It tells you to peek, reply, reject, or stop.
+
 ### When a worker dies
 
 If the worker process exits, Docket keeps the dead tmux pane around just long enough to capture its final terminal output, then cleans the window up. The capture is saved as `pane-tail.txt` in the worker directory, appears in review as a `terminal tail` artifact, and the failed verdict card prints the last few lines. A crashing worker tells you why it crashed, not just its exit code:
@@ -232,9 +236,9 @@ w3 failed · run migration suite
 
 Bundled kinds:
 
-- `default` — general worker, edits allowed when task asks.
-- `scout` — fast read-only recon.
-- `patcher` — edits in worker worktree and proposes a change set.
+- `default`: general worker, edits allowed when task asks.
+- `scout`: fast read-only recon.
+- `patcher`: plan-gated edits in a worker worktree, then proposes a change set.
 
 Examples:
 
@@ -264,21 +268,33 @@ Workers use tools, not shell commands:
 
 Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prompt commands only.
 
+For plan-gated work, the worker uses `docket_wait` as the gate. The verdict card shows the plan options and recommendation, then your choice is sent back as plain parent input.
+
 ## tmux
 
-All workers live in one shared tmux session:
+Docket uses tmux as the worker process and visibility layer, not as the decision log. Every worker is a normal pi process running in one window inside one shared session:
 
 ```bash
 tmux attach -t docket-workers
 ```
 
-`/docket attach` copies the attach command. `/docket attach w2` selects that worker's window.
+`/docket attach` copies the attach command. `/docket attach w2` targets that worker's window. Attaching is for direct inspection or emergency debugging; normal coordination should go through `/docket tell`, `/docket verdict`, and the worker protocol tools.
+
+### How Docket uses tmux
+
+- **Spawn**: the first worker creates `docket-workers` with `new-session -d -s`; later workers use `new-window -d`. Windows are named `w<N>`, and Docket records tmux's stable `#{window_id}` (`@7`, `@8`, etc.) so renamed windows still resolve.
+- **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
+- **Peek**: `/docket workers` uses `capture-pane -p` to render the selected worker's recent pane output inside the dashboard. It does not attach, focus the pane, or add anything to model context.
+- **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes panes with `list-panes -F "#{pane_id} #{pane_dead}"`, captures the dead worker pane with `capture-pane`, writes `pane-tail.txt`, then kills the stale window. Split layouts are probed per pane because an event-tail helper pane may still be alive.
+- **Optional tmux surfaces**: `layout: split-events` opens a detached split pane that tails `events.ndjson`; `worker.captureTerminal` uses `pipe-pane` to write terminal noise to `pane.log`; `worker.tmuxStatusLine` can write compact fleet status into the tmux status bar.
+
+Silence warnings do not poll `capture-pane`. Docket reads the worker's `events.ndjson`; if nothing useful appears for a few minutes, the dock shows `silent Nm`. Use peek when you want scrollback. Use attach when you need full terminal control.
+
+Rule of thumb: tmux handles live processes, scrollback, and direct visibility. Docket stores status, artifacts, verdicts, and decision debt on disk. Workers should not run write-side tmux commands themselves because the parent owns the shared session lifecycle.
 
 ### Peek without attaching
 
 Most of the time you don't need a full attach. In the workers dashboard (`/docket workers`), press `p` on a worker row to see the last lines of its live tmux pane rendered inside the dashboard. It refreshes about once a second, is strictly read-only, and costs zero model context. Useful for the quick "is it grinding or stuck on a prompt" check. Press `p` again or `Esc` to close.
-
-This is intentional: tmux gives direct observability and real parallelism, while Docket controls artifact capture and parent/worker coordination.
 
 ## Development
 

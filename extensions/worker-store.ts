@@ -4,7 +4,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
-import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, buildWorkerTaskDocument, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
@@ -69,6 +69,12 @@ export type SpawnInput = {
 	kind?: string;
 	/** Kind-specific system-prompt body to append after universal guardrails. */
 	kindSystemPrompt?: string;
+	/** Whether this worker's kind forbids file edits. */
+	readOnly?: boolean;
+	/** Whether this worker must ask parent approval before first mutating step. */
+	planGate?: boolean;
+	/** Scope-specific authority lines surfaced in task.md. */
+	decisionRights?: string[];
 	/** Child workers this worker is allowed to spawn (resolved kind names). */
 	canSpawn?: string[];
 	/** Parent worker id when this is a child spawn. */
@@ -479,7 +485,6 @@ export function createWorkerStore(): WorkerStore {
 			const id = makeWorkerId(input.task, input.idHint);
 			const dir = workerDir(id);
 			await fs.mkdir(dir, { recursive: true });
-			await fs.writeFile(path.join(dir, "task.md"), `${input.task.trim()}\n`, "utf8");
 
 			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
 			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
@@ -499,6 +504,15 @@ export function createWorkerStore(): WorkerStore {
 			const parentWorker = input.parentWorkerId ? await this.find(input.parentWorkerId) : undefined;
 			const parentLabel = parentWorker ? workerShortLabel(parentWorker.index) : undefined;
 			const depth = typeof input.depth === "number" ? input.depth : (parentWorker?.depth ?? 0) + (parentWorker ? 1 : 0);
+			await fs.writeFile(path.join(dir, "task.md"), buildWorkerTaskDocument({
+				task: input.task,
+				...(input.kind ? { kind: input.kind } : {}),
+				...(typeof input.readOnly === "boolean" ? { readOnly: input.readOnly } : {}),
+				worktree: input.worktree !== false,
+				...(input.planGate ? { planGate: true } : {}),
+				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
+				...(parentLabel ? { parentWorkerLabel: parentLabel } : {}),
+			}), "utf8");
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
 

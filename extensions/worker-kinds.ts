@@ -21,6 +21,10 @@ export type WorkerKind = {
 	maxArtifacts?: number;
 	maxDurationSec?: number;
 	canSpawn: string[];
+	/** Opt-in gate: worker must ask the parent to approve its plan before first edit/mutating command. */
+	planGate?: boolean;
+	/** Scope-specific rights surfaced in task.md and guardrails. */
+	decisionRights?: string[];
 	guardrailsAppend?: string;
 	systemPrompt?: string;
 	layout: WorkerLayout;
@@ -90,6 +94,12 @@ function asThinking(value: unknown): WorkerThinking | undefined {
 	return undefined;
 }
 
+function asStringList(value: unknown): string[] | undefined {
+	const raw = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(/\r?\n|;/) : [];
+	const cleaned = raw.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8);
+	return cleaned.length ? cleaned : undefined;
+}
+
 function normalizeName(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const trimmed = value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
@@ -112,6 +122,8 @@ export function parseWorkerKindMarkdown(text: string, source: WorkerKind["source
 	const maxDurationSec = asInt(fm.max_duration_sec ?? fm.maxDurationSec ?? fm.timeout);
 	const canSpawnRaw = fm.can_spawn ?? fm.canSpawn ?? fm.spawn_kinds ?? fm.subagent_agents;
 	const canSpawn = Array.isArray(canSpawnRaw) ? canSpawnRaw.map(String) : csv(typeof canSpawnRaw === "string" ? canSpawnRaw : undefined);
+	const planGate = asBool(fm.plan_gate ?? fm.planGate, false);
+	const decisionRights = asStringList(fm.decision_rights ?? fm.decisionRights ?? fm.rights);
 	const guardrailsAppend = typeof fm.guardrails_append === "string" ? fm.guardrails_append : undefined;
 	const layout = asLayout(fm.layout);
 	return {
@@ -125,6 +137,8 @@ export function parseWorkerKindMarkdown(text: string, source: WorkerKind["source
 		...(maxArtifacts !== undefined ? { maxArtifacts } : {}),
 		...(maxDurationSec !== undefined ? { maxDurationSec } : {}),
 		canSpawn: canSpawn.map(normalizeName).filter((value): value is string => typeof value === "string"),
+		...(planGate ? { planGate } : {}),
+		...(decisionRights ? { decisionRights } : {}),
 		...(guardrailsAppend ? { guardrailsAppend } : {}),
 		...(body.length > 0 ? { systemPrompt: body } : {}),
 		layout,
@@ -270,6 +284,8 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 export function workerKindGuardrailsAppendix(kind: WorkerKind): string {
 	const parts: string[] = [];
 	if (kind.readOnly) parts.push("- This worker is **read-only** by configuration. Do not edit files. If the task requires edits, call `docket_wait` and ask the parent to spawn a writable worker instead.");
+	if (kind.decisionRights?.length) parts.push(["Decision rights for this kind:", ...kind.decisionRights.map((right) => `  - ${right}`)].join("\n"));
+	if (kind.planGate) parts.push("- Plan gate required: before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with a concise plan, concrete options, and your recommendation. Wait for the parent reply before crossing that boundary. Read-only discovery and harmless checks are allowed before the gate.");
 	if (kind.maxArtifacts !== undefined) parts.push(`- Artifact cap for this kind: ${kind.maxArtifacts}. Stay focused.`);
 	if (kind.maxDurationSec !== undefined) parts.push(`- Soft time budget for this kind: ${kind.maxDurationSec}s. If you exceed it, call \`docket_done\` with partial findings rather than continuing silently.`);
 	if (kind.canSpawn.length > 0) parts.push(`- You may dispatch child workers via \`docket_spawn_child\` using only these kinds: ${kind.canSpawn.join(", ")}. Children inherit fleet/depth caps. Children's results return to you, not to the human user.`);

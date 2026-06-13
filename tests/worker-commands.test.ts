@@ -107,6 +107,42 @@ test("Worker Commands passes worktree spawn option", async () => {
 	assert.equal(spawned[0]?.parentSession, "/session.json");
 });
 
+test("Worker Commands passes kind decision-rights and plan gate into spawn", async () => {
+	const setup = deps();
+	setup.store.find = async (id) => [worker].find((entry) => entry.id === id || `w${entry.index}` === id);
+	const reg = createWorkerKindRegistry();
+	reg.register({
+		name: "planner",
+		readOnly: false,
+		defaultWorktree: true,
+		parentSeedPolicy: "full",
+		canSpawn: [],
+		planGate: true,
+		decisionRights: ["May edit docs after approval"],
+		layout: "single",
+		source: "runtime",
+	});
+	const commands = createWorkerCommands({
+		store: setup.store,
+		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
+		cwd: "/repo",
+		parentSession: "/session.json",
+		kinds: reg,
+		maxActive: () => 8,
+		captureTerminal: () => false,
+		notify: () => {},
+		announce: () => {},
+		emitText: () => {},
+	});
+
+	await commands.spawn("draft docs", { as: "planner" });
+
+	assert.equal(setup.spawned[0]?.kind, "planner");
+	assert.equal(setup.spawned[0]?.readOnly, false);
+	assert.equal(setup.spawned[0]?.planGate, true);
+	assert.deepEqual(setup.spawned[0]?.decisionRights, ["May edit docs after approval"]);
+});
+
 test("Worker Commands sends parent messages to workers", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", questions: [
 		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },

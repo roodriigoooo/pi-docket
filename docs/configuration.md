@@ -103,9 +103,22 @@ Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/`
 | `max_duration_sec` | — | soft cap surfaced as guidance |
 | `can_spawn` | none | comma-list of kinds this worker may dispatch via `docket_spawn_child` |
 | `layout` | `single` | `split-events` opens a right pane with `tail -F events.ndjson` |
+| `plan_gate` | false | when true, worker must ask for parent approval before first edit or mutating command |
+| `decision_rights` | none | list of task authority lines shown in `task.md` and guardrails |
 | `guardrails_append` | — | extra guardrail lines folded into the kind appendix |
 
-The MD body is appended to the universal guardrails — it never replaces them. The protocol contract (`docket_wait`/`docket_done`/`docket_fail`/`docket_todos`) is the same for every kind.
+The MD body is appended to the universal guardrails; it never replaces them. The protocol contract (`docket_wait`/`docket_done`/`docket_fail`/`docket_todos`) is the same for every kind.
+
+`plan_gate` is intentionally small. The worker may do read-only discovery first, then uses `docket_wait` to show the plan, options, recommendation, and risk before it edits or runs a mutating command.
+
+For a writable kind:
+
+```yaml
+plan_gate: true
+decision_rights:
+  - May edit docs after approval
+  - May run local tests
+```
 
 ### Example: a `reviewer` kind
 

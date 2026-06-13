@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -111,6 +111,25 @@ test("Background Work formats live worker launch banner", () => {
 	assert.equal(workerLaunchSubject(worker({ state: "ready", summary: "done" })), "spawned w2(^_^) · ready");
 	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done" })), /status: w2\(\^_\^\) done/);
 	assert.match(workerLaunchDetail(worker()), /inbox:  \/docket/);
+});
+
+test("Background Work builds task docs with pre-flight brief and plan gate", () => {
+	const doc = buildWorkerTaskDocument({
+		task: "Implement auth fix",
+		kind: "patcher",
+		worktree: true,
+		planGate: true,
+		decisionRights: ["May edit src/auth.ts after approval"],
+	});
+
+	assert.match(doc, /^# Task/m);
+	assert.match(doc, /Implement auth fix/);
+	assert.match(doc, /## Pre-flight brief/);
+	assert.match(doc, /Kind: patcher/);
+	assert.match(doc, /## Decision rights/);
+	assert.match(doc, /May edit src\/auth\.ts after approval/);
+	assert.match(doc, /## Plan gate/);
+	assert.match(doc, /Before the first file edit/);
 });
 
 test("Background Work surfaces kind in chip and launch detail", () => {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dockEventSubLine, dockRowsForRender, pickModelBadge, shortModelLabel, workerActivityRows } from "../extensions/worker-activity.js";
+import { dockEventSubLine, dockRowsForRender, NEEDS_INPUT_AGING_WARN_MS, pickModelBadge, shortModelLabel, workerActivityRows, WORKER_SILENCE_WARN_MS } from "../extensions/worker-activity.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import type { WorkerEvent } from "../extensions/worker-events.js";
 
@@ -84,6 +84,19 @@ test("dockEventSubLine returns undefined for non-thinking states", () => {
 	assert.equal(dockEventSubLine(events, "ready"), undefined);
 	assert.equal(dockEventSubLine(events, "needs_input"), undefined);
 	assert.equal(dockEventSubLine(events, "failed"), undefined);
+});
+
+test("dockEventSubLine warns on silent active workers", () => {
+	const now = Date.parse("2026-05-01T00:10:00.000Z");
+	const oldTool: WorkerEvent = { ts: now - WORKER_SILENCE_WARN_MS - 60_000, kind: "tool", payload: { tool: "read", target: "src/auth.ts" } };
+	assert.equal(dockEventSubLine([oldTool], "thinking", { now }), "silent 6m · last tool: read src/auth.ts");
+});
+
+test("dockEventSubLine warns on old parent questions", () => {
+	const now = Date.parse("2026-05-01T01:00:00.000Z");
+	const waiting = makeWorker({ id: "wait", index: 4, state: "needs_input", updatedAt: new Date(now - NEEDS_INPUT_AGING_WARN_MS - 60_000).toISOString() });
+	waiting.questions = [{ id: "q1", text: "Which path?", createdAt: new Date(now - NEEDS_INPUT_AGING_WARN_MS - 60_000).toISOString() }];
+	assert.equal(dockEventSubLine(undefined, "needs_input", { now, worker: waiting }), "waiting 31m · reply, reject, or stop");
 });
 
 test("dockRowsForRender attaches eventLine for thinking rows when events present", () => {

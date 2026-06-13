@@ -44,6 +44,16 @@ export type WorkerQuestion = {
 	recommend?: string;
 };
 
+export type WorkerTaskDocumentInput = {
+	task: string;
+	kind?: string;
+	readOnly?: boolean;
+	worktree?: boolean;
+	planGate?: boolean;
+	decisionRights?: string[];
+	parentWorkerLabel?: string;
+};
+
 export type WorkerWorkspaceKind = "git" | "copy";
 
 export type WorkerWorktree = {
@@ -202,6 +212,58 @@ export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number
 		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,
 		`inbox:  /docket`,
 		`debug:  /docket workers`,
+	].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function normalizedDecisionRights(items: string[] | undefined): string[] {
+	return (items ?? []).map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8);
+}
+
+export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string {
+	const task = input.task.trim();
+	const kind = input.kind?.trim() || "default";
+	const rights = normalizedDecisionRights(input.decisionRights);
+	const authority = input.readOnly
+		? [
+			"Read files and run non-mutating discovery commands.",
+			"Do not edit files. If edits are needed, call `docket_wait` and ask for a writable worker.",
+		]
+		: [
+			"Read files and run non-mutating discovery commands.",
+			"Edit only files needed for the assigned task; keep diffs minimal.",
+			"Run local checks needed to verify your own changes.",
+		];
+	const planGate = input.planGate
+		? [
+			"## Plan gate",
+			"Before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with:",
+			"- the plan you intend to execute",
+			"- 2-4 concrete options when meaningful",
+			"- `recommend` set to your preferred option",
+			"- `risk` set when the action is irreversible or outside the task's obvious scope",
+			"Wait for the parent reply before crossing that boundary. Read-only discovery and harmless checks are allowed before the gate.",
+		].join("\n")
+		: "## Plan gate\nNo explicit plan gate for this task. Still call `docket_wait` before irreversible, expensive, unauthorized, or ambiguous actions.";
+	return [
+		"# Task",
+		"",
+		task,
+		"",
+		"## Pre-flight brief",
+		"",
+		`- Kind: ${kind}`,
+		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
+		input.parentWorkerLabel ? `- Parent worker: ${input.parentWorkerLabel}` : undefined,
+		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
+		"",
+		"## Decision rights",
+		"",
+		...authority.map((item) => `- ${item}`),
+		...rights.map((item) => `- ${item}`),
+		"- Never push, force-push, reset hard, clean the repo, kill the shared tmux session, or perform destructive external operations unless the parent explicitly approves through `docket_wait`.",
+		"",
+		planGate,
+		"",
 	].filter((line): line is string => line !== undefined).join("\n");
 }
 

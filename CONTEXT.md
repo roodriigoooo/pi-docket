@@ -22,6 +22,18 @@ _Avoid_: trail, transcript, memory.
 A background Pi process running as one window in the shared `docket-workers` tmux session. Generates artifacts that may become review items.
 _Avoid_: job, agent, subprocess.
 
+**Pre-flight brief**:
+The top section of a worker's `task.md`: task, kind, workspace, decision rights, and plan gate. It gives the worker authority boundaries before it starts.
+_Avoid_: prompt summary, system prompt, hidden policy.
+
+**Decision rights**:
+The concrete actions a worker is allowed to take for this task or kind. Example: read-only discovery, local checks, or scoped edits after approval.
+_Avoid_: permissions, role, capabilities.
+
+**Plan gate**:
+An opt-in worker rule that allows read-only discovery, then requires `docket_wait` before the first edit or mutating command. The parent approves or redirects through the verdict card.
+_Avoid_: approval workflow, checkpoint, blocker.
+
 **Evidence bundle**:
 A frozen, durable selection of artifacts saved with `/docket save`. It consists of a small markdown orientation file plus a deterministic `<id>.artifacts.json` sidecar. A bundle preserves evidence; it does not move the Pi session.
 _Avoid_: checkpoint, resume, summary, handoff doc.
@@ -58,12 +70,17 @@ _Avoid_: history, audit log, transcript.
 A terminal worker pruned with no verdict ever recorded against it. It aged out before anyone decided. Surfaced as "N workers evicted unreviewed this week" so unreviewed work stays visible instead of disappearing on prune.
 _Avoid_: backlog, stale worker, orphan.
 
+**Silence warning**:
+A passive dock hint for a running worker with no recent tool/todo event, shown as `silent Nm`. It is not a kill switch. Peek or attach if you need live scrollback.
+_Avoid_: deadman, timeout, auto-kill.
+
 **Save vs Load**:
 **Save** creates an evidence bundle and labels the current Pi tree leaf. **Load** mounts a bundle or worker artifacts into the current Docket navigator. Neither replaces Pi's session commands.
 _Avoid_: continue, resume, restore.
 
 ## Relationships
 
+- A **Worker** starts from a **Pre-flight brief** and may be constrained by **Decision rights** or a **Plan gate**.
 - A **Worker** produces **Artifacts**; the attention queue promotes some to **Review items**.
 - An **Evidence bundle** freezes selected **Artifacts** plus an **Orientation header**.
 - **Save** = choose artifacts + write bundle + label current Pi tree leaf.

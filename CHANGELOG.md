@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **worker pre-flight briefs**: `task.md` now starts with kind, workspace, decision rights, and plan-gate policy so workers know their authority before they act.
+- **plan-gated patcher**: worker kinds can set `plan_gate: true` and `decision_rights`. The bundled `patcher` now does read-only discovery first, then asks through `docket_wait` before its first edit or mutating command.
+- **passive worker warnings**: the dock shows `silent Nm` when a running worker has no recent tool/todo event and `waiting Nm` when a parent question ages. No auto-kill, no auto-respawn.
+- **tmux docs**: README now spells out the tmux API boundary: shared session spawn, literal reply, paste-buffer multiline tell, capture-pane peek, dead-pane harvest, optional `pipe-pane`, and status-line HUD.
+
 ## 0.5.0
 
 - **post-mortem terminal tails**: worker windows now run with `remain-on-exit on`, so a crashing worker leaves its dead pane behind. The parent captures the last lines to `pane-tail.txt`, then cleans the window up. The capture shows up in review as a `terminal tail` artifact and the failed verdict card prints the final lines. You see why a worker died, not just its exit code.
