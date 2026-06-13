@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - **post-mortem terminal tails**: worker windows now run with `remain-on-exit on`, so a crashing worker leaves its dead pane behind. The parent captures the last lines to `pane-tail.txt`, then cleans the window up. The capture shows up in review as a `terminal tail` artifact and the failed verdict card prints the final lines. You see why a worker died, not just its exit code.
 - **peek**: in `/docket workers`, `p` shows a live read-only view of the selected worker's tmux pane inside the dashboard, refreshing about once a second. Check on a worker without attaching and without spending model context. `p` or `Esc` closes it.
@@ -9,6 +9,8 @@
 - **safer verdict keys**: the verdict card now numbers worker-proposed options so you can pick one directly with `1`..`9`, and sets `Reject & stop` apart with a blank line and warning color since it kills the worker and removes its workspace. Number keys only reach the offered options, never the destructive verb.
 - **docket key cleanup**: in `/docket`, reply and save are split off the old overloaded `c` into `r` (reply to worker) and `b` (save bundle), and the duplicate `c`/`t`/`i` aliases are gone. `a` is the single attach key. Footer and `?` help updated to match.
 - **multiline replies**: `/docket tell` and the verdict chat reply now preserve line breaks. A multiline message is delivered through a tmux paste buffer (bracketed paste) so the worker reads the whole block at once instead of running it on the first newline; one-liners keep the existing send-keys path.
+- new tests cover the decision ledger (summary/render/eviction debt), the verdict number keys and destructive-verb guard, the navigator key cleanup, the multiline input classifiers, and the `decisions` grammar.
+- **release notes**: see [docs/releases/0.5.0.md](docs/releases/0.5.0.md).
 
 ## 0.4.0
 

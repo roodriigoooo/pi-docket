@@ -1,6 +1,6 @@
 {
   "name": "@roodriigoooo/pi-docket",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Docket: decision queue and evidence bundles for Pi agent work",
   "keywords": [
     "pi-package",
