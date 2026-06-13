@@ -90,6 +90,8 @@ export type WorkerStatus = {
 	recommended?: string[];
 	scopeConfidence?: WorkerScopeConfidence;
 	lastError?: string;
+	/** Set when the parent harvested (or confirmed gone) the worker's dead tmux pane. Guards the harvest sweep. */
+	paneCapturedAt?: string;
 };
 
 export type WorkerProtocolMessage = {
@@ -501,6 +503,38 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
 		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, git: worker.git },
+	};
+}
+
+const PANE_HARVEST_STATES: ReadonlySet<WorkerState> = new Set(["failed", "error", "ended"]);
+
+/** True when the parent's dock sweep should probe this worker's tmux pane for a post-mortem capture. */
+export function isPaneHarvestCandidate(worker: WorkerStatus): boolean {
+	return PANE_HARVEST_STATES.has(worker.state) && !worker.paneCapturedAt;
+}
+
+export const PANE_TAIL_MAX_LINES = 200;
+
+/**
+ * Evidence artifact built from the dead pane's captured tail. Kind "command" keeps it
+ * out of the review queue: it is post-mortem evidence attached to the worker, not a
+ * decision item — the failed/ended status artifact already carries the decision.
+ */
+export function workerPaneTailArtifact(worker: WorkerStatus, tail: string): Artifact | undefined {
+	const lines = tail.replace(/\s+$/, "").split(/\r?\n/).slice(-PANE_TAIL_MAX_LINES);
+	const text = lines.join("\n").trim();
+	if (!text) return undefined;
+	const label = workerSourceLabel(worker);
+	return {
+		id: "pane",
+		displayId: "pane",
+		ref: `worker-pane:${worker.id}:0`,
+		kind: "command",
+		title: `${label} terminal tail`,
+		subtitle: "terminal output at exit",
+		body: text,
+		timestamp: Date.parse(worker.updatedAt),
+		meta: { workerId: worker.id, workerLabel: label, paneTail: true },
 	};
 }
 

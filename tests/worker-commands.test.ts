@@ -40,6 +40,8 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		purge: async (id) => { purged.push(id); return [id]; },
 		countActive: async () => workers.filter((w) => ["starting", "active", "idle", "needs_input"].includes(w.state)).length,
 		respawn: async (id) => workers.find((w) => w.id === id),
+		harvestPaneTail: async () => "window_gone",
+		readPaneTail: async () => undefined,
 	};
 	return { store, spawned, purged, sent };
 }

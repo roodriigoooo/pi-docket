@@ -1,4 +1,5 @@
-import { deriveWorkerState, workerQuestions, workerSourceLabel, workerStatusArtifact, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { renderDecisionLog, type DecisionEvent, type DecisionRecord, type DecisionVerb } from "./decision-log.js";
 import { workerResultArtifact, workerResultText } from "./worker-result.js";
 import { isSharedSessionTarget, SHARED_TMUX_SESSION, workerInProject } from "./worker-store.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
@@ -80,6 +81,10 @@ export type DocketCommandRouterDeps = {
 	copyText(text: string): Promise<boolean>;
 	announceChipChange(artifact: Artifact, mode: "ref" | "full", result: ReturnType<LoadedArtifactContext["toggleChip"]>): void;
 	parallelKindLabel(kind: Artifact["kind"]): string;
+	/** Append a resolved verdict to the decision ledger. Best-effort; never blocks the verdict. */
+	recordDecision(record: DecisionRecord): Promise<void>;
+	/** Read the decision ledger for the `/docket log decisions` audit. */
+	readDecisionEvents(): Promise<DecisionEvent[]>;
 };
 
 export function buildAttachCommand(target: string): string {
@@ -213,18 +218,35 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			const state = deriveWorkerState(latest);
 			const changeSet = result.changeSet ?? workerHasChangeSet(latest);
 			const statusArtifact = workerStatusArtifact(latest);
+			// Evidence + risk visible on the card right now, captured once so every resolution
+			// path logs the same context the user actually saw.
+			const questions = workerQuestions(latest);
+			const risk = questions.length > 0 ? questions[questions.length - 1]?.risk : undefined;
+			const evidenceRefs = [changeSet?.ref, statusArtifact?.ref].filter((ref): ref is string => typeof ref === "string" && ref.length > 0);
+			const record = (verb: DecisionVerb, option?: string): Promise<void> => deps.recordDecision({
+				workerId: latest.id,
+				workerLabel: workerShortLabel(latest.index),
+				state,
+				verb,
+				...(option ? { option } : {}),
+				...(risk ? { risk } : {}),
+				evidenceRefs,
+				...(latest.task ? { task: latest.task } : {}),
+			});
 			if (result.verb === "diff") {
 				if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet));
 				continue;
 			}
 			if (result.verb === "send") {
 				if (result.text) await deps.workerCommands.tell(label, result.text);
+				await record("send", result.text);
 				await deps.refreshWorkerDockWidget();
 				return "advance";
 			}
 			if (result.verb === "rejectStop") {
 				if (!(await deps.confirmDeleteWorker(latest))) continue;
 				await deps.workerCommands.delete(label);
+				await record("rejectStop");
 				await deps.refreshWorkerDockWidget();
 				return "advance";
 			}
@@ -232,6 +254,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				const text = (await deps.input(`Chat ${label}`, "message to worker"))?.trim();
 				if (!text) continue;
 				await deps.workerCommands.tell(label, changeSet ? `revise: ${text}` : text);
+				await record("chat", text);
 				await deps.refreshWorkerDockWidget();
 				return "advance";
 			}
@@ -241,6 +264,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				else if (changeSet) {
 					if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
 				} else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+				await record("accept");
 				await deps.refreshWorkerDockWidget();
 				return "advance";
 			}
@@ -249,8 +273,12 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
 					if (!text) continue;
 					await deps.workerCommands.tell(label, text);
-				} else if (changeSet) deps.markArtifactDone(changeSet);
-				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+					await record("reject", text);
+				} else {
+					if (changeSet) deps.markArtifactDone(changeSet);
+					else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+					await record("reject");
+				}
 				await deps.refreshWorkerDockWidget();
 				return "advance";
 			}
@@ -297,6 +325,14 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				}
 				if (intent.worker) await runVerdict(worker);
 				else await runVerdictQueue(worker);
+				return;
+			}
+
+			if (intent.kind === "decisions") {
+				const events = await deps.readDecisionEvents();
+				const report = renderDecisionLog(events);
+				if (deps.hasUI) await deps.showText("docket · decisions", report);
+				else deps.emitText(report, "list", "docket · decisions");
 				return;
 			}
 

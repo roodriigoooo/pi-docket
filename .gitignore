@@ -17,3 +17,9 @@ scripts/
 
 # local design note for the separate pi-attune theme extension (not part of this package)
 /pi-attune-plan.md
+
+# local session working notes (UI/tmux/worker-flow improvement plan)
+/PLAN.md
+
+# local CLI tool state (not part of this package)
+.antigravitycli/

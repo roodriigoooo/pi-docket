@@ -363,3 +363,29 @@ test("countActive ignores ended/failed workers", async () => {
 		assert.equal(await store.countActive(), 2);
 	});
 });
+
+test("pane harvest settles missing windows and reads back captured tails", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		const root = store.root();
+		await mkdir(root, { recursive: true });
+		await seedWorker(root, { id: "post-mortem", index: 1, state: "failed" });
+
+		assert.equal(await store.harvestPaneTail("missing-worker"), "not_found");
+
+		// No tmux window resolves for the seeded target: harvest settles without a capture.
+		assert.equal(await store.harvestPaneTail("post-mortem"), "window_gone");
+		const settled = await store.find("post-mortem");
+		assert.equal(typeof settled?.paneCapturedAt, "string");
+		assert.equal(await store.readPaneTail("post-mortem"), undefined);
+
+		// Settled workers are not re-probed.
+		assert.equal(await store.harvestPaneTail("post-mortem"), "window_gone");
+
+		// A captured tail reads back verbatim; blank files read as undefined.
+		await writeFile(path.join(root, "post-mortem", "pane-tail.txt"), "Error: boom\n  at main.ts:1\n", "utf8");
+		assert.match((await store.readPaneTail("post-mortem")) ?? "", /Error: boom/);
+		await writeFile(path.join(root, "post-mortem", "pane-tail.txt"), "  \n", "utf8");
+		assert.equal(await store.readPaneTail("post-mortem"), undefined);
+	});
+});

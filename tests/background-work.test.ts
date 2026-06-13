@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -171,4 +171,23 @@ test("Background Work namespaces worker artifacts by worker label", () => {
 	assert.deepEqual(namespaceWorkerArtifacts(worker(), [artifact]).map((item) => [item.id, item.displayId, item.source]), [["w2.a1", "w2.a1", "w2"]]);
 	assert.equal(workerShortLabel(2), "w2");
 	assert.deepEqual(workerQuestions(worker({ question: "Legacy?" })).map((q) => q.text), ["Legacy?"]);
+});
+
+test("Background Work flags pane harvest candidates by terminal state and capture marker", () => {
+	assert.equal(isPaneHarvestCandidate(worker({ state: "failed" })), true);
+	assert.equal(isPaneHarvestCandidate(worker({ state: "error" })), true);
+	assert.equal(isPaneHarvestCandidate(worker({ state: "ended" })), true);
+	assert.equal(isPaneHarvestCandidate(worker({ state: "active" })), false);
+	assert.equal(isPaneHarvestCandidate(worker({ state: "needs_input" })), false);
+	assert.equal(isPaneHarvestCandidate(worker({ state: "failed", paneCapturedAt: "2026-01-01T00:05:00.000Z" })), false);
+});
+
+test("Background Work builds a terminal-tail evidence artifact that stays out of the review queue", () => {
+	const artifact = workerPaneTailArtifact(worker({ state: "failed" }), "boot ok\nError: missing DATABASE_URL\n\n");
+	assert.equal(artifact?.kind, "command");
+	assert.equal(artifact?.ref, "worker-pane:worker-1:0");
+	assert.equal(artifact?.title, "w2 terminal tail");
+	assert.match(artifact?.body ?? "", /missing DATABASE_URL/);
+	assert.equal(artifact?.meta?.paneTail, true);
+	assert.equal(workerPaneTailArtifact(worker(), "   \n  \n"), undefined);
 });

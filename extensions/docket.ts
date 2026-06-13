@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -54,11 +54,12 @@ import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./w
 import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
+import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 
@@ -501,7 +502,7 @@ function selectedActionHints(item: ReviewItem, pinned: boolean, done: boolean): 
 	const hints = [`enter ${reviewActionLabel(item.primaryAction, item).toLowerCase()}`];
 	if (item.primaryAction !== "openVerdict" && item.actions.includes("openVerdict")) hints.push("Enter verdict");
 	if (item.actions.includes("promoteWorker")) hints.push("P promote");
-	if (item.actions.includes("tellWorker")) hints.push("t tell");
+	if (item.actions.includes("tellWorker")) hints.push("r reply");
 	if (item.actions.includes("openFile")) hints.push("o open");
 	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", done ? "x restore" : "x done", "v preview");
 	return artifact ? hints : [];
@@ -567,7 +568,7 @@ function inboxButtons(item: ReviewItem, done: boolean): InboxButton[] {
 		{ id: "openVerdict", key: "Enter", label: "Verdict" },
 		{ id: "promoteWorker", key: "P", label: "Promote" },
 		{ id: "inspect", key: "d", label: "Diff" },
-		{ id: "tellWorker", key: "c", label: "Continue" },
+		{ id: "tellWorker", key: "r", label: "Reply" },
 		{ id: "attachReference", key: "a", label: "Attach" },
 		{ id: "copyArtifact", key: "y", label: "Copy" },
 		{ id: "markDone", key: "Space", label: done ? "Restore" : "Done" },
@@ -640,7 +641,46 @@ function emptyDocketMessage(state: NavigatorState, hasArtifacts: boolean): Empty
 	};
 }
 
-class DocketView implements Component {
+/**
+ * Pure key → navigator intent map for the docket overlay. Extracted from the view so the
+ * binding table is testable without a TUI. `runAction` intents that the selected item does
+ * not support are no-ops downstream (handleNavigatorIntent guards them), so this needs no
+ * knowledge of the current selection.
+ *
+ * Key grammar after the 1c cleanup: reply and save are split off the old overloaded `c`
+ * (`r` reply / `b` save), and the duplicate `c`/`t`/`i` aliases are gone. `a` is the one
+ * attach key.
+ */
+export function navigatorKeyIntent(data: string): NavigatorIntent | undefined {
+	if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") return { kind: "close" };
+	if (data === "j" || matchesKey(data, Key.down)) return { kind: "move", by: 1 };
+	if (data === "k" || matchesKey(data, Key.up)) return { kind: "move", by: -1 };
+	if (data === "g") return { kind: "top" };
+	if (data === "G") return { kind: "bottom" };
+	if (data === "/") return { kind: "search" };
+	if (data === "1") return { kind: "setMode", mode: "review" };
+	if (data === "2") return { kind: "setMode", mode: "answers" };
+	if (data === "3") return { kind: "setMode", mode: "log" };
+	if (data === "\t" || matchesKey(data, Key.tab)) return { kind: "cycleMode" };
+	if (data === "s") return { kind: "cycleSource" };
+	if (matchesKey(data, Key.enter)) return { kind: "activatePrimary" };
+	if (data === " " || data === "x") return { kind: "runAction", action: "markDone" };
+	if (data === "r") return { kind: "runAction", action: "tellWorker" };
+	if (data === "b") return { kind: "createCheckpoint" };
+	if (data === "P") return { kind: "runAction", action: "promoteWorker" };
+	if (data === "d") return { kind: "runAction", action: "inspect" };
+	if (data === "a") return { kind: "runAction", action: "attachReference" };
+	if (data === "y") return { kind: "runAction", action: "copyArtifact" };
+	// Advanced (revealed in ? help): pin, preview, full inject, open file, filter
+	if (data === "v") return { kind: "toggleDetail" };
+	if (data === "p") return { kind: "runAction", action: "pin" };
+	if (data === "I") return { kind: "runAction", action: "injectFull" };
+	if (data === "o") return { kind: "runAction", action: "openFile" };
+	if (data === "f") return { kind: "cycleFilter" };
+	return undefined;
+}
+
+export class DocketView implements Component {
 	private container: Container | Box = new Container();
 	private state: NavigatorState;
 	private cachedWidth?: number;
@@ -683,37 +723,7 @@ class DocketView implements Component {
 	}
 
 	private intentForInput(data: string): NavigatorIntent | undefined {
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") return { kind: "close" };
-		if (data === "j" || matchesKey(data, Key.down)) return { kind: "move", by: 1 };
-		if (data === "k" || matchesKey(data, Key.up)) return { kind: "move", by: -1 };
-		if (data === "g") return { kind: "top" };
-		if (data === "G") return { kind: "bottom" };
-		if (data === "/") return { kind: "search" };
-		if (data === "1") return { kind: "setMode", mode: "review" };
-		if (data === "2") return { kind: "setMode", mode: "answers" };
-		if (data === "3") return { kind: "setMode", mode: "log" };
-		if (data === "\t" || matchesKey(data, Key.tab)) return { kind: "cycleMode" };
-		if (data === "s") return { kind: "cycleSource" };
-		if (matchesKey(data, Key.enter)) return { kind: "activatePrimary" };
-		if (data === " " || data === "x") return { kind: "runAction", action: "markDone" };
-		if (data === "c") {
-			const sel = navigatorViewModel(this.state, this.artifacts, this.queueState()).selectedItem;
-			if (sel && sel.actions.includes("tellWorker")) return { kind: "runAction", action: "tellWorker" };
-			return { kind: "createCheckpoint" };
-		}
-		if (data === "P") return { kind: "runAction", action: "promoteWorker" };
-		if (data === "d") return { kind: "runAction", action: "inspect" };
-		if (data === "a") return { kind: "runAction", action: "attachReference" };
-		if (data === "y") return { kind: "runAction", action: "copyArtifact" };
-		// Advanced (in help): pin, preview, full inject, open file, filter, legacy aliases
-		if (data === "v") return { kind: "toggleDetail" };
-		if (data === "p") return { kind: "runAction", action: "pin" };
-		if (data === "I") return { kind: "runAction", action: "injectFull" };
-		if (data === "o") return { kind: "runAction", action: "openFile" };
-		if (data === "f") return { kind: "cycleFilter" };
-		if (data === "t") return { kind: "runAction", action: "tellWorker" };
-		if (data === "r" || data === "i") return { kind: "runAction", action: "attachReference" };
-		return undefined;
+		return navigatorKeyIntent(data);
 	}
 
 	private finish(action: NavigatorAction): void {
@@ -759,29 +769,47 @@ class DocketView implements Component {
 		this.cachedLines = undefined;
 	}
 
-	private renderInboxCard(item: ReviewItem, width: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+	private inboxCardLines(item: ReviewItem, width: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): string[] {
+		const lines: string[] = [];
 		const artifact = item.artifact;
 		const chip = item.statusChip ? ` ${chipColor(this.theme, item.statusChip, `[${item.statusChip}]`)}` : "";
-		const headline = `${this.theme.fg("text", this.theme.bold(item.headline))}${chip}`;
-		this.container.addChild(new Text(truncateToWidth(headline, width), 1, 0));
+		lines.push(truncateToWidth(`${this.theme.fg("text", this.theme.bold(item.headline))}${chip}`, width));
 		const changeLines = workerChangeSetLines(artifact);
 		if (changeLines.length > 0) {
-			for (const line of changeLines) this.container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, width), 1, 0));
+			for (const line of changeLines) lines.push(truncateToWidth(`  ${dim(line)}`, width));
 		} else {
 			const bullets = item.recommendations.slice(0, 3);
 			for (const bullet of bullets) {
 				for (const wrapped of wrapPlainText(`• ${bullet}`, width - 2, 2)) {
-					this.container.addChild(new Text(truncateToWidth(`  ${dim(wrapped)}`, width), 1, 0));
+					lines.push(truncateToWidth(`  ${dim(wrapped)}`, width));
 				}
 			}
 		}
 		const done = this.completedRefs.has(artifact.ref);
 		const buttons = inboxButtons(item, done);
 		const buttonLine = buttons.map((button, index) => index === 0 ? accent(`[${button.key} ${button.label}]`) : muted(`[${button.key} ${button.label}]`)).join(" ");
-		this.container.addChild(new Text(truncateToWidth(buttonLine, width), 1, 0));
+		lines.push(truncateToWidth(buttonLine, width));
 		const time = relativeTime(artifact.timestamp);
 		const footer = [item.provenance, time, `@${artifact.id}`].filter(Boolean).join(" · ");
-		this.container.addChild(new Text(truncateToWidth(dim(footer), width), 1, 0));
+		lines.push(truncateToWidth(dim(footer), width));
+		return lines;
+	}
+
+	private renderInboxCard(item: ReviewItem, width: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+		for (const line of this.inboxCardLines(item, width, accent, dim, muted)) this.container.addChild(new Text(line, 1, 0));
+	}
+
+	/** Right pane in the two-pane layout: the selection's card plus an evidence preview. */
+	private selectionPaneLines(item: ReviewItem, width: number, maxRows: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): string[] {
+		const lines = this.inboxCardLines(item, width, accent, dim, muted);
+		const preview = this.fullText(item.artifact).split("\n");
+		const room = Math.max(0, maxRows - lines.length - 1);
+		if (preview.length > 0 && room > 2) {
+			lines.push(dim("·".repeat(Math.max(4, Math.min(width, 40)))));
+			for (const line of preview.slice(0, room - 1)) lines.push(truncateToWidth(dim(line), width));
+			if (preview.length > room - 1) lines.push(muted(`… ${preview.length - (room - 1)} more lines · Enter to inspect`));
+		}
+		return lines.slice(0, maxRows);
 	}
 
 	render(width: number): string[] {
@@ -789,7 +817,10 @@ class DocketView implements Component {
 		const artifacts = this.artifacts;
 		this.container = new Box(2, 1, docketCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
-		const view = navigatorViewModel(this.state, artifacts, this.queueState(), this.state.showDetail ? 7 : 12);
+		// fzf-style persistent preview: list left, selection evidence right. Only the
+		// review surface splits; log/answers stay single-column browsing lists.
+		const twoPane = this.state.mode === "review" && innerWidth >= 104;
+		const view = navigatorViewModel(this.state, artifacts, this.queueState(), twoPane ? 14 : this.state.showDetail ? 7 : 12);
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
 		const muted = (s: string) => this.theme.fg("muted", s);
@@ -822,6 +853,8 @@ class DocketView implements Component {
 			this.container.addChild(new Spacer(1));
 		} else if (this.state.mode === "review") {
 			const catCounts = categoryCounts(view.items);
+			const rowWidth = twoPane ? Math.max(36, Math.floor(innerWidth * 0.46)) : listWidth - 2;
+			const listLines: string[] = [];
 			for (let i = 0; i < view.visible.length; i++) {
 				const item = view.visible[i];
 				if (!item) continue;
@@ -831,14 +864,23 @@ class DocketView implements Component {
 				if (item.category && item.category !== previousCategory) {
 					const count = catCounts.get(item.category) ?? 0;
 					const label = `${reviewCategoryLabel(item.category)} · ${count}`;
-					this.container.addChild(new Text(` ${categoryColor(this.theme, item.category, this.theme.bold(label))}`, 1, 0));
+					listLines.push(truncateToWidth(` ${categoryColor(this.theme, item.category, this.theme.bold(label))}`, rowWidth));
 				}
 				const marker = selected ? accent("▸") : " ";
 				const chip = item.statusChip ? `  ${chipColor(this.theme, item.statusChip, `[${item.statusChip}]`)}` : "";
 				const headline = selected ? this.theme.bold(this.theme.fg("text", item.headline)) : this.theme.fg("text", item.headline);
-				const line = `${marker}  ${headline}${chip}`;
-				const row = padAnsi(truncateToWidth(line, listWidth - 2), listWidth - 2);
-				this.container.addChild(new Text(row, 1, 0));
+				listLines.push(padAnsi(truncateToWidth(`${marker}  ${headline}${chip}`, rowWidth), rowWidth));
+			}
+			if (twoPane) {
+				const rightWidth = Math.max(24, innerWidth - rowWidth - 3);
+				const rightLines = sel ? this.selectionPaneLines(sel, rightWidth, Math.max(listLines.length, 16), accent, dim, muted) : [];
+				const vbar = dividerBorder("│");
+				for (let i = 0; i < Math.max(listLines.length, rightLines.length); i++) {
+					const left = padAnsi(listLines[i] ?? "", rowWidth);
+					this.container.addChild(new Text(`${left} ${vbar} ${rightLines[i] ?? ""}`, 1, 0));
+				}
+			} else {
+				for (const line of listLines) this.container.addChild(new Text(line, 1, 0));
 			}
 		} else if (this.state.mode === "log") {
 			const episodes = episodesFromItems(view.items);
@@ -891,7 +933,7 @@ class DocketView implements Component {
 			}
 		}
 
-		if (sel) {
+		if (sel && !twoPane) {
 			const artifact = sel.artifact;
 			this.container.addChild(new DynamicBorder(dividerBorder));
 			if (this.state.mode === "review") {
@@ -906,7 +948,7 @@ class DocketView implements Component {
 			}
 		}
 
-		if (this.state.showDetail && view.selectedItem) {
+		if (this.state.showDetail && view.selectedItem && !twoPane) {
 			const artifact = view.selectedItem.artifact;
 			this.container.addChild(new DynamicBorder(dividerBorder));
 			this.container.addChild(new Text(`${accent("preview")} ${muted(artifact.ref)}`, 1, 0));
@@ -915,13 +957,13 @@ class DocketView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim(`↑↓ move · / search · ? more · Esc close`), 1, 0));
+		this.container.addChild(new Text(dim(`↑↓ move · / search · b save · ? more · Esc close`), 1, 0));
 		if (this.showHelp) {
-			this.container.addChild(new Text(`${muted("Card")} ${dim("Enter primary · c reply/save · Space done · a attach · y copy · d diff · P promote · I inject full · o open file")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Card")} ${dim("Enter primary · r reply · b save · Space done · a attach · y copy · d diff · P promote · I inject full · o open file")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 log · tab cycle")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Source")} ${dim("s switch source · pills above show available scopes")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Filters")} ${dim("f cycle artifact kind")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("p pin · v preview · t tell · x done")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("p pin · v preview · x done")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -940,7 +982,8 @@ async function showDocketBrowser(
 ): Promise<DocketBrowserAction | null> {
 	return ctx.ui.custom((tui, theme, _kb, done) => new DocketView(tui, theme, artifacts, pinnedRefs, completedRefs, initialMode, (artifact) => catalog.fullText(artifact), done), {
 		overlay: true,
-		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+		// 92% so the review surface crosses the two-pane breakpoint on ~120-col terminals.
+		overlayOptions: { anchor: "center", width: "92%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
 }
 
@@ -1005,6 +1048,17 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 	];
 }
 
+/**
+ * Maps a digit keypress to a wait-option on the verdict card. Only `send` verbs (the
+ * worker's offered options) are reachable by number — number keys never fire a destructive
+ * verb like reject & stop. Pure so the binding is testable without a TUI.
+ */
+export function verdictOptionForDigit(verbs: VerdictVerb[], data: string): VerdictVerb | undefined {
+	if (!/^[1-9]$/.test(data)) return undefined;
+	const verb = verbs[Number(data) - 1];
+	return verb && verb.send !== undefined ? verb : undefined;
+}
+
 function workerIntentLine(worker: WorkerStatus): string | undefined {
 	const summary = typeof worker.summary === "string" ? worker.summary : "";
 	const line = summary.split(/\r?\n/).map((part) => part.trim()).find((part) => part.length > 0);
@@ -1062,6 +1116,7 @@ class DocketVerdictView implements Component {
 		changeSet: Artifact | undefined,
 		private done: (result: DocketVerdictAction | null) => void,
 		private remaining = 0,
+		private paneTail?: string,
 	) {
 		this.changeSet = changeSet;
 		const question = primaryWorkerQuestion(worker);
@@ -1087,6 +1142,11 @@ class DocketVerdictView implements Component {
 		const max = Math.max(0, verbs.length - 1);
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
 			this.finish(null);
+			return;
+		}
+		const digitOption = verdictOptionForDigit(verbs, data);
+		if (digitOption) {
+			this.finish({ verb: digitOption.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), text: digitOption.send });
 			return;
 		}
 		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
@@ -1157,25 +1217,45 @@ class DocketVerdictView implements Component {
 			for (const line of payload.lines.slice(0, 5)) {
 				for (const wrapped of wrapPlainText(line, listWidth - 4, 3)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
 			}
+			if (state === "failed" && this.paneTail) {
+				const tailLines = this.paneTail.replace(/\s+$/, "").split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-6);
+				if (tailLines.length > 0) {
+					this.container.addChild(new Spacer(1));
+					this.container.addChild(new Text(truncateToWidth(`  ${muted("terminal tail")}`, listWidth - 2), 1, 0));
+					for (const line of tailLines) this.container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, listWidth - 2), 1, 0));
+				}
+			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
+		const optionCount = this.options.length;
 		for (let i = 0; i < verbs.length; i++) {
 			const verb = verbs[i]!;
 			const selected = i === this.selected;
 			const marker = selected ? accent("▸") : " ";
+			// Reject & stop kills the worker and removes its workspace. Set it apart with a
+			// blank line and warning color so it never reads as the next routine step.
+			const destructive = verb.id === "rejectStop";
+			if (destructive) this.container.addChild(new Spacer(1));
 			if (verb.send !== undefined) {
+				// Number the offered options so they can be picked directly with 1..9.
+				const number = dim(`${i + 1} `);
 				const badge = this.recommend && verb.send === this.recommend ? muted(" · recommended") : "";
 				const optionLabel = selected ? accent(this.theme.bold(verb.label)) : text(verb.label);
-				this.container.addChild(new Text(truncateToWidth(` ${marker} ${optionLabel}${badge}`, listWidth - 2), 1, 0));
+				this.container.addChild(new Text(truncateToWidth(` ${marker} ${number}${optionLabel}${badge}`, listWidth - 2), 1, 0));
 			} else {
-				const labelText = selected ? accent(this.theme.bold(verb.label.padEnd(14))) : text(verb.label.padEnd(14));
-				this.container.addChild(new Text(truncateToWidth(` ${marker} ${labelText} ${dim(verb.description)}`, listWidth - 2), 1, 0));
+				const padded = verb.label.padEnd(14);
+				const labelText = destructive
+					? warning(selected ? this.theme.bold(padded) : padded)
+					: selected ? accent(this.theme.bold(padded)) : text(padded);
+				const descText = destructive ? warning(verb.description) : dim(verb.description);
+				this.container.addChild(new Text(truncateToWidth(` ${marker} ${labelText} ${descText}`, listWidth - 2), 1, 0));
 			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const diffHint = this.changeSet ? "d full diff · " : "";
+		const pickHint = optionCount > 0 ? `1-${optionCount} pick · ` : "";
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		this.container.addChild(new Text(dim(`${diffHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
+		this.container.addChild(new Text(dim(`${diffHint}${pickHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1186,7 +1266,8 @@ class DocketVerdictView implements Component {
 async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus, remaining = 0): Promise<DocketVerdictAction | null> {
 	const state = deriveWorkerState(worker);
 	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining), {
+	const paneTail = state === "failed" && worker.paneCapturedAt ? await createWorkerStore().readPaneTail(worker.id) : undefined;
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
@@ -1431,10 +1512,13 @@ function addWorkerActivityPreview(container: Container | Box, theme: any, row: W
 }
 
 async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
-	const artifacts = await createWorkerStore().readArtifacts(worker.id);
+	const store = createWorkerStore();
+	const artifacts = await store.readArtifacts(worker.id);
 	const status = workerStatusArtifact(worker);
 	const changes = worker.state === "ready" || worker.state === "failed" || worker.state === "ended" || worker.state === "needs_input" ? workerChangeSetArtifact(worker) : undefined;
-	return [status, changes, ...artifacts.filter((artifact) => artifact.ref !== status?.ref && artifact.ref !== changes?.ref)].filter((artifact): artifact is Artifact => artifact !== undefined);
+	const paneTail = worker.paneCapturedAt ? await store.readPaneTail(worker.id) : undefined;
+	const tail = paneTail ? workerPaneTailArtifact(worker, paneTail) : undefined;
+	return [status, changes, ...artifacts.filter((artifact) => artifact.ref !== status?.ref && artifact.ref !== changes?.ref), tail].filter((artifact): artifact is Artifact => artifact !== undefined);
 }
 
 function parallelEntries(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, source: ParallelSource, filter: ParallelKindFilter, dismissed: Set<string>): ParallelWorkEntry[] {
@@ -1482,10 +1566,15 @@ function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<
 	return lines.join("\n");
 }
 
+const PEEK_VISIBLE_LINES = 24;
+const PEEK_REFRESH_MS = 1000;
+
 class DocketParallelWorkView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private showHelp = false;
+	private peek = false;
+	private peekTimer?: NodeJS.Timeout;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -1497,6 +1586,27 @@ class DocketParallelWorkView implements Component {
 		private done: (result: ParallelWorkAction) => void,
 		private groupByProject = false,
 	) {}
+
+	private finish(result: ParallelWorkAction): void {
+		this.setPeek(false);
+		this.done(result);
+	}
+
+	// Peek repaints on a timer only while open; closing it returns the view to
+	// event-driven rendering (same idle discipline as the dock pulse).
+	private setPeek(on: boolean): void {
+		this.peek = on;
+		if (on && !this.peekTimer) {
+			this.peekTimer = setInterval(() => {
+				this.invalidate();
+				this.tui.requestRender();
+			}, PEEK_REFRESH_MS);
+			this.peekTimer.unref?.();
+		} else if (!on && this.peekTimer) {
+			clearInterval(this.peekTimer);
+			this.peekTimer = undefined;
+		}
+	}
 
 	private entries(): ParallelWorkEntry[] {
 		return parallelEntries(this.workers, this.artifactsByWorker, "all", "all", new Set());
@@ -1521,7 +1631,13 @@ class DocketParallelWorkView implements Component {
 		const rows = this.activityRows();
 		const max = Math.max(0, rows.length - 1);
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done(null);
+			if (this.peek) {
+				this.setPeek(false);
+				this.invalidate();
+				this.tui.requestRender();
+				return;
+			}
+			this.finish(null);
 			return;
 		}
 		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
@@ -1530,29 +1646,30 @@ class DocketParallelWorkView implements Component {
 		else if (data === "G") this.selected = max;
 		else if (matchesKey(data, Key.tab)) this.selectNext();
 		else if (data === "?") this.showHelp = !this.showHelp;
+		else if (data === "p") this.setPeek(!this.peek);
 		else if (matchesKey(data, Key.enter)) {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "details", worker });
+			if (worker) this.finish({ action: "details", worker });
 			return;
 		}
 		else if (data === "l") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "load", worker });
+			if (worker) this.finish({ action: "load", worker });
 			return;
 		}
 		else if (data === "c" || data === "t") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "tell", worker });
+			if (worker) this.finish({ action: "tell", worker });
 			return;
 		}
 		else if (data === "a") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "copyAttach", worker });
+			if (worker) this.finish({ action: "copyAttach", worker });
 			return;
 		}
 		else if (data === "x") {
 			const worker = this.selectedWorker();
-			if (worker) this.done({ action: "stop", worker });
+			if (worker) this.finish({ action: "stop", worker });
 			return;
 		}
 		this.invalidate();
@@ -1563,6 +1680,26 @@ class DocketParallelWorkView implements Component {
 		this.container.invalidate();
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+	}
+
+	private renderPeek(row: WorkerActivityRow, width: number): void {
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const divider = (s: string) => this.theme.fg("borderMuted", s);
+		const label = workerSourceLabel(row.worker);
+		this.container.addChild(new DynamicBorder(divider));
+		this.container.addChild(new Text(truncateToWidth(` ${accent("peek")} ${muted(`${label} · live terminal · read-only · refreshes ${PEEK_REFRESH_MS / 1000}s`)}`, width), 1, 0));
+		const capture = captureWorkerPane(row.worker, PEEK_VISIBLE_LINES + 40);
+		if (capture) {
+			const lines = capture.split(/\r?\n/).slice(-PEEK_VISIBLE_LINES);
+			for (const line of lines) this.container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, width), 1, 0));
+		} else {
+			const hint = row.worker.paneCapturedAt
+				? "window closed · post-mortem saved as terminal-tail artifact (Enter details)"
+				: "window closed · nothing to peek";
+			this.container.addChild(new Text(truncateToWidth(`  ${muted(hint)}`, width), 1, 0));
+		}
 	}
 
 	render(width: number): string[] {
@@ -1618,13 +1755,15 @@ class DocketParallelWorkView implements Component {
 				}
 				this.container.addChild(new Text(renderedRows[i]!, 1, 0));
 			}
-			addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
+			if (this.peek && selectedRow) this.renderPeek(selectedRow, listWidth - 2);
+			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Enter details · c continue · a attach · l load · ? more · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("↑↓ move · Enter details · p peek · c continue · a attach · l load · ? more · Esc close"), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Advanced")} ${dim("Tab switch worker · x stop worker (destructive)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
@@ -2108,7 +2247,18 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const store = createWorkerStore();
 			const workers = await store.list();
 			const targets = selectPrunableWorkers(workers, Date.now(), pruneMs);
+			if (targets.length === 0) return;
+			// Pruning a terminal worker that never got a verdict is decision debt — log it
+			// before the record is gone so /docket log decisions can surface the count.
+			const decisionLog = createDecisionLog();
+			let reviewed: Set<string>;
+			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { reviewed = new Set(); }
 			for (const worker of targets) {
+				try {
+					if (!reviewed.has(worker.id)) {
+						await decisionLog.recordEviction({ workerId: worker.id, workerLabel: workerShortLabel(worker.index), state: worker.state, ...(worker.task ? { task: worker.task } : {}) });
+					}
+				} catch { /* best-effort: never block the prune on the ledger */ }
 				try { await store.purge(worker.id); } catch { /* best-effort */ }
 			}
 		} catch { /* best-effort */ }
@@ -2305,6 +2455,26 @@ export default function docketExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	// Workers whose pane stayed alive (e.g. protocol-failed but pi still running) get
+	// re-probed on later ticks; settled ones are remembered to avoid repeat tmux calls.
+	const paneHarvestSettled = new Set<string>();
+	const harvestDeadWorkerPanes = async (workers: WorkerStatus[]): Promise<void> => {
+		const store = createWorkerStore();
+		for (const worker of workers) {
+			if (!isPaneHarvestCandidate(worker)) {
+				// Respawn clears paneCapturedAt and leaves the terminal state; forget the
+				// settled marker so the relaunched worker's next death gets harvested too.
+				paneHarvestSettled.delete(worker.id);
+				continue;
+			}
+			if (paneHarvestSettled.has(worker.id)) continue;
+			try {
+				const result = await store.harvestPaneTail(worker.id);
+				if (result !== "alive") paneHarvestSettled.add(worker.id);
+			} catch { /* best-effort post-mortem */ }
+		}
+	};
+
 	const refreshWorkerDockWidget = async (): Promise<void> => {
 		const ctx = activeCtx;
 		if (!ctx?.hasUI || workerId) return;
@@ -2353,6 +2523,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const tmuxStatusEnabled = await loadConfig(ctx.cwd).then((c) => c.worker?.tmuxStatusLine === true).catch(() => false);
 			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
 			await reconcileOrphanedWorkers(allWorkers);
+			await harvestDeadWorkerPanes(allWorkers);
 			const now = Date.now();
 			const promptWorkers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
 			const key = sessionProjectKey ?? projectKey(ctx.cwd);
@@ -2960,6 +3131,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				copyText: copyToClipboard,
 				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),
 				parallelKindLabel,
+				recordDecision: (recordEntry) => createDecisionLog().recordVerdict(recordEntry),
+				readDecisionEvents: () => createDecisionLog().read(),
 			}).handle(intent);
 	}
 }

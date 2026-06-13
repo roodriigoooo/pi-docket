@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **post-mortem terminal tails**: worker windows now run with `remain-on-exit on`, so a crashing worker leaves its dead pane behind. The parent captures the last lines to `pane-tail.txt`, then cleans the window up. The capture shows up in review as a `terminal tail` artifact and the failed verdict card prints the final lines. You see why a worker died, not just its exit code.
+- **peek**: in `/docket workers`, `p` shows a live read-only view of the selected worker's tmux pane inside the dashboard, refreshing about once a second. Check on a worker without attaching and without spending model context. `p` or `Esc` closes it.
+- **two-pane review**: on terminals around 120 columns and wider, `/docket` renders the item list on the left and the selected item's card plus evidence preview on the right. Narrower terminals keep the stacked layout.
+- **decision ledger**: every resolved verdict (accept, reject, reject & stop, chat, option-send) is appended to `~/.pi/agent/docket/decisions.ndjson` with the verb, option text, any risk shown, and the evidence refs that were on the card. `/docket log decisions` (or `/docket decisions`) renders the ledger: a last-7-days headline, a per-verb breakdown, and the recent entries. When a terminal worker is pruned with no verdict ever recorded, that counts as decision debt and shows up as "N workers evicted unreviewed this week" so automation bias stays visible instead of silent.
+- **safer verdict keys**: the verdict card now numbers worker-proposed options so you can pick one directly with `1`..`9`, and sets `Reject & stop` apart with a blank line and warning color since it kills the worker and removes its workspace. Number keys only reach the offered options, never the destructive verb.
+- **docket key cleanup**: in `/docket`, reply and save are split off the old overloaded `c` into `r` (reply to worker) and `b` (save bundle), and the duplicate `c`/`t`/`i` aliases are gone. `a` is the single attach key. Footer and `?` help updated to match.
+- **multiline replies**: `/docket tell` and the verdict chat reply now preserve line breaks. A multiline message is delivered through a tmux paste buffer (bracketed paste) so the worker reads the whole block at once instead of running it on the first newline; one-liners keep the existing send-keys path.
+
 ## 0.4.0
 
 - **rename to pi-docket**: product, package, repo title, command, storage paths, worker tools, tmux session, and extension surface now use Docket. Package is `@roodriigoooo/pi-docket`; GitHub repo title should be `pi-docket`; command is `/docket`; extension surface is `globalThis.__docket`; worker tmux session is `docket-workers`.

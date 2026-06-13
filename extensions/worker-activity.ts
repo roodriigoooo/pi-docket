@@ -382,7 +382,7 @@ function previewNextActions(row: WorkerActivityRow): string {
 			: row.state === "ready" || row.state === "ready_open_todos"
 				? "[Enter Review answer]"
 				: "[Enter Open]";
-	const buttons = [primary, "[l Load summary]", "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
+	const buttons = [primary, "[p Peek]", "[l Load summary]", "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
 	return buttons.join(" ");
 }
 

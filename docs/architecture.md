@@ -19,10 +19,11 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
 | Background Work | `extensions/background-work.ts` | Worker state transitions, protocol semantics, synthetic status artifacts, heartbeat dedup. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
-| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin, session seeding. |
+| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), session seeding. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
+| Decision Log | `extensions/decision-log.ts` | Append-only verdict ledger + unreviewed-eviction count; pure summarize/render over the events. |
 | Worker Kinds | `extensions/worker-kinds.ts` | Frontmatter parser, registry, guardrails appendix composer. |
 | Extension Surface | `extensions/docket.ts` (via `globalThis.__docket`) | `registerWorkerKind`, `listWorkerKinds`, `onWorkerEvent`. |
 | Navigator | `extensions/docket-navigator.ts` | View model, ranking, selection state, mode/source transitions. |
@@ -35,7 +36,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 3. The worker pi writes to `task.md`, ticks `status.json` every 15 s (heartbeat), updates `artifacts.json` only when its signature changes, and appends every state transition / todo update / tool call to `events.ndjson`.
 4. Parent watches the workers root with `fs.watch` (recursive on macOS, polled fallback elsewhere). `WorkerSnapshotCache` reads new event bytes since its held offset, deduplicates by mtime, and keeps a 16-event sticky ring per worker.
 5. `Background Work` projects the snapshot into a synthetic status artifact. Navigator ranks it alongside file edits and errors. The dock renders one row per worker plus an event sub-line when thinking.
-6. Worker calls `docket_done` / `docket_fail` → state goes terminal → row enters `ready` / `failed` until evicted (`worker.dockIdleHideMinutes`) or pruned (`worker.pruneAfterHours`).
+6. Worker calls `docket_done` / `docket_fail` → state goes terminal → row enters `ready` / `failed` until evicted (`worker.dockIdleHideMinutes`) or pruned (`worker.pruneAfterHours`). When the prune sweep removes a terminal worker that never got a verdict (its id is absent from the decision ledger), it records a `worker_evicted_unreviewed` event first so the debt is counted before the record is gone.
+7. If the worker *process* dies, `remain-on-exit` keeps the dead pane. The dock's harvest sweep (`isPaneHarvestCandidate` → `WorkerStore.harvestPaneTail`) captures the last 200 lines to `pane-tail.txt`, kills the window, and stamps `paneCapturedAt` on the status so the probe never repeats. The tail surfaces as a `terminal tail` artifact in review and as the last lines on the failed verdict card. Workers in a terminal state whose pane is still alive (a protocol `docket_fail` with pi still running) are left untouched so you can keep chatting with them.
 
 ## Worker protocol
 
@@ -61,6 +63,7 @@ Per-worker state under `~/.pi/agent/docket/workers/<id>/`:
 | `status.json` | worker heartbeat + protocol | Current state, mtime-cached by the dock. |
 | `artifacts.json` | worker heartbeat | Snapshot, signature-deduped between heartbeats. |
 | `events.ndjson` | worker live | Append-only event stream; rotated at 5 MB, one generation retained. |
+| `pane-tail.txt` | parent harvest | Last terminal lines captured from the dead tmux pane after the worker process exited. |
 | `session/` | parent (seeded) | Forked pi JSONL prefix, enables `--continue` + cache reuse. |
 | `workspace/` | parent (seeded) | Detached git worktree isolated from the parent's working copy. |
 
@@ -72,6 +75,7 @@ Bundle state under `~/.pi/agent/docket/`:
 | `checkpoints/<id>.artifacts.json` | Bundle Lifecycle | Sidecar refs, mounted by `/docket load`. |
 | `events.ndjson` | Bundle Store | Append-only lifecycle (save/consume/purge/sweep). |
 | `index.json` | Bundle Store (snapshot) | Compatibility snapshot, rebuilt from `events.ndjson`. |
+| `decisions.ndjson` | Decision Log | Append-only verdict ledger + unreviewed-eviction events, read by `/docket log decisions`. |
 
 `index.json` is not authoritative — the event log is. It exists so external readers don't break.
 
@@ -94,8 +98,11 @@ declare global {
 ## Key design choices
 
 - **One tmux session, N windows.** Pays for one tmux server regardless of fleet size. `send-keys -l` gives a safe parent→worker stdin without inventing a FIFO/socket protocol.
+- **Dead panes are evidence.** Worker windows run with `remain-on-exit on`, so a crash leaves the pane (and its scrollback) for the parent to harvest before the window is killed. While the pane is alive, `capture-pane` doubles as the dashboard's read-only peek: observation without attach, zero model-context cost.
 - **NDJSON event stream over `fs.watch`.** Disk-backed, survives parent restarts, no daemon. Drives the dock without polling. `pipe-pane` captures terminal noise, not structured events — opt-in via `worker.captureTerminal` when debugging.
 - **Heartbeat dedup.** Worker hashes its artifact list each heartbeat; `writeArtifacts` is skipped when unchanged. Quiet workers cost ~0 disk I/O.
 - **mtime-cached reads in the parent.** `WorkerSnapshotCache` skips parse when neither status nor artifacts has changed.
 - **Session seeding for prompt cache.** `/docket spawn` (without `--fresh`) forks the parent JSONL into the worker session dir; worker resumes with `--continue` so the shared prefix is provider-cache eligible.
 - **Kinds extend, never replace.** Every worker runs the universal guardrails; the kind MD is appended. Adding a kind needs zero TypeScript.
+- **Decisions are logged, debt is counted.** Every verdict resolution appends to `decisions.ndjson` with the verb, option, risk, and evidence refs that were on the card. A terminal worker pruned with no verdict recorded is logged as decision debt. The router holds the single choke point (`runVerdict`); the log module stays pure summarize/render so the counts are testable without a TUI.
+- **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.

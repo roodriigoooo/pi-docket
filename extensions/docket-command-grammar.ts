@@ -10,6 +10,7 @@ export type CheckpointCreateOptions = {
 export type DocketIntent =
 	| { kind: "help"; advanced?: boolean }
 	| { kind: "browse"; mode?: "review" | "answers" | "log" }
+	| { kind: "decisions" }
 	| { kind: "clear" }
 	| { kind: "save"; options: CheckpointCreateOptions }
 	| { kind: "delete"; target: string | undefined; targetKind: "checkpoint" | "worker" }
@@ -32,7 +33,7 @@ export type ParseResult =
 	| { ok: true; intent: DocketIntent }
 	| { ok: false; message: string; usage: string };
 
-export const DOCKET_COMMANDS = ["answers", "attach", "clear", "copy", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
+export const DOCKET_COMMANDS = ["answers", "attach", "clear", "copy", "decisions", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -67,6 +68,7 @@ export function docketUsage(advanced = false): string {
 		"Docket · advanced:",
 		"/docket answers [query]         browse assistant/worker answers",
 		"/docket log                     audit timeline grouped by episode",
+		"/docket log decisions           verdict ledger + workers evicted unreviewed",
 		"/docket search <query>          ranked artifact search",
 		"/docket workers [--all]         worker dashboard",
 		"/docket kinds                   list registered worker kinds",
@@ -200,7 +202,15 @@ export function parseDocketCommand(args: string): ParseResult {
 	const [command = "", ...rest] = tokenized.tokens;
 
 	if (command === "") return { ok: true, intent: { kind: "browse", mode: "review" } };
-	if (command === "log") return { ok: true, intent: { kind: "browse", mode: "log" } };
+	if (command === "log") {
+		if (rest[0] === "decisions") return { ok: true, intent: { kind: "decisions" } };
+		if (rest.length > 0) return parseError("Usage: /docket log [decisions]");
+		return { ok: true, intent: { kind: "browse", mode: "log" } };
+	}
+	if (command === "decisions") {
+		if (rest.length > 0) return parseError("Usage: /docket decisions");
+		return { ok: true, intent: { kind: "decisions" } };
+	}
 	if (command === "help" || command === "--help" || command === "-h") {
 		const advanced = rest.some((token) => token === "advanced" || token === "--advanced" || token === "all" || token === "--all");
 		return { ok: true, intent: { kind: "help", ...(advanced ? { advanced: true } : {}) } };

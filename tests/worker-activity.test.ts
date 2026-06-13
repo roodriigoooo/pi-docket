@@ -88,6 +88,6 @@ test("Worker Activity preview shows Outcome, Evidence, Next actions", () => {
 	assert.match(preview, /^Evidence$/m);
 	assert.match(preview, /1\/1 todos/);
 	assert.match(preview, /^Next actions$/m);
-	assert.match(preview, /\[Enter Review answer\] \[l Load summary\] \[c Continue\] \[a Attach tmux\] \[x Dismiss\]/);
+	assert.match(preview, /\[Enter Review answer\] \[p Peek\] \[l Load summary\] \[c Continue\] \[a Attach tmux\] \[x Dismiss\]/);
 	assert.doesNotMatch(preview, /├|└|Actions:/);
 });

@@ -43,7 +43,17 @@ export type WorkerStore = {
 	countActive(): Promise<number>;
 	/** Re-launch a worker whose tmux window died. Reuses the worker dir + seeded session. */
 	respawn(id: string): Promise<WorkerStatus | undefined>;
+	/**
+	 * Post-mortem capture for a terminal worker: if its pane is dead (remain-on-exit),
+	 * save the scrollback tail to pane-tail.txt, kill the window, and mark the status.
+	 * "alive" means the worker process still runs — caller should leave it alone.
+	 */
+	harvestPaneTail(id: string): Promise<PaneHarvestResult>;
+	/** Read the harvested pane tail, if one was captured. */
+	readPaneTail(id: string): Promise<string | undefined>;
 };
+
+export type PaneHarvestResult = "captured" | "window_gone" | "alive" | "not_found";
 
 export type SpawnInput = {
 	task: string;
@@ -156,6 +166,14 @@ function readWindowId(target: string): string | undefined {
 
 export function sharedSessionExists(): boolean {
 	return tmuxSessionExists(SHARED_TMUX_SESSION);
+}
+
+/**
+ * Read-only snapshot of a worker's tmux pane (live or dead) for in-TUI peeking —
+ * the "glass wall": observe without attaching. Undefined when the window is gone.
+ */
+export function captureWorkerPane(worker: Pick<WorkerStatus, "tmuxSession" | "tmuxWindowId">, lines = 60): string | undefined {
+	return capturePaneTail(worker.tmuxWindowId ?? worker.tmuxSession, lines);
 }
 
 function gitOutput(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): string | undefined {
@@ -440,9 +458,10 @@ export function createWorkerStore(): WorkerStore {
 		async sendInput(id: string, text: string): Promise<boolean> {
 			const status = await this.find(id);
 			if (!status) return false;
-			const safeText = text.replace(/\s+/g, " ").trim();
-			if (!safeText) return false;
-			const ok = sendKeysToWindow(status.tmuxSession, safeText, status.tmuxWindowId);
+			const multiline = isMultilineInput(text);
+			const payload = multiline ? normalizeMultilineInput(text) : sanitizeSingleLineInput(text);
+			if (!payload) return false;
+			const ok = sendKeysToWindow(status.tmuxSession, payload, status.tmuxWindowId, multiline);
 			if (!ok) return false;
 			await this.patchStatus(status.id, workerInputAcceptedPatch());
 			return true;
@@ -536,10 +555,42 @@ export function createWorkerStore(): WorkerStore {
 			return true;
 		},
 
+		async harvestPaneTail(id: string): Promise<PaneHarvestResult> {
+			const status = await this.find(id);
+			if (!status) return "not_found";
+			if (status.paneCapturedAt) return "window_gone";
+			const target = status.tmuxWindowId ?? status.tmuxSession;
+			const probe = probeWorkerPane(target);
+			if (probe.kind === "alive") return "alive";
+			if (probe.kind === "dead") {
+				const tail = capturePaneTail(probe.paneId, 200, { collapseBlankRuns: true });
+				if (tail) {
+					try {
+						await fs.writeFile(path.join(workerDir(status.id), "pane-tail.txt"), `${tail}\n`, "utf8");
+					} catch { /* capture is best-effort; still settle the window */ }
+				}
+				killTmux(status.tmuxSession, status.tmuxWindowId);
+			}
+			await this.patchStatus(status.id, { paneCapturedAt: new Date().toISOString() });
+			return probe.kind === "dead" ? "captured" : "window_gone";
+		},
+
+		async readPaneTail(id: string): Promise<string | undefined> {
+			try {
+				const text = await fs.readFile(path.join(workerDir(id), "pane-tail.txt"), "utf8");
+				return text.trim() ? text : undefined;
+			} catch {
+				return undefined;
+			}
+		},
+
 		async respawn(id: string): Promise<WorkerStatus | undefined> {
 			ensureTmux();
 			const status = await this.find(id);
 			if (!status) return undefined;
+			// remain-on-exit can leave the old dead window behind; clear it so the
+			// relaunched window doesn't collide with a stale "wN".
+			killTmux(status.tmuxSession, status.tmuxWindowId);
 			const dir = workerDir(status.id);
 			const sessionDir = path.join(dir, "session");
 			const target = workerWindowTarget(status.index);
@@ -552,7 +603,8 @@ export function createWorkerStore(): WorkerStore {
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
 			if (!launch.ok) throw new Error(launch.error);
 			const windowId = readWindowId(target);
-			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, ...(windowId ? { tmuxWindowId: windowId } : {}) };
+			// Fresh launch invalidates any previous post-mortem; let the sweep harvest this run too.
+			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, paneCapturedAt: undefined, ...(windowId ? { tmuxWindowId: windowId } : {}) };
 			return await this.patchStatus(status.id, patch);
 		},
 
@@ -578,12 +630,31 @@ export function createWorkerStore(): WorkerStore {
 }
 
 const DOCKET_INJECT_MARK = "[docket] ";
+const DOCKET_PASTE_BUFFER = "docket-tell";
 
-function sendKeysToWindow(target: string, text: string, windowId?: string): boolean {
+/** True when the payload spans more than one line and needs the paste-buffer path. */
+export function isMultilineInput(text: string): boolean {
+	return /\r?\n/.test(text.trim());
+}
+
+/** Collapse a one-liner's whitespace so stray tabs/newlines never break send-keys. */
+export function sanitizeSingleLineInput(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
+
+/** Normalize a multiline payload: CRLF → LF, trim trailing space per line, drop edge blanks. */
+export function normalizeMultilineInput(text: string): string {
+	return text.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").replace(/^\n+|\n+$/g, "");
+}
+
+function sendKeysToWindow(target: string, text: string, windowId?: string, multiline = false): boolean {
 	if (!target) return false;
 	const sendTarget = windowId ?? target;
 	const shared = isSharedSessionTarget(target) || Boolean(windowId);
 	const literal = shared ? `${DOCKET_INJECT_MARK}${text}` : text;
+	// Multiline payloads go through a tmux buffer + bracketed paste so the worker's input
+	// reader receives the whole block at once instead of executing on the first newline.
+	if (multiline) return pasteToWindow(sendTarget, target, literal, Boolean(windowId));
 	const literalResult = shared
 		? spawnSync("tmux", ["send-keys", "-t", sendTarget, "-l", literal], { stdio: "ignore" })
 		: spawnSync("tmux", ["send-keys", "-t", sendTarget, literal], { stdio: "ignore" });
@@ -604,18 +675,72 @@ function sendKeysToWindow(target: string, text: string, windowId?: string): bool
 	return enterResult.status === 0;
 }
 
+function pasteToWindow(sendTarget: string, fallbackTarget: string, payload: string, hasWindowId: boolean): boolean {
+	// Load the payload into a named buffer via stdin (no shell quoting hazards), then paste it
+	// with -p (bracketed) and -d (delete the buffer afterwards). Enter submits the block.
+	const load = spawnSync("tmux", ["load-buffer", "-b", DOCKET_PASTE_BUFFER, "-"], { input: payload, stdio: ["pipe", "ignore", "ignore"] });
+	if (load.status !== 0) return false;
+	const pasteArgs = (t: string) => ["paste-buffer", "-d", "-p", "-b", DOCKET_PASTE_BUFFER, "-t", t];
+	let paste = spawnSync("tmux", pasteArgs(sendTarget), { stdio: "ignore" });
+	if (paste.status !== 0 && hasWindowId) paste = spawnSync("tmux", pasteArgs(fallbackTarget), { stdio: "ignore" });
+	if (paste.status !== 0) {
+		spawnSync("tmux", ["delete-buffer", "-b", DOCKET_PASTE_BUFFER], { stdio: "ignore" });
+		return false;
+	}
+	const enterResult = spawnSync("tmux", ["send-keys", "-t", sendTarget, "Enter"], { stdio: "ignore" });
+	if (enterResult.status !== 0 && hasWindowId) {
+		const retry = spawnSync("tmux", ["send-keys", "-t", fallbackTarget, "Enter"], { stdio: "ignore" });
+		return retry.status === 0;
+	}
+	return enterResult.status === 0;
+}
+
 function launchSharedWindow(input: { windowName: string; cwd: string; command: string }): { ok: true } | { ok: false; error: string } {
+	// remain-on-exit keeps the dead pane (and its scrollback) around after the worker
+	// process exits, so the parent can capture a post-mortem tail before killing the
+	// window. The harvest sweep in the dock is responsible for the eventual kill.
+	const target = `${SHARED_TMUX_SESSION}:${input.windowName}`;
 	if (!tmuxSessionExists(SHARED_TMUX_SESSION)) {
 		const created = spawnSync("tmux", ["new-session", "-d", "-s", SHARED_TMUX_SESSION, "-n", input.windowName, "-c", input.cwd, input.command], { encoding: "utf8" });
 		if (created.error || created.status !== 0) {
 			return { ok: false, error: created.stderr?.trim() || created.error?.message || "tmux new-session failed" };
 		}
-		spawnSync("tmux", ["set-option", "-t", SHARED_TMUX_SESSION, "remain-on-exit", "off"], { stdio: "ignore" });
+		spawnSync("tmux", ["set-option", "-t", SHARED_TMUX_SESSION, "remain-on-exit", "on"], { stdio: "ignore" });
 		return { ok: true };
 	}
 	const added = spawnSync("tmux", ["new-window", "-d", "-t", `${SHARED_TMUX_SESSION}:`, "-n", input.windowName, "-c", input.cwd, input.command], { encoding: "utf8" });
 	if (added.error || added.status !== 0) {
 		return { ok: false, error: added.stderr?.trim() || added.error?.message || "tmux new-window failed" };
 	}
+	// Window-level set covers sessions created by older versions that set the session option to off.
+	spawnSync("tmux", ["set-option", "-w", "-t", target, "remain-on-exit", "on"], { stdio: "ignore" });
 	return { ok: true };
+}
+
+type PaneProbe = { kind: "window_gone" } | { kind: "alive" } | { kind: "dead"; paneId: string };
+
+/**
+ * Probe per pane, not per window: split layouts (e.g. split-events) keep a live
+ * helper pane next to the worker pane, so the window-level flag would lie.
+ */
+function probeWorkerPane(target: string): PaneProbe {
+	const result = spawnSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_id} #{pane_dead}"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) return { kind: "window_gone" };
+	const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
+	if (lines.length === 0) return { kind: "window_gone" };
+	for (const line of lines) {
+		const [paneId, dead] = line.split(" ");
+		if (dead === "1" && paneId?.startsWith("%")) return { kind: "dead", paneId };
+	}
+	return { kind: "alive" };
+}
+
+function capturePaneTail(target: string, lines = 200, options: { collapseBlankRuns?: boolean } = {}): string | undefined {
+	const result = spawnSync("tmux", ["capture-pane", "-p", "-S", `-${lines}`, "-t", target], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+	if (result.error || result.status !== 0) return undefined;
+	// Dead panes pad the viewport with empty rows before tmux's "Pane is dead" line;
+	// collapse those for stored post-mortems but keep live peeks screen-faithful.
+	const cleaned = options.collapseBlankRuns ? result.stdout.replace(/\n{3,}/g, "\n\n") : result.stdout;
+	const text = cleaned.replace(/\s+$/, "");
+	return text.trim() ? text : undefined;
 }

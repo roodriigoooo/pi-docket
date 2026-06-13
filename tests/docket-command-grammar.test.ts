@@ -111,3 +111,18 @@ test("Docket grammar parses answers, log, and search", () => {
 	assert.ok(DOCKET_COMMANDS.includes("answers"));
 	assert.match(docketUsage(true), /\/docket answers \[query\]/);
 });
+
+test("Docket grammar parses the decisions lens via decisions and log decisions", () => {
+	assert.deepEqual(parseDocketCommand("decisions"), { ok: true, intent: { kind: "decisions" } });
+	assert.deepEqual(parseDocketCommand("log decisions"), { ok: true, intent: { kind: "decisions" } });
+	assert.ok(DOCKET_COMMANDS.includes("decisions"));
+	assert.match(docketUsage(true), /\/docket log decisions/);
+
+	const badLog = parseDocketCommand("log bogus");
+	assert.equal(badLog.ok, false);
+	if (!badLog.ok) assert.match(badLog.message, /Usage: \/docket log \[decisions\]/);
+
+	const badDecisions = parseDocketCommand("decisions extra");
+	assert.equal(badDecisions.ok, false);
+	if (!badDecisions.ok) assert.match(badDecisions.message, /Usage: \/docket decisions/);
+});

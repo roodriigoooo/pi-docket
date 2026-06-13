@@ -8,6 +8,7 @@ import type { LoadedArtifactContext, LoadableSource } from "../extensions/loaded
 import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 import type { WorkerCommands } from "../extensions/worker-commands.js";
 import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
+import type { DecisionEvent, DecisionRecord } from "../extensions/decision-log.js";
 
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
 const checkpoint: CheckpointIndexEntry = { id: "ck-1", mode: "handoff", file: "/tmp/ck.md", createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo", consumeOnUse: true };
@@ -31,6 +32,7 @@ function fakeCatalog(): ArtifactCatalog {
 
 function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 	const calls: string[] = [];
+	const decisions: DecisionRecord[] = [];
 	const loadedArtifacts = {
 		clearChips: () => { calls.push("clearChips"); return true; },
 		defaultLoadSource: ({ checkpoints, workers }: { checkpoints: CheckpointIndexEntry[]; workers: WorkerStatus[] }): LoadableSource | undefined => checkpoints[0] ? { kind: "checkpoint", checkpoint: checkpoints[0] } : workers[0] ? { kind: "worker", worker: workers[0] } : undefined,
@@ -115,9 +117,12 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		copyText: async () => { calls.push("copyText"); return true; },
 		announceChipChange: () => { calls.push("announceChip"); },
 		parallelKindLabel: (kind) => kind,
+		// Decisions land in their own array so existing call-order assertions stay stable.
+		recordDecision: async (record) => { decisions.push(record); },
+		readDecisionEvents: async () => [],
 		...overrides,
 	};
-	return { calls, router: createDocketCommandRouter(deps) };
+	return { calls, decisions, router: createDocketCommandRouter(deps) };
 }
 
 test("Docket Command Router handles clear through loaded artifact context", async () => {
@@ -155,4 +160,54 @@ test("Docket Command Router verdict accept approves waiting worker without loadi
 	await router.handle({ kind: "verdict", worker: "w2" });
 
 	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
+});
+
+test("Docket Command Router records a verdict in the decision ledger", async () => {
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
+	const { decisions, router } = harness({
+		hasUI: true,
+		workerStore: { find: async () => waiting, list: async () => [waiting], readArtifacts: async () => [] } as unknown as WorkerStore,
+		showVerdict: async () => ({ verb: "accept", worker: waiting }),
+	});
+
+	await router.handle({ kind: "verdict", worker: "w2" });
+
+	assert.equal(decisions.length, 1);
+	assert.equal(decisions[0]?.verb, "accept");
+	assert.equal(decisions[0]?.workerId, "worker-1");
+	assert.equal(decisions[0]?.state, "needs_input");
+});
+
+test("Docket Command Router logs option-send verdicts with the option text", async () => {
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Pick one" };
+	const { calls, decisions, router } = harness({
+		hasUI: true,
+		workerStore: { find: async () => waiting, list: async () => [waiting], readArtifacts: async () => [] } as unknown as WorkerStore,
+		showVerdict: async () => ({ verb: "send", worker: waiting, text: "use postgres" }),
+	});
+
+	await router.handle({ kind: "verdict", worker: "w2" });
+
+	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
+	assert.equal(decisions[0]?.verb, "send");
+	assert.equal(decisions[0]?.option, "use postgres");
+});
+
+test("Docket Command Router decisions lens renders the ledger via showText", async () => {
+	const events: DecisionEvent[] = [
+		{ type: "verdict_resolved", timestamp: new Date().toISOString(), workerId: "worker-1", workerLabel: "w1", state: "ready", verb: "accept", evidenceRefs: [] },
+		{ type: "worker_evicted_unreviewed", timestamp: new Date().toISOString(), workerId: "worker-2", workerLabel: "w2", state: "ended", reason: "pruned" },
+	];
+	let shown: { title: string; body: string } | undefined;
+	const { router } = harness({
+		hasUI: true,
+		readDecisionEvents: async () => events,
+		showText: async (title, body) => { shown = { title, body }; },
+	});
+
+	await router.handle({ kind: "decisions" });
+
+	assert.equal(shown?.title, "docket · decisions");
+	assert.match(shown?.body ?? "", /1 resolved · 1 evicted unreviewed/);
+	assert.match(shown?.body ?? "", /decision debt/);
 });
