@@ -8,18 +8,28 @@
 
 # pi-docket
 
-Docket is a decision queue for work done inside pi.
+Docket is a small decision inbox for pi.
 
-It pulls the few moments that need human judgment out of long agent work: worker findings, proposed patches, failed commands, saved evidence bundles, and questions. It is not a transcript browser, not a memory system, and not a task manager. Docket keeps evidence available and asks: **what needs a decision now?**
+When agent work gets long, useful things get scattered: failed commands, worker results, proposed patches, questions, notes, and files touched. Docket pulls those moments into review cards.
 
-> Formerly `trail`. The rename is intentional: the product is no longer framed as a history trail or session-resume system. Docket is a docket of cases needing judgment, with evidence bundles attached.
+Open `/docket`, decide what matters, and attach evidence only when you want the model to see it.
 
-## Core philosophy
+## What it does
 
-- **Pi owns sessions.** Use pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for conversation topology and context-window management.
-- **Docket owns decisions.** It ranks artifacts into review items, shows cards, and keeps evidence out of model context until you attach it.
-- **tmux owns parallel visibility.** Workers are visible pi processes in one shared tmux session. You can attach and inspect them directly.
-- **Workers are explicit.** Docket may eventually suggest a worker only when context-heavy work is obvious and maps to a known worker kind. It must never silently spawn.
+- Shows review cards for things that need attention.
+- Starts background pi workers when you ask for them.
+- Keeps worker output, errors, and evidence on disk.
+- Lets you peek at running workers without attaching.
+- Saves evidence bundles you can load later at zero model-context cost.
+- Logs verdicts, so accepted, rejected, and skipped worker work stays visible.
+
+## What it is not
+
+Docket is not a memory layer, transcript browser, todo app, or session manager.
+
+pi already has `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume`. Use those for session shape.
+
+Docket handles attention, evidence, workers, and decisions.
 
 ## Install
 
@@ -27,274 +37,171 @@ It pulls the few moments that need human judgment out of long agent work: worker
 pi install git:github.com/roodriigoooo/pi-docket
 ```
 
-Open Docket:
+Open it:
 
-```bash
+```text
 /docket
 ```
 
-Spawn a worker explicitly:
+Start a background worker:
 
-```bash
-/docket spawn --as scout map callers of getUser()
+```text
+/docket spawn --as scout find the auth middleware and list risky paths
 ```
 
-Save evidence as a zero-token bundle:
+Review worker result:
 
-```bash
-/docket save auth investigation findings
+```text
+/docket verdict
 ```
 
-Load a bundle or worker artifacts:
+Save useful evidence:
 
-```bash
+```text
+/docket save auth middleware notes
+```
+
+Load it later:
+
+```text
 /docket load last
-/docket load w1
-```
-
-## Rename from Trail
-
-This release is a breaking rename.
-
-- Package: `@roodriigoooo/pi-docket`
-- GitHub repo title: `pi-docket`
-- Slash command: `/docket`
-- Old `/trail` commands are not kept as aliases.
-- Worker protocol tools are now `docket_wait`, `docket_done`, `docket_fail`, `docket_todos`, and `docket_spawn_child`.
-- Storage/config paths now use `docket`:
-  - `~/.pi/agent/docket/`
-  - `~/.pi/agent/docket.json`
-  - `<project>/.pi/docket.json`
-  - `<project>/.pi/docket/worker-kinds/*.md`
-
-If you need old data, copy it manually before deleting the old package:
-
-```bash
-cp -R ~/.pi/agent/trail ~/.pi/agent/docket
-cp ~/.pi/agent/trail.json ~/.pi/agent/docket.json 2>/dev/null || true
-cp -R .pi/trail .pi/docket 2>/dev/null || true
-cp .pi/trail.json .pi/docket.json 2>/dev/null || true
 ```
 
 ## Basic loop
 
 ```text
-  work / spawn       capture             decide                act
-  current pi    ->   artifacts       ->  /docket cards   ->   Enter review
-  /docket spawn      status.json         evidence             r reply · b save
-                                      bundles/workers         a attach ref
+work or spawn -> capture evidence -> open /docket -> decide -> act
 ```
 
-1. **Work or spawn** — keep working in the parent session, or explicitly start a background worker with `/docket spawn`.
-2. **Capture** — Docket records failed commands, file changes, worker results, saved bundles, and questions.
-3. **Decide** — `/docket` opens only items that likely need attention.
-4. **Act** — review, reply, promote, dismiss, attach evidence, save/load bundles, or attach to tmux.
+1. Work in pi, or spawn a worker with `/docket spawn`.
+2. Docket records useful artifacts: errors, changes, worker status, answers, and bundles.
+3. `/docket` shows only review items, not every line of history.
+4. You accept, reject, reply, attach evidence, save a bundle, or mark done.
 
-## Commands
+The model does not see full evidence until you attach it with `/docket ref` or `/docket inject-full`.
 
-Primary commands:
+## tmux, simply
 
-| Command | Purpose |
-|---|---|
-| `/docket` | Open decision docket. |
-| `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
-| `/docket spawn [--fresh] [--as <kind>] <task>` | Start explicit background worker. |
-| `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
-| `/docket attach [w<N>]` | Copy tmux attach command for shared worker session. |
-| `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
-| `/docket load [id\|last\|w<N>]` | Mount bundle or worker artifacts at zero model-context cost. |
+Docket uses tmux for worker processes.
 
-Advanced commands:
-
-| Command | Purpose |
-|---|---|
-| `/docket workers [--all]` | Worker dashboard. |
-| `/docket kinds` | List worker kinds. |
-| `/docket respawn <w<N>\|all>` | Relaunch worker whose tmux window died. |
-| `/docket answers [query]` | Browse assistant/worker answers. |
-| `/docket log` | Audit timeline grouped by episode. |
-| `/docket log decisions` | Verdict ledger plus workers evicted unreviewed. |
-| `/docket search <query>` | Ranked artifact search. |
-| `/docket list [--include-consumed] [--workers\|--all]` | List saved bundles or workers. |
-| `/docket unload <id\|w<N>\|all>` | Drop mounted bundle/worker artifacts. |
-| `/docket delete [id\|last\|w<N>]` | Delete bundle or worker. Worker delete cascades to children. |
-| `/docket ref <artifact-id>` | Attach compact artifact reference to next prompt. |
-| `/docket inject-full <artifact-id>` | Attach full artifact text to next prompt. |
-| `/docket copy <artifact-id>` | Copy artifact text. |
-| `/docket clear` | Drop pending chips/widgets. |
-
-No short aliases are intentionally provided. Fewer commands, clearer intent.
-
-## The review surface
-
-`/docket` opens the inbox as an overlay. On a wide terminal (roughly 120 columns and up) it splits into two panes: the list of review items on the left, and the selected item's card plus an evidence preview on the right. Move with `j`/`k` and the preview follows. On narrower terminals the card renders below the list, same as before.
-
-```text
- Failed / blocked · 2                      │ TypeError: boom in auth.ts [error]
-▸  TypeError: boom in auth.ts  [error]     │ [Enter Inspect] [a Attach] [y Copy]
-   Command failed: npm test   [error]      │ current session · 2m ago · @e1
-                                           │ ····································
-                                           │ at verifyToken (src/auth.ts:42)
-                                           │ at middleware (src/app.ts:10)
-```
-
-The preview is read from disk. Browsing costs zero model context; attaching still requires an explicit `a` (compact ref) or `I` (full text). Reply to a worker with `r`, save a bundle with `b`, copy with `y`, mark done with `Space`. Press `?` for the full key list.
-
-## The verdict card
-
-`/docket verdict` (or `Enter` on a worker row) opens one decision at a time. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
-
-```text
- docket · verdict                                        Esc close
- ● w3 · run migration suite   needs input · 1m ago
-   ⚠ irreversible: drops the sessions table
-
- ▸ 1 Use the migration-safe path        · recommended
-   2 Proceed as proposed
-   Steer          something else · stays alive
-
-   Reject & stop  kill worker + remove workspace
-   Chat           type a reply
- 1-2 pick · ↑↓ move · Enter select · Esc close
-```
-
-`Reject & stop` is set apart with a blank line and warning color because it kills the worker and removes its workspace, and it always asks for confirmation. Number keys only reach the offered options, never the destructive verb.
-
-## Decision ledger
-
-Every verdict you resolve (accept, reject, reject & stop, chat, or an option-send) is appended to `~/.pi/agent/docket/decisions.ndjson` with the verb, the option text, any risk the worker flagged, and the evidence refs that were on the card. `/docket log decisions` (short: `/docket decisions`) renders it:
-
-```text
-Decisions · last 7 days
-  6 resolved · 2 evicted unreviewed
-  accept 3 · reject 2 · reject & stop 1
-  decision debt: 2 workers evicted unreviewed this week
-
-Recent (8 of 8):
-  3m ago   w3  option "Use the migration-safe path"  (needs_input)  ⚠ irreversible: drops the sessions table
-  1h ago   w1  accept  (ready)  [worker-changeset:auth-bug-a3b1:0]
-  2h ago   w2  evicted unreviewed (ended) · refactor token cache
-```
-
-The last line is decision debt: a worker reached a terminal state and was pruned with no verdict ever recorded, so it aged out before anyone looked. Counting it keeps automation bias visible rather than silent.
-
-## Evidence bundles
-
-A Docket bundle is a frozen artifact sidecar plus a small orientation markdown file. It is not a model-written summary by default.
-
-`/docket save`:
-
-- selects relevant artifacts,
-- lets you prune/edit the bundle header,
-- writes `<id>.md` + `<id>.artifacts.json`,
-- labels the current pi session tree leaf as `docket:<id>`.
-
-`/docket load` mounts bundle artifacts into the current session's Docket navigator at zero model-context cost. Nothing enters the model prompt until you explicitly attach a compact ref or full artifact.
-
-This deliberately complements pi:
-
-- use `/tree` to move conversation state,
-- use `/fork` or `/clone` to split sessions,
-- use `/compact` for lossy summary,
-- use `/docket save` for durable evidence,
-- use `/docket load` when that evidence becomes relevant.
-
-## Workers
-
-`/docket spawn <task>` starts a background pi worker as one window in a shared tmux session named `docket-workers`.
-
-Workers have:
-
-- hidden workspace, often a detached git worktree,
-- task file,
-- `status.json`,
-- `artifacts.json`,
-- append-only `events.ndjson`,
-- protocol tools for parent communication.
-
-Worker artifacts never enter model context automatically except for the short ready summary, if enabled. Full evidence stays on disk until loaded or attached.
-
-Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before the first edit or mutating command. The bundled `patcher` kind uses this by default.
-
-The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. Docket does not auto-kill or auto-respawn for either warning. It tells you to peek, reply, reject, or stop.
-
-### When a worker dies
-
-If the worker process exits, Docket keeps the dead tmux pane around just long enough to capture its final terminal output, then cleans the window up. The capture is saved as `pane-tail.txt` in the worker directory, appears in review as a `terminal tail` artifact, and the failed verdict card prints the last few lines. A crashing worker tells you why it crashed, not just its exit code:
-
-```text
-w3 failed · run migration suite
-  worker process exited before reporting ready (exit 1)
-
-  terminal tail
-  Error: missing DATABASE_URL
-      at loadConfig (src/db.ts:14)
-  Pane is dead (status 1, Fri Jun 13 00:15:59 2026)
-```
-
-### Worker kinds
-
-Bundled kinds:
-
-- `default`: general worker, edits allowed when task asks.
-- `scout`: fast read-only recon.
-- `patcher`: plan-gated edits in a worker worktree, then proposes a change set.
-
-Examples:
-
-```bash
-/docket spawn --as scout find route handlers that touch auth cookies
-/docket spawn --as patcher rename AccountService in src only
-```
-
-Custom kinds live in:
-
-- `~/.pi/agent/docket/worker-kinds/*.md`
-- `<project>/.pi/docket/worker-kinds/*.md`
-
-See [docs/configuration.md](./docs/configuration.md#worker-kinds).
-
-### Worker protocol
-
-Workers use tools, not shell commands:
-
-| Tool | Purpose |
-|---|---|
-| `docket_todos` | Publish small progress board. |
-| `docket_wait` | Ask parent for input and pause. |
-| `docket_done` | Mark useful output ready for review. |
-| `docket_fail` | Mark cannot continue with no useful partial output. |
-| `docket_spawn_child` | Dispatch allowed child worker kind. |
-
-Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prompt commands only.
-
-For plan-gated work, the worker uses `docket_wait` as the gate. The verdict card shows the plan options and recommendation, then your choice is sent back as plain parent input.
-
-## tmux
-
-Docket uses tmux as the worker process and visibility layer, not as the decision log. Every worker is a normal pi process running in one window inside one shared session:
+Each worker is a normal pi process in one window inside one shared tmux session:
 
 ```bash
 tmux attach -t docket-workers
 ```
 
-`/docket attach` copies the attach command. `/docket attach w2` targets that worker's window. Attaching is for direct inspection or emergency debugging; normal coordination should go through `/docket tell`, `/docket verdict`, and the worker protocol tools.
+You do not need to know tmux to use Docket. Most of the time, use `/docket workers`, `/docket verdict`, and `/docket tell`.
 
-### How Docket uses tmux
+tmux gives Docket three useful things:
 
-- **Spawn**: the first worker creates `docket-workers` with `new-session -d -s`; later workers use `new-window -d`. Windows are named `w<N>`, and Docket records tmux's stable `#{window_id}` (`@7`, `@8`, etc.) so renamed windows still resolve.
-- **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
-- **Peek**: `/docket workers` uses `capture-pane -p` to render the selected worker's recent pane output inside the dashboard. It does not attach, focus the pane, or add anything to model context.
-- **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes panes with `list-panes -F "#{pane_id} #{pane_dead}"`, captures the dead worker pane with `capture-pane`, writes `pane-tail.txt`, then kills the stale window. Split layouts are probed per pane because an event-tail helper pane may still be alive.
-- **Optional tmux surfaces**: `layout: split-events` opens a detached split pane that tails `events.ndjson`; `worker.captureTerminal` uses `pipe-pane` to write terminal noise to `pane.log`; `worker.tmuxStatusLine` can write compact fleet status into the tmux status bar.
+- **Real terminals.** Workers are visible processes, not hidden daemons.
+- **Safe inspection.** You can attach when something looks weird.
+- **Crash evidence.** If a worker dies, Docket captures the final pane output before cleanup.
 
-Silence warnings do not poll `capture-pane`. Docket reads the worker's `events.ndjson`; if nothing useful appears for a few minutes, the dock shows `silent Nm`. Use peek when you want scrollback. Use attach when you need full terminal control.
-
-Rule of thumb: tmux handles live processes, scrollback, and direct visibility. Docket stores status, artifacts, verdicts, and decision debt on disk. Workers should not run write-side tmux commands themselves because the parent owns the shared session lifecycle.
+Docket stores status, artifacts, verdicts, and bundles on disk. tmux only owns live worker terminals and scrollback.
 
 ### Peek without attaching
 
-Most of the time you don't need a full attach. In the workers dashboard (`/docket workers`), press `p` on a worker row to see the last lines of its live tmux pane rendered inside the dashboard. It refreshes about once a second, is strictly read-only, and costs zero model context. Useful for the quick "is it grinding or stuck on a prompt" check. Press `p` again or `Esc` to close.
+Run:
+
+```text
+/docket workers
+```
+
+Press `p` on a worker row. Docket shows the latest tmux pane output inside the dashboard. It is read-only and costs zero model context.
+
+Use peek to answer quick questions:
+
+- Is the worker still running tests?
+- Is it waiting on a prompt?
+- Did it crash before reporting status?
+
+Use attach only when you need full terminal control:
+
+```text
+/docket attach w2
+```
+
+## Workers
+
+Workers are explicit. Docket should not silently spawn them.
+
+Useful examples:
+
+```text
+/docket spawn --as scout map every caller of getUser()
+/docket spawn --as patcher fix the failing auth test, but ask before edits
+/docket tell w1 focus only on src/auth and tests/auth
+```
+
+Bundled worker kinds:
+
+- `default`: general background work.
+- `scout`: read-only investigation.
+- `patcher`: plan-gated edits in an isolated worker workspace.
+
+A plan gate means the worker can inspect first, then must ask before its first edit or mutating command.
+
+## Evidence bundles
+
+`/docket save` writes a small markdown note plus an artifact sidecar. It preserves evidence. It does not move your Pi session.
+
+`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens.
+
+Only these commands send evidence to the model:
+
+```text
+/docket ref <artifact-id>          # compact reference
+/docket inject-full <artifact-id>  # full text
+```
+
+This is the main rule: keep evidence available, not automatically injected.
+
+## Commands you will use most
+
+| Command | Use |
+|---|---|
+| `/docket` | Open review inbox. |
+| `/docket spawn <task>` | Start a background worker. |
+| `/docket workers` | See worker dashboard. |
+| `/docket verdict [w<N>]` | Resolve a worker decision. |
+| `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
+| `/docket attach [w<N>]` | Copy tmux attach command. |
+| `/docket save [note]` | Save selected evidence as a bundle. |
+| `/docket load [id|last|w<N>]` | Mount bundle or worker artifacts. |
+| `/docket log decisions` | Show verdict history and unreviewed worker debt. |
+
+For the full command reference, see [docs/full-reference.md](./docs/full-reference.md).
+
+## Philosophy
+
+Docket is built around a few rules:
+
+- Human stays in charge of decisions.
+- Background work must be visible.
+- Workers are useful, but they are not trusted by default.
+- Evidence should be cheap to browse and explicit to inject.
+- Parallel work should not become parallel confusion.
+- Failed work should leave evidence, not disappear.
+
+In short: pi keeps the conversation. tmux keeps the workers visible. Docket keeps the decisions organized.
+
+## Data location
+
+Default local data lives here:
+
+```text
+~/.pi/agent/docket/
+```
+
+Project config can live here:
+
+```text
+.pi/docket.json
+.pi/docket/worker-kinds/*.md
+```
+
+Coming from old Trail builds? Docket is a breaking rename. Old `/trail` aliases are gone. Migration notes live in [docs/full-reference.md](./docs/full-reference.md#rename-from-trail).
 
 ## Development
 
@@ -327,3 +234,10 @@ Dry-run package:
 ```bash
 npm run pack:dry
 ```
+
+## More docs
+
+- [Full reference](./docs/full-reference.md)
+- [Configuration](./docs/configuration.md)
+- [Architecture](./docs/architecture.md)
+- [Changelog](./CHANGELOG.md)
