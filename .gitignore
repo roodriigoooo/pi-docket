@@ -23,3 +23,6 @@ scripts/
 
 # local CLI tool state (not part of this package)
 .antigravitycli/
+
+# raw demo recordings; README uses optimized files in .github/media/
+video*_docket.mov

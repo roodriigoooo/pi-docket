@@ -14,6 +14,35 @@ When agent work gets long, useful things get scattered: failed commands, worker 
 
 Open `/docket`, decide what matters, and attach evidence only when you want the model to see it.
 
+## Watch it
+
+Compressed terminal recordings from the demo project.
+
+### Capture test failure evidence
+
+<video src="./.github/media/docket-capture-evidence.mp4" poster="./.github/media/docket-capture-evidence.jpg" controls muted width="100%"></video>
+
+[Open the video](./.github/media/docket-capture-evidence.mp4)
+
+Shows:
+
+- Ask pi to run tests and explain failures.
+- Docket turns the failed command and model answer into review cards.
+- Save the useful bits as a bundle, then open the inbox.
+
+### Run a patcher worker and steer it
+
+<video src="./.github/media/docket-worker-verdict.mp4" poster="./.github/media/docket-worker-verdict.jpg" controls muted width="100%"></video>
+
+[Open the video](./.github/media/docket-worker-verdict.mp4)
+
+Shows:
+
+- Spawn a patcher for failing session tests.
+- Watch live worker status, then peek without attaching.
+- Pick a verdict when the worker asks how far to go.
+- Promote the patch only after you like the plan.
+
 ## What it does
 
 - Shows review cards for things that need attention.
@@ -27,7 +56,7 @@ Open `/docket`, decide what matters, and attach evidence only when you want the 
 
 Docket is not a memory layer, transcript browser, todo app, or session manager.
 
-pi already has `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume`. Use those for session shape.
+pi already has `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume`. Use those for session shape. Docket plugs into that flow by keeping the review queue and evidence stable while you branch, compact, resume, or move work between sessions.
 
 Docket handles attention, evidence, workers, and decisions.
 
