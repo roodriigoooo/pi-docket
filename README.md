@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="./assets/docket_logo.jpeg" alt="Docket logo" width="220" />
-</p>
-
-<p align="center">
   <a href="https://www.npmjs.com/package/@roodriigoooo/pi-docket"><img src="https://img.shields.io/npm/v/@roodriigoooo/pi-docket?color=cb3837&label=npm&logo=npm" alt="npm version" /></a>
 </p>
 
@@ -20,9 +16,7 @@ Compressed terminal recordings from the demo project.
 
 ### Capture test failure evidence
 
-<video src="./.github/media/docket-capture-evidence.mp4" poster="./.github/media/docket-capture-evidence.jpg" controls muted width="100%"></video>
-
-[Open the video](./.github/media/docket-capture-evidence.mp4)
+https://github.com/roodriigoooo/pi-docket/raw/main/.github/media/docket-capture-evidence.mp4
 
 Shows:
 
@@ -32,9 +26,7 @@ Shows:
 
 ### Run a patcher worker and steer it
 
-<video src="./.github/media/docket-worker-verdict.mp4" poster="./.github/media/docket-worker-verdict.jpg" controls muted width="100%"></video>
-
-[Open the video](./.github/media/docket-worker-verdict.mp4)
+https://github.com/roodriigoooo/pi-docket/raw/main/.github/media/docket-worker-verdict.mp4
 
 Shows:
 
