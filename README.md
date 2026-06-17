@@ -16,7 +16,7 @@ Compressed terminal recordings from the demo project.
 
 ### Capture test failure evidence
 
-https://github.com/roodriigoooo/pi-docket/raw/main/.github/media/docket-capture-evidence.mp4
+<video src="https://raw.githubusercontent.com/roodriigoooo/pi-docket/main/.github/media/docket-capture-evidence.mp4" controls preload="metadata" width="100%"></video>
 
 Shows:
 
@@ -26,7 +26,7 @@ Shows:
 
 ### Run a patcher worker and steer it
 
-https://github.com/roodriigoooo/pi-docket/raw/main/.github/media/docket-worker-verdict.mp4
+<video src="https://raw.githubusercontent.com/roodriigoooo/pi-docket/main/.github/media/docket-worker-verdict.mp4" controls preload="metadata" width="100%"></video>
 
 Shows:
 
