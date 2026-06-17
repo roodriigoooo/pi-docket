@@ -18,6 +18,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Bundle Selector | `extensions/checkpoint-selector.ts` | Interactive accept/exclude before optional summarization. |
 | Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
 | Background Work | `extensions/background-work.ts` | Worker state transitions, protocol semantics, pre-flight task docs, synthetic status artifacts, heartbeat dedup. |
+| Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
+| Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
 | Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |

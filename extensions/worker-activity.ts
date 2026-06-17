@@ -1,7 +1,7 @@
-import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
-import { isWorkerStatusArtifact, workerResultArtifact, workerResultSummary } from "./worker-result.js";
+import { workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
+import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 
 export type WorkerEvidence = {
 	reads: number;
@@ -51,29 +51,6 @@ export type WorkerActivityTotals = {
 	todos: number;
 	completedTodos: number;
 };
-
-function firstLine(text: string | undefined): string | undefined {
-	const line = text?.split(/\r?\n/).map((part) => part.trim()).find(Boolean);
-	return line || undefined;
-}
-
-const BULLET_PREFIX = /^\s*(?:[-*•]|\d+[.)])\s+/;
-
-function countRecommendations(summary: string | undefined): number {
-	if (!summary) return 0;
-	let count = 0;
-	let inRecommended = false;
-	for (const raw of summary.split(/\r?\n/)) {
-		const line = raw.trim();
-		if (!line) { if (inRecommended) break; continue; }
-		if (/^recommended:?$/i.test(line) || /^recommendations:?$/i.test(line) || /^suggested:?$/i.test(line)) { inRecommended = true; continue; }
-		if (BULLET_PREFIX.test(line)) count++;
-		else if (inRecommended) count++;
-	}
-	if (count > 0) return count;
-	const numbered = summary.match(/\b(\d+)\s+(?:suggestions?|recommendations?|recs?)\b/i);
-	return numbered ? Number(numbered[1]) : 0;
-}
 
 function artifactTool(artifact: Artifact): string | undefined {
 	const tool = artifact.meta?.tool;
@@ -313,13 +290,6 @@ export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	return "idle";
 }
 
-function workerSummaryForCounts(worker: WorkerStatus, answer: Artifact | undefined): string | undefined {
-	const parts: string[] = [];
-	if (typeof worker.summary === "string" && worker.summary.length > 0) parts.push(worker.summary);
-	if (answer && !isWorkerStatusArtifact(answer)) parts.push(`${answer.title}\n${answer.body}`);
-	return parts.length ? parts.join("\n") : undefined;
-}
-
 function workerActivityActionHint(state: WorkerDerivedState): string {
 	if (state === "needs_input") return "press c to reply";
 	if (state === "ready" || state === "ready_open_todos") return "press l to load";
@@ -332,14 +302,15 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 	const now = options.now ?? Date.now();
 	return workers.map((worker) => {
 		const artifacts = artifactsByWorker.get(worker.id) ?? [];
-		const state = deriveWorkerState(worker, now);
-		const answer = workerResultArtifact(worker, artifacts);
-		const answerLine = answer && !isWorkerStatusArtifact(answer) ? firstLine(answer.title) ?? firstLine(answer.body) : undefined;
-		const questions = workerQuestions(worker);
+		const review = projectWorkerReview(worker, artifacts, now);
+		const state = review.state;
+		const answer = review.result;
+		const answerLine = answer && !review.resultIsStatus ? firstWorkerReviewLine(answer.title) ?? firstWorkerReviewLine(answer.body) : undefined;
+		const questions = review.questions;
 		const questionText = questions.map((question, index) => `${index + 1}. ${question.text}`).join(" ");
-		const message = state === "needs_input" && questionText ? questionText : workerResultSummary(worker, artifacts) || workerDisplayName(worker);
-		const summary = workerSummaryForCounts(worker, answer);
-		const recommendations = countRecommendations(summary);
+		const message = state === "needs_input" && questionText ? questionText : review.summary || workerDisplayName(worker);
+		const summary = review.summarySource;
+		const recommendations = review.recommendations.length || countWorkerRecommendations(summary);
 		const { evidence, filesChanged } = computeEvidence(artifacts);
 		const progress = workerTodoProgress(worker);
 		return {

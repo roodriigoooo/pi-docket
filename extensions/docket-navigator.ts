@@ -1,4 +1,6 @@
 import type { Artifact, ArtifactKind } from "./types.js";
+import type { WorkerDerivedState } from "./background-work.js";
+import { artifactWorkerRef, artifactWorkerStatus, fallbackWorkerSentences, firstWorkerReviewLine, projectWorkerArtifactReview, stripWorkerStatePrefix } from "./worker-review.js";
 
 export type NavigatorFilter = ArtifactKind | "all";
 export type NavigatorMode = "review" | "answers" | "log";
@@ -170,20 +172,6 @@ function artifactHasDiff(artifact: Artifact): boolean {
 	return typeof diff === "string" && diff.length > 0;
 }
 
-type ArtifactWorkerStatus = "starting" | "thinking" | "stale" | "needs_input" | "ready" | "ready_open_todos" | "empty" | "failed" | "idle";
-
-function artifactWorkerStatus(artifact: Artifact): ArtifactWorkerStatus | undefined {
-	const status = artifactMeta(artifact).workerStatus;
-	if (status === "needs_input" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
-	return undefined;
-}
-
-function artifactWorkerRef(artifact: Artifact): string | undefined {
-	const label = artifactMeta(artifact).workerLabel;
-	if (typeof label === "string" && label.length > 0) return label;
-	return artifact.source;
-}
-
 function isWorkerChangeSet(artifact: Artifact): boolean {
 	return artifactMeta(artifact).workerChangeSet === true;
 }
@@ -274,87 +262,14 @@ function primaryAction(artifact: Artifact): ReviewActionId {
 	return "inspect";
 }
 
-function metaString(artifact: Artifact, key: string): string | undefined {
-	const value = artifactMeta(artifact)[key];
-	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function workerLabelOf(artifact: Artifact): string | undefined {
-	return artifactWorkerRef(artifact);
-}
-
-function stripStatePrefix(text: string, label: string | undefined): string {
-	if (!label) return text;
-	const patterns = [
-		new RegExp(`^${label}\\s+ready(?:[\\/\\s][^:]*)?:\\s*`, "i"),
-		new RegExp(`^${label}\\s+failed(?:[^:]*)?:\\s*`, "i"),
-		new RegExp(`^${label}\\s+needs input(?:[^:]*)?:\\s*`, "i"),
-	];
-	for (const pattern of patterns) {
-		const next = text.replace(pattern, "");
-		if (next !== text) return next.trim();
-	}
-	return text;
-}
-
-function bodyMessageSection(body: string | undefined): string | undefined {
-	if (!body) return undefined;
-	const idx = body.indexOf("\nmessage:\n");
-	if (idx === -1) return undefined;
-	return body.slice(idx + "\nmessage:\n".length).trim() || undefined;
-}
-
-function workerSummaryText(artifact: Artifact): string | undefined {
-	const status = artifactWorkerStatus(artifact);
-	if (status === "needs_input") return metaString(artifact, "question") ?? bodyMessageSection(artifact.body);
-	if (status === "ready" || status === "ready_open_todos") return metaString(artifact, "summary") ?? bodyMessageSection(artifact.body);
-	if (status === "failed") return metaString(artifact, "lastError") ?? bodyMessageSection(artifact.body);
-	if (artifact.source) return bodyMessageSection(artifact.body) ?? stripStatePrefix(artifact.title, workerLabelOf(artifact));
-	return undefined;
-}
-
-function firstNonEmptyLine(text: string | undefined): string | undefined {
-	if (!text) return undefined;
-	for (const raw of text.split(/\r?\n/)) {
-		const line = raw.trim();
-		if (line) return line;
-	}
-	return undefined;
-}
-
-const BULLET_PREFIX = /^\s*(?:[-*•]|\d+[.)])\s+/;
-
-function extractBullets(text: string | undefined): string[] {
-	if (!text) return [];
-	const lines = text.split(/\r?\n/);
-	const bullets: string[] = [];
-	let inRecommended = false;
-	for (const raw of lines) {
-		const line = raw.trim();
-		if (!line) { if (inRecommended) break; continue; }
-		if (/^recommended:?$/i.test(line) || /^recommendations:?$/i.test(line) || /^suggested:?$/i.test(line)) { inRecommended = true; continue; }
-		const match = line.match(BULLET_PREFIX);
-		if (match) bullets.push(line.slice(match[0].length).trim());
-		else if (inRecommended) bullets.push(line);
-	}
-	return bullets.filter(Boolean).slice(0, 4);
-}
-
-function fallbackSentences(text: string | undefined, max = 2): string[] {
-	if (!text) return [];
-	const sentences = text.split(/(?<=[.!?])\s+/).map((sentence) => sentence.trim()).filter(Boolean);
-	return sentences.slice(0, max);
-}
-
 function cardRecommendations(artifact: Artifact): string[] {
-	const summary = workerSummaryText(artifact);
-	const bullets = extractBullets(summary);
-	if (bullets.length > 0) return bullets;
-	if (artifact.kind === "response" || artifact.kind === "code") return fallbackSentences(summary ?? artifact.body, 2);
+	const review = projectWorkerArtifactReview(artifact);
+	if (review.recommendations.length > 0) return review.recommendations;
+	if (artifact.kind === "response" || artifact.kind === "code") return fallbackWorkerSentences(review.summary ?? artifact.body, 2);
 	return [];
 }
 
-function workerHeadline(artifact: Artifact, status: ArtifactWorkerStatus, label: string): string {
+function workerHeadline(artifact: Artifact, status: WorkerDerivedState, label: string): string {
 	const subtitle = artifact.subtitle?.trim();
 	const task = subtitle && subtitle.length > 0 ? subtitle : undefined;
 	if (status === "needs_input") return task ? `${label} needs input · ${task}` : `${label} needs input`;
@@ -365,20 +280,20 @@ function workerHeadline(artifact: Artifact, status: ArtifactWorkerStatus, label:
 
 function cardHeadline(artifact: Artifact): string {
 	const status = artifactWorkerStatus(artifact);
-	const label = workerLabelOf(artifact);
-	if (isWorkerChangeSet(artifact)) return firstNonEmptyLine(artifact.title) ?? "Worker change set";
+	const label = artifactWorkerRef(artifact);
+	if (isWorkerChangeSet(artifact)) return firstWorkerReviewLine(artifact.title) ?? "Worker change set";
 	if (status && label) return workerHeadline(artifact, status, label);
-	if (artifact.kind === "error") return firstNonEmptyLine(artifact.title) ?? "Error";
+	if (artifact.kind === "error") return firstWorkerReviewLine(artifact.title) ?? "Error";
 	if (isChangedFileArtifact(artifact)) {
 		const verb = artifactHasDiff(artifact) ? "Edited" : "Created";
 		return `${verb} ${artifact.title}`;
 	}
 	if (isFailedCommandArtifact(artifact)) return `Command failed: ${artifact.title}`;
 	if (artifact.source && artifact.kind === "response" && label) {
-		const cleaned = stripStatePrefix(artifact.title, label);
+		const cleaned = stripWorkerStatePrefix(artifact.title, label);
 		return `${label} answered${cleaned ? ` · ${cleaned}` : ""}`;
 	}
-	return firstNonEmptyLine(artifact.title) ?? artifact.kind;
+	return firstWorkerReviewLine(artifact.title) ?? artifact.kind;
 }
 
 function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): string | undefined {
@@ -398,7 +313,7 @@ function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): s
 }
 
 function cardProvenance(artifact: Artifact): string {
-	const label = workerLabelOf(artifact);
+	const label = artifactWorkerRef(artifact);
 	return label ? `worker ${label}` : "current session";
 }
 

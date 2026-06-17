@@ -1,7 +1,7 @@
-import { deriveWorkerState, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, type WorkerStatus } from "./background-work.js";
-import { renderDecisionLog, type DecisionEvent, type DecisionRecord, type DecisionVerb } from "./decision-log.js";
+import { workerQuestions, workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { renderDecisionLog, type DecisionEvent, type DecisionRecord } from "./decision-log.js";
 import { workerResultArtifact, workerResultText } from "./worker-result.js";
-import { isSharedSessionTarget, SHARED_TMUX_SESSION, workerInProject } from "./worker-store.js";
+import { isSharedSessionTarget, SHARED_TMUX_SESSION } from "./worker-store.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
@@ -10,17 +10,12 @@ import type { NavigatorMode } from "./docket-navigator.js";
 import type { CheckpointCreateOptions, DocketIntent } from "./docket-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
-import { workerChangeSetArtifact } from "./worker-changes.js";
 import type { WorkerStore } from "./worker-store.js";
+import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
 
 export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "save" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
 
-export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "send";
-	worker: WorkerStatus;
-	changeSet?: Artifact;
-	text?: string;
-};
+export type { DocketVerdictAction } from "./worker-verdict.js";
 
 export type ParallelWorkEntry = {
 	worker: WorkerStatus;
@@ -168,135 +163,6 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 		await deps.refreshWorkerDockWidget();
 	};
 
-	const projectWorker = (worker: WorkerStatus): boolean => !deps.projectRoot || workerInProject(worker, deps.projectRoot);
-
-	const workerHasChangeSet = (worker: WorkerStatus): Artifact | undefined => {
-		const state = deriveWorkerState(worker);
-		if (state !== "ready" && state !== "ready_open_todos") return undefined;
-		return workerChangeSetArtifact(worker);
-	};
-
-	const verdictCandidateRank = (worker: WorkerStatus): number => {
-		// Rank on cheap derived state only — never stage/diff a worktree here. The change set is
-		// computed lazily for the single chosen worker when the card opens (showWorkerVerdict),
-		// so ranking N ready workers costs zero git calls instead of one stage+diff per worker.
-		const state = deriveWorkerState(worker);
-		if (state === "needs_input") return 0;
-		if (state === "failed") return 1;
-		if (state === "ready" || state === "ready_open_todos") return 2;
-		return 100;
-	};
-
-	const rankedVerdictWorkers = async (exclude?: Set<string>): Promise<WorkerStatus[]> => {
-		const workers = await deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) });
-		return workers
-			.filter((worker) => !exclude?.has(worker.id))
-			.map((worker) => ({ worker, rank: verdictCandidateRank(worker) }))
-			.filter((entry) => entry.rank < 100)
-			.sort((a, b) => a.rank - b.rank || Date.parse(b.worker.updatedAt) - Date.parse(a.worker.updatedAt))
-			.map((entry) => entry.worker);
-	};
-
-	const findVerdictWorker = async (ref?: string): Promise<WorkerStatus | undefined> => {
-		if (ref) {
-			const worker = await deps.workerStore.find(ref);
-			return worker && projectWorker(worker) ? worker : undefined;
-		}
-		return (await rankedVerdictWorkers())[0];
-	};
-
-	const runVerdict = async (worker: WorkerStatus, remaining = 0): Promise<"advance" | "stop"> => {
-		if (!deps.hasUI) {
-			deps.notify("Docket verdict needs UI. Use /docket tell, /docket load, or /docket delete.", "error");
-			return "stop";
-		}
-		while (true) {
-			const result = await deps.showVerdict(worker, remaining);
-			if (!result) return "stop";
-			const latest = await deps.workerStore.find(result.worker.id) ?? result.worker;
-			const label = workerSourceLabel(latest);
-			const state = deriveWorkerState(latest);
-			const changeSet = result.changeSet ?? workerHasChangeSet(latest);
-			const statusArtifact = workerStatusArtifact(latest);
-			// Evidence + risk visible on the card right now, captured once so every resolution
-			// path logs the same context the user actually saw.
-			const questions = workerQuestions(latest);
-			const risk = questions.length > 0 ? questions[questions.length - 1]?.risk : undefined;
-			const evidenceRefs = [changeSet?.ref, statusArtifact?.ref].filter((ref): ref is string => typeof ref === "string" && ref.length > 0);
-			const record = (verb: DecisionVerb, option?: string): Promise<void> => deps.recordDecision({
-				workerId: latest.id,
-				workerLabel: workerShortLabel(latest.index),
-				state,
-				verb,
-				...(option ? { option } : {}),
-				...(risk ? { risk } : {}),
-				evidenceRefs,
-				...(latest.task ? { task: latest.task } : {}),
-			});
-			if (result.verb === "diff") {
-				if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet));
-				continue;
-			}
-			if (result.verb === "send") {
-				if (result.text) await deps.workerCommands.tell(label, result.text);
-				await record("send", result.text);
-				await deps.refreshWorkerDockWidget();
-				return "advance";
-			}
-			if (result.verb === "rejectStop") {
-				if (!(await deps.confirmDeleteWorker(latest))) continue;
-				await deps.workerCommands.delete(label);
-				await record("rejectStop");
-				await deps.refreshWorkerDockWidget();
-				return "advance";
-			}
-			if (result.verb === "chat") {
-				const text = (await deps.input(`Chat ${label}`, "message to worker"))?.trim();
-				if (!text) continue;
-				await deps.workerCommands.tell(label, changeSet ? `revise: ${text}` : text);
-				await record("chat", text);
-				await deps.refreshWorkerDockWidget();
-				return "advance";
-			}
-			if (result.verb === "accept") {
-				if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
-				else if (state === "failed") await deps.workerCommands.respawn(label);
-				else if (changeSet) {
-					if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
-				} else if (statusArtifact) deps.markArtifactDone(statusArtifact);
-				await record("accept");
-				await deps.refreshWorkerDockWidget();
-				return "advance";
-			}
-			if (result.verb === "reject") {
-				if (state === "needs_input") {
-					const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
-					if (!text) continue;
-					await deps.workerCommands.tell(label, text);
-					await record("reject", text);
-				} else {
-					if (changeSet) deps.markArtifactDone(changeSet);
-					else if (statusArtifact) deps.markArtifactDone(statusArtifact);
-					await record("reject");
-				}
-				await deps.refreshWorkerDockWidget();
-				return "advance";
-			}
-		}
-	};
-
-	const runVerdictQueue = async (first: WorkerStatus): Promise<void> => {
-		const resolved = new Set<string>();
-		let current: WorkerStatus | undefined = first;
-		while (current) {
-			const others = (await rankedVerdictWorkers(resolved)).filter((entry) => entry.id !== current!.id);
-			const outcome = await runVerdict(current, others.length);
-			if (outcome === "stop") return;
-			resolved.add(current.id);
-			current = (await rankedVerdictWorkers(resolved))[0];
-		}
-	};
-
 	return {
 		async handle(intent: DocketIntent): Promise<void> {
 			if (intent.kind === "help") {
@@ -318,13 +184,13 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			}
 
 			if (intent.kind === "verdict") {
-				const worker = await findVerdictWorker(intent.worker);
+				const worker = await findVerdictWorker(deps, intent.worker);
 				if (!worker) {
 					deps.notify("Docket worker needing verdict not found", "warning");
 					return;
 				}
-				if (intent.worker) await runVerdict(worker);
-				else await runVerdictQueue(worker);
+				if (intent.worker) await runWorkerVerdict(deps, worker);
+				else await runWorkerVerdictQueue(deps, worker);
 				return;
 			}
 
@@ -620,12 +486,12 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				}
 				if (result.action === "verdict" && result.artifact) {
 					const workerId = docketMetaString(result.artifact, "workerId") ?? artifactWorkerRef(result.artifact);
-					const worker = workerId ? await findVerdictWorker(workerId) : undefined;
+					const worker = workerId ? await findVerdictWorker(deps, workerId) : undefined;
 					if (!worker) {
 						deps.notify("Docket worker not found for this item", "error");
 						continue;
 					}
-					await runVerdict(worker);
+					await runWorkerVerdict(deps, worker);
 					return;
 				}
 				if (!result.artifact) return;
