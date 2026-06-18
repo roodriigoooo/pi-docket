@@ -70,6 +70,12 @@ test("Docket grammar parses spawn --as <kind>", () => {
 	assert.equal(parseDocketCommand("spawn --as").ok, false);
 });
 
+test("Docket grammar parses spawn --seed and --fresh", () => {
+	assert.deepEqual(parseDocketCommand("spawn --seed inspect parent"), { ok: true, intent: { kind: "spawn", task: "inspect parent", seed: true } });
+	assert.deepEqual(parseDocketCommand("spawn --fresh inspect parent"), { ok: true, intent: { kind: "spawn", task: "inspect parent", fresh: true } });
+	assert.match(docketUsage(), /\/docket spawn \[--seed\|--fresh\]/);
+});
+
 test("Docket grammar parses worker tell, verdict, and protocol fallbacks", () => {
 	assert.deepEqual(parseDocketCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseDocketCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });

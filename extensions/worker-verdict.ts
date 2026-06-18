@@ -18,12 +18,12 @@ type NotifyLevel = "info" | "warning" | "error";
 export type WorkerVerdictDeps = {
 	hasUI: boolean;
 	projectRoot?: string;
-	workerStore: Pick<WorkerStore, "find" | "list">;
+	workerStore: Pick<WorkerStore, "find" | "list" | "patchStatus">;
 	workerCommands: Pick<WorkerCommands, "tell" | "delete" | "respawn">;
 	notify(text: string, level: NotifyLevel): void;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
 	confirmDeleteWorker(worker: WorkerStatus): Promise<boolean>;
-	showText(title: string, text: string): Promise<void>;
+	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	formatArtifact(artifact: Artifact): string;
 	input(title: string, placeholder: string): Promise<string | undefined>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
@@ -92,6 +92,20 @@ async function recordDecision(deps: WorkerVerdictDeps, worker: WorkerStatus, ver
 	});
 }
 
+/**
+ * Mark a worker reviewed so it stops demanding attention in the dock. Set only on
+ * terminal verdicts that close out a ready or failed worker. Live-keeping verdicts
+ * (needs_input send/chat/reject, failed retry, ready chat-back-for-revision) do NOT
+ * set it — the worker is still in play.
+ */
+async function markReviewed(deps: WorkerVerdictDeps, worker: WorkerStatus): Promise<void> {
+	try {
+		await deps.workerStore.patchStatus(worker.id, { reviewedAt: new Date().toISOString() });
+	} catch {
+		// best-effort: the decision ledger is the source of truth; never block on this.
+	}
+}
+
 export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerStatus, remaining = 0): Promise<"advance" | "stop"> {
 	if (!deps.hasUI) {
 		deps.notify("Docket verdict needs UI. Use /docket tell, /docket load, or /docket delete.", "error");
@@ -106,7 +120,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest);
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
-			if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet));
+			if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet), { diff: true });
 			continue;
 		}
 		if (result.verb === "send") {
@@ -135,7 +149,11 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
 				if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
-			} else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+				await markReviewed(deps, latest);
+			} else if (statusArtifact) {
+				deps.markArtifactDone(statusArtifact);
+				await markReviewed(deps, latest);
+			}
 			await recordDecision(deps, latest, "accept", undefined, changeSet);
 			await deps.refreshWorkerDockWidget();
 			return "advance";
@@ -149,6 +167,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			} else {
 				if (changeSet) deps.markArtifactDone(changeSet);
 				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
+				await markReviewed(deps, latest);
 				await recordDecision(deps, latest, "reject", undefined, changeSet);
 			}
 			await deps.refreshWorkerDockWidget();

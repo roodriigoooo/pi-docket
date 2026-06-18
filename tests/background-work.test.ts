@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerInputAcceptedPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStateRank, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -30,6 +30,32 @@ test("Background Work derives attention states", () => {
 	assert.equal(deriveWorkerState(worker({ state: "active", updatedAt: "2026-01-01T00:00:00.000Z" }), Date.parse("2026-01-01T00:02:00.000Z")), "stale");
 });
 
+test("Background Work derives reviewed state from reviewedAt on terminal workers", () => {
+	const now = new Date().toISOString();
+	assert.equal(deriveWorkerState(worker({ state: "ready", reviewedAt: now })), "reviewed");
+	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 3, reviewedAt: now })), "reviewed");
+	assert.equal(deriveWorkerState(worker({ state: "failed", reviewedAt: now })), "reviewed");
+	assert.equal(deriveWorkerState(worker({ state: "error", reviewedAt: now })), "reviewed");
+	// needs_input is live attention: reviewedAt must not mask it (defensive — parent never sets it there).
+	assert.equal(deriveWorkerState(worker({ state: "needs_input", reviewedAt: now })), "needs_input");
+	// reviewedAt absent → normal derivation.
+	assert.equal(deriveWorkerState(worker({ state: "ready" })), "ready");
+});
+
+test("Background Work workerStateRank orders reviewed below idle attention", () => {
+	const now = new Date().toISOString();
+	assert.equal(workerStateRank(worker({ state: "needs_input" })), 0);
+	assert.equal(workerStateRank(worker({ state: "ready", reviewedAt: now })), 8);
+	assert.equal(workerStateRank(worker({ state: "ready" })), 3);
+});
+
+test("Background Work input/question patches clear reviewedAt so a reviewed worker re-surfaces", () => {
+	const accepted = workerInputAcceptedPatch();
+	assert.equal(accepted.reviewedAt, undefined);
+	const q = appendWorkerQuestionPatch(worker({ state: "ready", reviewedAt: "2026-01-01T00:00:00.000Z" }), "again?", question("again?"));
+	assert.equal(q?.reviewedAt, undefined);
+});
+
 test("Background Work appends protocol questions without losing legacy question", () => {
 	const current = worker({ question: "First?" });
 	const patch = appendWorkerQuestionPatch(current, "Second?", question("Second?"));
@@ -48,6 +74,7 @@ test("Background Work protocol patch clears questions for ready and failed state
 		questions: [],
 		summary: "done",
 		lastError: undefined,
+		reviewedAt: undefined,
 	});
 	assert.equal(workerProtocolResultText("failed"), "Docket failure recorded. Parent can review the failure.");
 });

@@ -2,7 +2,7 @@ import { gitSnapshotLabel } from "./git-context.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle";
+export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
 export type WorkerTodoState = "pending" | "in_progress" | "completed";
 
@@ -102,6 +102,8 @@ export type WorkerStatus = {
 	lastError?: string;
 	/** Set when the parent harvested (or confirmed gone) the worker's dead tmux pane. Guards the harvest sweep. */
 	paneCapturedAt?: string;
+	/** Set when the parent records a terminal verdict (accept/reject on ready, dismiss on failed). Worker shows dim "reviewed" in the dock until new activity clears it. */
+	reviewedAt?: string;
 };
 
 export type WorkerProtocolMessage = {
@@ -191,6 +193,7 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
 	if (state === "ready_open_todos") return `${chip} ready · progress ${workerTodoSummary(worker) ?? ""}`.trim();
 	if (state === "ready") return `${chip} ${truncateWorkerStatus(worker.summary ?? workerTodoSummary(worker) ?? workerStatusText(worker, "ready"))}`;
+	if (state === "reviewed") return `${chip} reviewed`;
 	if (state === "stale") return `${chip} stale`;
 	if (state === "empty") return `${chip} done`;
 	return `${chip} ${truncateWorkerStatus(workerTodoSummary(worker) ?? workerDisplayName(worker, 28))}`;
@@ -419,6 +422,9 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	if (worker.state === "needs_input") return "needs_input";
+	// Reviewed workers stay dim until new protocol activity or parent input clears reviewedAt.
+	// Heartbeats do NOT clear it (a done worker still ticks updatedAt but should stay reviewed).
+	if (worker.reviewedAt && (worker.state === "ready" || worker.state === "ended" || worker.state === "failed" || worker.state === "error")) return "reviewed";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
 	if (worker.state === "ready") return "ready";
 	if (worker.state === "ended") {
@@ -442,6 +448,7 @@ export function workerStateRank(worker: WorkerStatus, now = Date.now()): number 
 	if (state === "thinking") return 4;
 	if (state === "starting") return 5;
 	if (state === "stale") return 6;
+	if (state === "reviewed") return 8;
 	return 7;
 }
 
@@ -470,11 +477,11 @@ export function appendWorkerQuestionPatch(worker: WorkerStatus, text: string, qu
 		? [{ id: "legacy", text: worker.question, createdAt: worker.updatedAt }]
 		: [];
 	const questions = [...legacy, ...(worker.questions ?? []), { ...question, text: trimmed }];
-	return { state: "needs_input", question: questions.length === 1 ? trimmed : `${questions.length} questions`, questions };
+	return { state: "needs_input", question: questions.length === 1 ? trimmed : `${questions.length} questions`, questions, reviewedAt: undefined };
 }
 
 export function workerInputAcceptedPatch(): Partial<WorkerStatus> {
-	return { state: "active", question: undefined, questions: [] };
+	return { state: "active", question: undefined, questions: [], reviewedAt: undefined };
 }
 
 export const HEARTBEAT_ARTIFACT_CAP = 200;
@@ -504,6 +511,7 @@ export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolS
 		questions: [],
 		summary: state === "ready" ? formatWorkerDoneSummary(doneInput ?? { summary: text }) : undefined,
 		lastError: state === "failed" ? text : undefined,
+		reviewedAt: undefined,
 	};
 	if (state === "ready") {
 		const done = normalizeWorkerDoneInput(doneInput ?? { summary: text });

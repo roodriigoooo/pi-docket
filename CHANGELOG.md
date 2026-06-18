@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.0
+
+- **workers spawn fresh by default**: `/docket spawn` no longer forks the parent session JSONL into the worker, so spawned workers do not inherit the parent's full conversation and context bloat. `--seed` opts back into parent-session seeding (reuses the prompt cache prefix); `--fresh` is now explicit and overrides a kind with `parent_seed: full`. The bundled `default` kind and any kind without `parent_seed` now start fresh. Kinds that need parent context should set `parent_seed: full`. **Breaking** for users who relied on inherited parent context — add `worker.parentSeedPolicy: "full"` in `docket.json`, pass `--seed`, or set `parent_seed: full` on the kind.
+- **reviewed workers go dim**: acknowledging or dismissing a ready/failed worker (verdict `accept`/`reject`) now stamps `reviewedAt` on the worker. The dock shows it dim with a `✓` chip and stops counting it as waiting/failed/ready, so an acknowledged worker no longer keeps begging for review. Reviewed workers stay listed (dim) until `worker.dockIdleHideMinutes` hides them and `worker.pruneAfterHours` eventually prunes them. New activity clears `reviewedAt` automatically: telling the worker, respawning it, or a new protocol transition (`docket_wait`/`docket_done`/`docket_fail`) re-surfaces it. `needs_input` replies, failed retries, and chat-back-for-revision do not mark a worker reviewed — only terminal verdicts do.
+- **colored diffs in review**: the verdict card now shows `+N` green and `-M` red in the stat line and per-file lines (was plain dim text). Pressing `d` for the full diff opens a colored viewer: added lines green, removed lines red, `@@` hunk headers accent, `diff --git`/`index`/`---`/`+++` metadata muted, context dim — matching pi's editor diff palette (`toolDiffAdded`/`toolDiffRemoved`/`toolDiffContext`).
+- **release notes**: see [docs/releases/0.6.0.md](docs/releases/0.6.0.md).
+
 ## 0.5.1
 
 - **attach switches inside tmux**: `/docket attach [w<N>]` now uses `tmux switch-client -t docket-workers[:wN]` when Pi is already running inside tmux. Outside tmux it still copies the equivalent attach command.

@@ -105,7 +105,7 @@ declare global {
 - **NDJSON event stream over `fs.watch`.** Disk-backed, survives parent restarts, no daemon. Drives the dock without polling. `pipe-pane` captures terminal noise, not structured events — opt-in via `worker.captureTerminal` when debugging.
 - **Heartbeat dedup.** Worker hashes its artifact list each heartbeat; `writeArtifacts` is skipped when unchanged. Quiet workers cost ~0 disk I/O.
 - **mtime-cached reads in the parent.** `WorkerSnapshotCache` skips parse when neither status nor artifacts has changed.
-- **Session seeding for prompt cache.** `/docket spawn` (without `--fresh`) forks the parent JSONL into the worker session dir; worker resumes with `--continue` so the shared prefix is provider-cache eligible.
+- **Session seeding is opt-in.** By default `/docket spawn` starts a fresh worker session (no parent context) to avoid context bloat. `--seed`, or a kind with `parent_seed: full`, forks the parent JSONL into the worker session dir and resumes with `--continue` so the shared prefix is provider-cache eligible. Use seeding only when the worker genuinely needs the parent's prior turns.
 - **Kinds extend, never replace.** Every worker runs the universal guardrails; the kind MD is appended. Adding a kind needs zero TypeScript.
 - **Plan gates use the existing wait path.** A kind can set `plan_gate: true`, which adds instructions to `task.md` and the guardrails. The worker asks through `docket_wait`; the parent resolves it through the normal verdict card. No extra state machine.
 - **Silence is a hint, not automation.** The dock warns when `events.ndjson` has no recent useful activity or a parent question gets old. It does not kill, respawn, or attach automatically.

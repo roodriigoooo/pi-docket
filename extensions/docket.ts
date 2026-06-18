@@ -53,6 +53,7 @@ import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
@@ -117,12 +118,15 @@ class DocketTextViewer implements Component {
 	private offset = 0;
 	private column = 0;
 	private lines: string[];
+	private rendered: string[];
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 	private viewportHeight = 34;
 
-	constructor(private tui: TUI, private theme: any, private title: string, text: string, private done: () => void) {
-		this.lines = text.split("\n");
+	constructor(private tui: TUI, private theme: any, private title: string, text: string, private done: () => void, private mode?: "diff") {
+		const rawLines = text.split("\n");
+		this.lines = rawLines;
+		this.rendered = this.mode === "diff" ? rawLines.map((line) => renderGitDiffLine(line, this.theme)) : rawLines;
 	}
 
 	handleInput(data: string): void {
@@ -168,7 +172,7 @@ class DocketTextViewer implements Component {
 		const headerLeft = ` ${accent(this.theme.bold("docket · inspect"))} ${dim(this.title)} `;
 		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${Math.min(this.offset + 34, this.lines.length)}/${this.lines.length} · col ${this.column}`)} `;
 		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		for (const line of this.lines.slice(this.offset, this.offset + 34)) {
+		for (const line of this.rendered.slice(this.offset, this.offset + 34)) {
 			const visible = this.column > 0 ? [...line].slice(this.column).join("") : line;
 			container.addChild(new Text(truncateToWidth(visible, innerWidth - 2), 1, 0));
 		}
@@ -285,8 +289,8 @@ async function showFileViewer(ctx: ExtensionCommandContext, filePath: string): P
 	);
 }
 
-async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string): Promise<void> {
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketTextViewer(tui, theme, title, text, done), {
+async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string, mode?: "diff"): Promise<void> {
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketTextViewer(tui, theme, title, text, done, mode), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "90%", minWidth: 90, maxHeight: "95%", margin: 1 },
 	});
@@ -991,7 +995,7 @@ async function showDocketBrowser(
 type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send";
 export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
-type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string };
+type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
 
 function artifactChangedFiles(artifact: Artifact | undefined): Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> {
 	return Array.isArray(artifact?.meta?.changedFiles) ? artifact.meta.changedFiles as Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> : [];
@@ -1093,8 +1097,13 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
 			return `${filePath}   +${additions}/-${deletions}`;
 		});
+		const fileEntries = changedFiles.slice(0, 5).map((file) => ({
+			path: typeof file.path === "string" ? file.path : "unknown",
+			...(typeof file.additions === "number" ? { additions: file.additions } : {}),
+			...(typeof file.deletions === "number" ? { deletions: file.deletions } : {}),
+		}));
 		const intent = workerIntentLine(worker);
-		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true, ...(intent ? { intent } : {}) };
+		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true, fileEntries, ...(intent ? { intent } : {}) };
 	}
 	const lines = [worker.summary, ...(worker.recommended ?? [])].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
 	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
@@ -1205,11 +1214,18 @@ class DocketVerdictView implements Component {
 				for (const wrapped of wrapPlainText(payload.intent, listWidth - 4, 2)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
 				this.container.addChild(new Spacer(1));
 			}
-			const hunk = payload.hunkCount === undefined ? "" : `   ${payload.hunkCount} hunk${payload.hunkCount === 1 ? "" : "s"}`;
+			const hunk = payload.hunkCount === undefined ? "" : `   ${muted(`${payload.hunkCount} hunk${payload.hunkCount === 1 ? "" : "s"}`)}`;
 			const files = artifactChangedFiles(this.changeSet).length;
-			const stat = `${files} file${files === 1 ? "" : "s"}   +${payload.additions} / -${payload.deletions}   ${coloredDiffBar(this.theme, payload.additions, payload.deletions, 14)}${hunk}`;
-			this.container.addChild(new Text(truncateToWidth(` ${muted(stat)}`, listWidth - 2), 1, 0));
-			for (const line of payload.lines) this.container.addChild(new Text(truncateToWidth(`   ${dim(line)}`, listWidth - 2), 1, 0));
+			const stat = `${muted(`${files} file${files === 1 ? "" : "s"}`)}   ${coloredAdditions(this.theme, payload.additions)} ${dim("/")} ${coloredDeletions(this.theme, payload.deletions)}   ${coloredDiffBar(this.theme, payload.additions, payload.deletions, 14)}${hunk}`;
+			this.container.addChild(new Text(truncateToWidth(` ${stat}`, listWidth - 2), 1, 0));
+			const entries = payload.fileEntries ?? [];
+			for (let i = 0; i < payload.lines.length; i++) {
+				const entry = entries[i];
+				const rendered = entry
+					? `${dim(entry.path)}   ${coloredFileStat(this.theme, entry.additions, entry.deletions)}`
+					: dim(payload.lines[i]!);
+				this.container.addChild(new Text(truncateToWidth(`   ${rendered}`, listWidth - 2), 1, 0));
+			}
 		} else {
 			if (payload.risk) {
 				for (const wrapped of wrapPlainText(payload.risk, listWidth - 6, 2)) this.container.addChild(new Text(truncateToWidth(`  ${warning(`⚠ ${wrapped}`)}`, listWidth - 2), 1, 0));
@@ -1387,6 +1403,7 @@ function workerStateColor(theme: any, state: WorkerDerivedState, text: string): 
 	if (state === "ready") return theme.fg("success", text);
 	if (state === "failed") return theme.fg("error", text);
 	if (state === "starting" || state === "thinking") return theme.fg("accent", text);
+	if (state === "reviewed") return theme.fg("dim", text);
 	return theme.fg("muted", text);
 }
 
@@ -2562,9 +2579,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/progress`);
 						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
 						if (counts.loaded) attentionParts.push(`${counts.loaded} loaded`);
-						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.loaded;
+						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.loaded - counts.reviewed;
 						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
-						const summary = counts.workers > 0 ? (attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker")) : "no workers in this project";
+						const reviewedPart = counts.reviewed > 0 ? dim(`${counts.reviewed} reviewed`) : "";
+						const attentionJoined = attentionParts.length ? attentionParts.join(" · ") : "";
+						const summary = counts.workers > 0 ? [attentionJoined, reviewedPart, idlePart || (!attentionJoined && !reviewedPart ? plural(counts.workers, "worker") : "")].filter(Boolean).join(" · ") : "no workers in this project";
 						const heading = `${accent(theme.bold("docket"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
 						const breadcrumb = otherWorkers.length > 0 ? dim(`↗ ${otherAttentionLabel || `${otherWorkers.length} worker${otherWorkers.length === 1 ? "" : "s"}`} in ${otherProjectCount} other project${otherProjectCount === 1 ? "" : "s"} · /docket workers --all`) : undefined;
@@ -3057,6 +3076,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
 				captureTerminal: () => captureTerminal,
+				parentSeedPolicy: () => (docketConfig?.worker?.parentSeedPolicy === "full" ? "full" : "none"),
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				announce: (subject, detail, kind, docket, meta) => announceAction(pi, ctx, subject, detail, kind, docket, meta),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
@@ -3068,7 +3088,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 				confirmDelete: (checkpoint) => confirmDeleteCheckpoint(ctx, checkpoint),
 				selectCheckpoint: (summaries, selected, mode) => showCheckpointResumeSelector(ctx, summaries, selected, mode),
-				showText: (title, text) => showTextViewer(ctx, title, text),
+				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				editText: (title, text) => ctx.hasUI ? ctx.ui.editor(title, text) : Promise.resolve(undefined),
 				startSession: (checkpoint, content) => startCheckpointSession(pi, ctx, checkpoint, content, queueShutdownConsume),
 			});
@@ -3144,7 +3164,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				readWorkersWithArtifacts: (options) => readWorkersWithArtifacts(workerStore, options?.allProjects ? undefined : sessionProjectKey ?? projectKey(ctx.cwd)),
 				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true, loadedWorkerIds),
 				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
-				showText: (title, text) => showTextViewer(ctx, title, text),
+				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
 				showVerdict: (worker, remaining) => showWorkerVerdict(ctx, worker, remaining),
 				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),

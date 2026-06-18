@@ -100,7 +100,7 @@ Primary commands:
 |---|---|
 | `/docket` | Open decision docket. |
 | `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
-| `/docket spawn [--fresh] [--as <kind>] <task>` | Start explicit background worker. |
+| `/docket spawn [--seed\|--fresh] [--as <kind>] <task>` | Start explicit background worker. Default: fresh session (no parent context). `--seed` inherits parent session; `--fresh` is explicit (overrides a `full` kind). |
 | `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
 | `/docket attach [w<N>]` | Switch to the shared worker tmux session when already in tmux; otherwise copy attach command. |
 | `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
@@ -223,6 +223,16 @@ Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decisio
 When two workers edit the same path, Docket surfaces an `overlap w<N>: <path>` hint in the dock/dashboard and asks for confirmation before promoting a conflicting change set. It does not lock files or auto-merge workers; the parent remains the mediator.
 
 The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. Docket does not auto-kill or auto-respawn for either warning. It tells you to peek, reply, reject, or stop.
+
+### Reviewed workers go dim
+
+When you accept or dismiss a ready/failed worker on the verdict card, Docket stamps `reviewedAt` on the worker. The dock row turns dim with a `✓` chip and the worker stops counting toward `waiting`/`failed`/`ready` in the dock summary — an acknowledged worker no longer keeps asking for review. Reviewed workers stay listed (dim) so you can still re-open them with `/docket verdict w<N>`; after `worker.dockIdleHideMinutes` they hide from the dock and after `worker.pruneAfterHours` they are pruned.
+
+Reviewed state clears automatically on new activity: telling the worker, respawning it, or any new protocol transition (`docket_wait`/`docket_done`/`docket_fail`) re-surfaces it. Replying to a `needs_input` question, retrying a failed worker, or sending a chat-back-for-revision does not mark a worker reviewed — only terminal verdicts (`accept`/`reject` on ready, `reject` on failed) do.
+
+### Colored diffs in review
+
+The verdict card colors `+N` green and `-M` red in both the change-set stat line and the per-file lines, so additions and deletions read at a glance. Press `d` on a change-set verdict to open the full diff in a colored viewer: added lines green, removed lines red, `@@` hunk headers accent, `diff --git`/`index`/`---`/`+++` metadata muted, context dim. The viewer uses pi's editor diff palette (`toolDiffAdded`/`toolDiffRemoved`/`toolDiffContext`), so a Docket diff looks like an in-editor diff.
 
 ### When a worker dies
 

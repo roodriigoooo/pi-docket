@@ -14,7 +14,7 @@ type CheckpointCommandsDeps = {
 	emitText(text: string, kind: "list", heading: string): void;
 	confirmDelete(checkpoint: CheckpointIndexEntry): Promise<boolean>;
 	selectCheckpoint(summaries: CheckpointSummary[], selected: number, mode?: ResumeMode): Promise<ResumeSelection>;
-	showText(title: string, text: string): Promise<void>;
+	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	editText(title: string, text: string): Promise<string | undefined>;
 	startSession(checkpoint: CheckpointIndexEntry, content: string): Promise<void>;
 };

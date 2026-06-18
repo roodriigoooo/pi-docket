@@ -70,7 +70,7 @@ export type DocketCommandRouterDeps = {
 	readWorkersWithArtifacts(options?: { allProjects?: boolean }): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }>;
 	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): Promise<ParallelWorkAction>;
 	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection>;
-	showText(title: string, text: string): Promise<void>;
+	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	showDocketBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<DocketBrowserAction | null>;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
@@ -305,7 +305,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			}
 
 			if (intent.kind === "spawn") {
-				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true, ...(intent.as ? { as: intent.as } : {}) });
+				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true, seed: intent.seed === true, ...(intent.as ? { as: intent.as } : {}) });
 				await deps.refreshWorkerDockWidget();
 				return;
 			}

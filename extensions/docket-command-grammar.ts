@@ -17,7 +17,7 @@ export type DocketIntent =
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean; allProjects?: boolean }
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
-	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; as?: string }
+	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string }
 	| { kind: "kinds" }
 	| { kind: "respawn"; target: string }
 	| { kind: "workers"; allProjects?: boolean }
@@ -53,7 +53,7 @@ export function docketUsage(advanced = false): string {
 		"Docket · core loop:",
 		"/docket                         open decision docket",
 		"/docket verdict [w<N>]          resolve the top worker decision (accept/reject/chat)",
-		"/docket spawn [--fresh] [--as <kind>] <task>  start explicit background worker",
+		"/docket spawn [--seed|--fresh] [--as <kind>] <task>  start explicit background worker",
 		"/docket tell w<N> [text]        reply to a worker",
 		"/docket attach [w<N>]           switch to worker tmux when inside tmux; otherwise copy attach command",
 		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
@@ -254,15 +254,17 @@ export function parseDocketCommand(args: string): ParseResult {
 	if (command === "spawn") {
 		let worktree = false;
 		let fresh = false;
+		let seed = false;
 		let as: string | undefined;
 		const taskParts: string[] = [];
 		for (let i = 0; i < rest.length; i++) {
 			const token = rest[i]!;
 			if (token === "--worktree" || token === "-w") worktree = true;
 			else if (token === "--fresh") fresh = true;
+			else if (token === "--seed") seed = true;
 			else if (token === "--as" || token === "-a") {
 				const value = rest[++i];
-				if (!value) return parseError("Usage: /docket spawn [--fresh] [--as <kind>] <task>");
+				if (!value) return parseError("Usage: /docket spawn [--seed|--fresh] [--as <kind>] <task>");
 				as = value;
 			} else if (token.startsWith("--as=")) {
 				as = token.slice("--as=".length);
@@ -270,8 +272,8 @@ export function parseDocketCommand(args: string): ParseResult {
 				taskParts.push(token);
 			}
 		}
-		if (taskParts.length === 0) return parseError("Usage: /docket spawn [--fresh] [--as <kind>] <task>");
-		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}), ...(as ? { as } : {}) } };
+		if (taskParts.length === 0) return parseError("Usage: /docket spawn [--seed|--fresh] [--as <kind>] <task>");
+		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}), ...(seed ? { seed } : {}), ...(as ? { as } : {}) } };
 	}
 	if (command === "workers") {
 		let allProjects = false;

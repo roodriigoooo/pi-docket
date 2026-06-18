@@ -618,7 +618,7 @@ export function createWorkerStore(): WorkerStore {
 			if (!launch.ok) throw new Error(launch.error);
 			const windowId = readWindowId(target);
 			// Fresh launch invalidates any previous post-mortem; let the sweep harvest this run too.
-			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, paneCapturedAt: undefined, ...(windowId ? { tmuxWindowId: windowId } : {}) };
+			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, paneCapturedAt: undefined, reviewedAt: undefined, ...(windowId ? { tmuxWindowId: windowId } : {}) };
 			return await this.patchStatus(status.id, patch);
 		},
 
