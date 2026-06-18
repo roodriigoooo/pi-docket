@@ -66,3 +66,24 @@ test("selectPrunableWorkers returns only the ended-and-old set", () => {
 	const targets = selectPrunableWorkers(workers, now, pruneMs);
 	assert.deepEqual(targets.map((w) => w.id).sort(), ["old1", "old2"]);
 });
+
+test("reviewed workers become dock-terminal and age from reviewedAt, not updatedAt", () => {
+	const now = Date.now();
+	const hideMs = 30 * 60_000;
+	const pruneMs = 24 * 3_600_000;
+	// Reviewed 31m ago but heartbeat-bumped updatedAt just now: should still evict (ages from reviewedAt).
+	const reviewedReady = makeWorker({ id: "r1", state: "ready", updatedAt: new Date(now).toISOString() });
+	reviewedReady.reviewedAt = new Date(now - hideMs - 1000).toISOString();
+	assert.equal(isDockIdleEvictable(reviewedReady, now, hideMs), true);
+	// Reviewed recently: not evicted yet.
+	const freshReviewed = makeWorker({ id: "r2", state: "ready", updatedAt: new Date(now).toISOString() });
+	freshReviewed.reviewedAt = new Date(now - 1000).toISOString();
+	assert.equal(isDockIdleEvictable(freshReviewed, now, hideMs), false);
+	// Reviewed failed worker past prune window is prunable.
+	const reviewedFailed = makeWorker({ id: "r3", state: "failed", updatedAt: new Date(now).toISOString() });
+	reviewedFailed.reviewedAt = new Date(now - pruneMs - 1000).toISOString();
+	assert.equal(shouldPruneWorker(reviewedFailed, now, pruneMs), true);
+	// Unreviewed ready worker is NOT terminal even when old (existing behavior preserved).
+	const oldReady = makeWorker({ id: "r4", state: "ready", updatedAt: new Date(now - pruneMs - 1000).toISOString() });
+	assert.equal(shouldPruneWorker(oldReady, now, pruneMs), false);
+});

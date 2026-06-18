@@ -24,7 +24,7 @@ function depsFor(w: WorkerStatus, overrides: Partial<WorkerVerdictDeps> = {}): {
 	const decisions: DecisionRecord[] = [];
 	const deps: WorkerVerdictDeps = {
 		hasUI: true,
-		workerStore: { find: async () => w, list: async () => [w] },
+		workerStore: { find: async () => w, list: async () => [w], patchStatus: async (id, patch) => { calls.push(`patch:${id}:${JSON.stringify(patch)}`); return { ...w, ...patch }; } },
 		workerCommands: {
 			tell: async (ref: string, text: string) => { calls.push(`tell:${ref}:${text}`); },
 			delete: async (ref: string) => { calls.push(`delete:${ref}`); },
@@ -33,7 +33,7 @@ function depsFor(w: WorkerStatus, overrides: Partial<WorkerVerdictDeps> = {}): {
 		notify: (text, level) => { calls.push(`notify:${level}:${text}`); },
 		showVerdict: async () => ({ verb: "accept", worker: w }),
 		confirmDeleteWorker: async () => true,
-		showText: async (title) => { calls.push(`showText:${title}`); },
+		showText: async (title, _text, options) => { calls.push(`showText:${title}:${options?.diff ? "diff" : "plain"}`); },
 		formatArtifact: (artifact: Artifact) => artifact.body,
 		input: async () => undefined,
 		promoteWorkerChangeSet: async () => { calls.push("promote"); return true; },
@@ -69,6 +69,87 @@ test("runWorkerVerdict sends option text and records visible risk/evidence", asy
 	assert.equal(decisions[0]?.option, "use postgres");
 	assert.equal(decisions[0]?.risk, "touches migration order");
 	assert.deepEqual(decisions[0]?.evidenceRefs, ["worker-status:worker-1:0"]);
+});
+
+test("runWorkerVerdict diff verb opens full diff in diff mode", async () => {
+	const w = worker({ state: "ready" });
+	const changeSet: Artifact = { id: "changes", displayId: "changes", ref: "worker-changes:worker-1:0", kind: "response", title: "x change set", subtitle: "", body: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new", timestamp: 1, meta: { workerChangeSet: true, workerId: "worker-1", changedFiles: [{ path: "x", additions: 1, deletions: 1 }], hunkCount: 1 } };
+	const seen: Array<{ verb: string; diff?: boolean }> = [];
+	const { deps, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "diff", worker: w, changeSet }),
+		showText: async (title, _text, options) => { seen.push({ verb: "diff", diff: options?.diff }); calls.push(`showText:${title}:${options?.diff ? "diff" : "plain"}`); },
+		formatArtifact: (artifact) => artifact.body,
+	});
+
+	// diff verb re-enters the loop; follow it with accept to terminate.
+	let first = true;
+	const origShowVerdict = deps.showVerdict;
+	deps.showVerdict = async () => first ? (first = false, { verb: "diff", worker: w, changeSet }) : { verb: "accept", worker: w };
+	void origShowVerdict;
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(seen.some((s) => s.diff === true), true, `expected showText called with diff:true, got: ${JSON.stringify(seen)}`);
+	assert.ok(calls.some((c) => /showText:.*:diff$/.test(c)));
+});
+
+test("runWorkerVerdict marks ready worker reviewed on accept without changeset", async () => {
+	const w = worker({ state: "ready" });
+	const { deps, calls, decisions } = depsFor(w, {
+		showVerdict: async () => ({ verb: "accept", worker: w }),
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "advance");
+	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), `expected reviewedAt patch, got: ${JSON.stringify(calls)}`);
+	assert.equal(decisions[0]?.verb, "accept");
+});
+
+test("runWorkerVerdict marks ready worker reviewed on reject (dismiss)", async () => {
+	const w = worker({ state: "ready" });
+	const { deps, calls, decisions } = depsFor(w, {
+		showVerdict: async () => ({ verb: "reject", worker: w }),
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)));
+	assert.equal(decisions[0]?.verb, "reject");
+});
+
+test("runWorkerVerdict does NOT mark reviewed on needs_input send (worker still alive)", async () => {
+	const w = worker({ state: "needs_input", questions: [{ id: "q1", text: "x?", createdAt: "2026-01-01T00:00:00.000Z" }] });
+	const { deps, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "send", worker: w, text: "yes" }),
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), false);
+});
+
+test("runWorkerVerdict does NOT mark reviewed on failed accept (retry respawn)", async () => {
+	const w = worker({ state: "failed", lastError: "boom" });
+	const { deps, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "accept", worker: w }),
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), false);
+	assert.ok(calls.some((c) => c.startsWith("respawn:")));
+});
+
+test("runWorkerVerdict marks failed worker reviewed on reject (dismiss)", async () => {
+	const w = worker({ state: "failed", lastError: "boom" });
+	const { deps, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "reject", worker: w }),
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)));
 });
 
 test("runWorkerVerdict stops without UI", async () => {

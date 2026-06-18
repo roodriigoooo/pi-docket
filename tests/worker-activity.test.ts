@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeWorkerTodos, type WorkerStatus } from "../extensions/background-work.js";
-import { workerActivityPreviewLines, workerActivityRows, workerActivityStackLines, workerActivityTotals } from "../extensions/worker-activity.js";
+import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityStackLines, workerActivityTotals } from "../extensions/worker-activity.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -57,6 +57,32 @@ test("Worker Activity keeps all workers visible as compact rows", () => {
 	assert.match(lines.join("\n"), /w3\(\^_\^\) · ready · inspect worker flow · summary only · press l to load/);
 	assert.match(lines.join("\n"), /w1 · active · inspect worker flow · working · working/);
 	assert.doesNotMatch(lines.join("\n"), /├|└|said:|also tracking/);
+});
+
+test("Worker Activity reviewed workers render dim, count separately, and stay ranked low", () => {
+	const now = new Date().toISOString();
+	const reviewed = worker({ id: "rev", index: 4, state: "ready", summary: "done", reviewedAt: now, updatedAt: now });
+	const ready = worker({ id: "ready", index: 5, state: "ready", summary: "fresh", updatedAt: now });
+	const rows = workerActivityRows([reviewed, ready], new Map(), { now: Date.parse(now) });
+
+	const reviewedRow = rows.find((row) => row.label === "w4")!;
+	assert.equal(reviewedRow.state, "reviewed");
+	assert.equal(reviewedRow.stateLabel, "reviewed");
+	assert.equal(reviewedRow.outputLabel, "reviewed");
+	assert.equal(reviewedRow.actionHint, "Enter re-open");
+
+	const dockRows = dockRowsForRender(rows, { now: Date.parse(now) });
+	const reviewedDock = dockRows.find((row) => row.label === "w4")!;
+	assert.equal(reviewedDock.attention, false);
+	assert.equal(reviewedDock.chip, "✓");
+
+	const totals = workerActivityTotals(rows);
+	assert.equal(totals.reviewed, 1);
+	assert.equal(totals.ready, 1);
+	assert.equal(totals.workers, 2);
+
+	// Reviewed sorts below an unreviewed ready worker (rank 8 vs 3).
+	assert.deepEqual(rows.map((row) => row.label), ["w5", "w4"]);
 });
 
 test("Worker Activity result column standardizes to recs · files · progress", () => {

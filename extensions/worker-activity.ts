@@ -52,6 +52,7 @@ export type WorkerActivityTotals = {
 	readyOpenTodos: number;
 	failed: number;
 	loaded: number;
+	reviewed: number;
 	todos: number;
 	completedTodos: number;
 };
@@ -102,6 +103,7 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 		}
 		return parts.join(" · ");
 	}
+	if (state === "reviewed") return "reviewed";
 	if (!answer || isWorkerStatusArtifact(answer)) return "no output";
 	if (answer.kind === "error") return "error";
 	if (answer.kind === "code") return "code output";
@@ -238,6 +240,7 @@ function relativeAgeLabel(updatedAtMs: number, now: number): string {
 function dockProgressLabel(row: WorkerActivityRow): string {
 	const conflict = conflictSummary(row.conflicts, 1);
 	if (conflict) return conflict;
+	if (row.state === "reviewed") return "reviewed";
 	if (row.progress.total > 0) return `${row.progress.completed}/${row.progress.total} progress`;
 	if (row.state === "ready" || row.state === "ready_open_todos") {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
@@ -253,11 +256,13 @@ function dockChip(state: WorkerDerivedState, loaded: boolean): string | undefine
 	if (state === "needs_input") return "← reply";
 	if (state === "failed") return "← inspect";
 	if (state === "ready" || state === "ready_open_todos") return "← review";
+	if (state === "reviewed") return "✓";
 	return undefined;
 }
 
 function isAttentionState(state: WorkerDerivedState, loaded: boolean): boolean {
 	if (loaded && (state === "ready" || state === "ready_open_todos")) return false;
+	if (state === "reviewed") return false;
 	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
 }
 
@@ -294,6 +299,7 @@ export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "ready_open_todos") return "ready/progress";
 	if (state === "ready") return "ready";
 	if (state === "failed") return "failed";
+	if (state === "reviewed") return "reviewed";
 	if (state === "thinking") return "active";
 	if (state === "starting") return "starting";
 	if (state === "stale") return "stale";
@@ -305,6 +311,7 @@ function workerActivityActionHint(state: WorkerDerivedState): string {
 	if (state === "needs_input") return "press c to reply";
 	if (state === "ready" || state === "ready_open_todos") return "press l to load";
 	if (state === "failed") return "Enter details";
+	if (state === "reviewed") return "Enter re-open";
 	if (state === "starting" || state === "thinking") return "working";
 	return "Enter details";
 }
@@ -357,6 +364,7 @@ export function workerActivityTotals(rows: WorkerActivityRow[]): WorkerActivityT
 	return rows.reduce((acc, row) => {
 		acc.workers++;
 		if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) acc.loaded++;
+		else if (row.state === "reviewed") acc.reviewed++;
 		else if (row.state === "thinking" || row.state === "starting") acc.active++;
 		else if (row.state === "needs_input") acc.waiting++;
 		else if (row.state === "ready_open_todos") acc.readyOpenTodos++;
@@ -365,7 +373,7 @@ export function workerActivityTotals(rows: WorkerActivityRow[]): WorkerActivityT
 		acc.todos += row.progress.total;
 		acc.completedTodos += row.progress.completed;
 		return acc;
-	}, { workers: 0, active: 0, waiting: 0, ready: 0, readyOpenTodos: 0, failed: 0, loaded: 0, todos: 0, completedTodos: 0 });
+	}, { workers: 0, active: 0, waiting: 0, ready: 0, readyOpenTodos: 0, failed: 0, loaded: 0, reviewed: 0, todos: 0, completedTodos: 0 });
 }
 
 export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActivityStackLine[] {
