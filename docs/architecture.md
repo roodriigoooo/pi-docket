@@ -19,6 +19,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
 | Background Work | `extensions/background-work.ts` | Worker state transitions, protocol semantics, pre-flight task docs, synthetic status artifacts, heartbeat dedup. |
 | Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
+| Worker Conflicts | `extensions/worker-conflicts.ts` | Edited-file overlap detection across workers; warning text for dock, dashboard, and promote confirmation. |
 | Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
 | Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
@@ -35,7 +36,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 
 1. `Worker Commands.spawn(task, { as, fresh, worktree })` resolves the kind, checks `maxActive`, passes kind policy to `Worker Store.spawn`.
 2. `Worker Store` writes `task.md` as a pre-flight brief: task, kind, workspace, decision rights, and any plan gate. It then opens a window in the shared tmux session `docket-workers`. If `parent_seed: full`, it forks the parent's JSONL via `SessionManager.forkFrom` and launches with `--continue`.
-3. The worker pi reads `task.md`, ticks `status.json` every 15 s (heartbeat), updates `artifacts.json` only when its signature changes, and appends every state transition / todo update / tool call to `events.ndjson`. A plan-gated worker may do read-only discovery, then must use `docket_wait` before the first edit or mutating command.
+3. The worker pi reads `task.md`, ticks `status.json` every 15 s (heartbeat), updates `artifacts.json` only when its signature changes, and appends every state transition / progress update / tool call to `events.ndjson`. A plan-gated worker may do read-only discovery, then must use `docket_wait` before the first edit or mutating command.
 4. Parent watches the workers root with `fs.watch` (recursive on macOS, polled fallback elsewhere). `WorkerSnapshotCache` reads new event bytes since its held offset, deduplicates by mtime, and keeps a 16-event sticky ring per worker.
 5. `Background Work` projects the snapshot into a synthetic status artifact. Navigator ranks it alongside file edits and errors. The dock renders one row per worker plus an event sub-line when thinking. Passive warnings use the same data: `silent Nm` for no recent tool/todo events, `waiting Nm` for an old parent question.
 6. Worker calls `docket_done` / `docket_fail` → state goes terminal → row enters `ready` / `failed` until evicted (`worker.dockIdleHideMinutes`) or pruned (`worker.pruneAfterHours`). When the prune sweep removes a terminal worker that never got a verdict (its id is absent from the decision ledger), it records a `worker_evicted_unreviewed` event first so the debt is counted before the record is gone.
@@ -47,7 +48,7 @@ One contract for every kind. The MD body of a kind extends the universal guardra
 
 | Tool | When | Effect |
 |---|---|---|
-| `docket_todos` | Multi-step work. | Replaces the visible todo board. |
+| `docket_todos` | Multi-step work. | Replaces the visible progress board; informational, not completion. |
 | `docket_wait` | Ambiguity, blocked auth, irreversible action. | Worker → `needs_input`, parent gets an inbox row. |
 | `docket_done` | Finished with useful output. | Requires `outcome`, `summary`, `evidence`. Vague work is rejected back to `docket_wait`. |
 | `docket_fail` | Cannot continue, no useful partial output. | Worker → `failed`. |
@@ -100,7 +101,7 @@ declare global {
 ## Key design choices
 
 - **One tmux session, N windows.** Pays for one tmux server regardless of fleet size. `send-keys -l` gives a safe parent→worker stdin without inventing a FIFO/socket protocol.
-- **Dead panes are evidence.** Worker windows run with `remain-on-exit on`, so a crash leaves the pane (and its scrollback) for the parent to harvest before the window is killed. While the pane is alive, `capture-pane` doubles as the dashboard's read-only peek: observation without attach, zero model-context cost.
+- **Dead panes are evidence.** Worker windows run with `remain-on-exit on`, so a crash leaves the pane (and its scrollback) for the parent to harvest before the window is killed. While the pane is alive, `capture-pane` doubles as the dashboard's bounded read-only peek: observation without attach, zero model-context cost.
 - **NDJSON event stream over `fs.watch`.** Disk-backed, survives parent restarts, no daemon. Drives the dock without polling. `pipe-pane` captures terminal noise, not structured events — opt-in via `worker.captureTerminal` when debugging.
 - **Heartbeat dedup.** Worker hashes its artifact list each heartbeat; `writeArtifacts` is skipped when unchanged. Quiet workers cost ~0 disk I/O.
 - **mtime-cached reads in the parent.** `WorkerSnapshotCache` skips parse when neither status nor artifacts has changed.
@@ -109,4 +110,7 @@ declare global {
 - **Plan gates use the existing wait path.** A kind can set `plan_gate: true`, which adds instructions to `task.md` and the guardrails. The worker asks through `docket_wait`; the parent resolves it through the normal verdict card. No extra state machine.
 - **Silence is a hint, not automation.** The dock warns when `events.ndjson` has no recent useful activity or a parent question gets old. It does not kill, respawn, or attach automatically.
 - **Decisions are logged, debt is counted.** Every verdict resolution appends to `decisions.ndjson` with the verb, option, risk, and evidence refs that were on the card. A terminal worker pruned with no verdict recorded is logged as decision debt. The router holds the single choke point (`runVerdict`); the log module stays pure summarize/render so the counts are testable without a TUI.
+- **Worker overlap is surfaced, not prevented.** Isolated worktrees keep workers from clobbering each other while they work. Docket detects edited-file overlap and warns before promote; the parent remains the mediator.
+- **Attach means switch when already inside tmux.** `/docket attach` deliberately uses `switch-client` from inside tmux and a copyable `attach` command outside tmux. Docket does not pretend tmux navigation is session evidence.
+- **Progress boards are informational.** `docket_todos` helps parent visibility, but `docket_done` is authoritative; stale progress never keeps a ready worker in a special unresolved state.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.

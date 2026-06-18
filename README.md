@@ -119,7 +119,9 @@ tmux gives Docket three useful things:
 - **Safe inspection.** You can attach when something looks weird.
 - **Crash evidence.** If a worker dies, Docket captures the final pane output before cleanup.
 
-Docket stores status, artifacts, verdicts, and bundles on disk. tmux only owns live worker terminals and scrollback.
+Docket stores status, artifacts, verdicts, and bundles on disk. tmux owns live worker terminals and scrollback.
+
+If you run `/docket attach [w<N>]` from inside tmux, Docket deliberately uses `tmux switch-client -t docket-workers[:wN]` so you move straight to the worker session. Outside tmux, it copies the normal `tmux attach` command.
 
 ### Peek without attaching
 
@@ -129,7 +131,7 @@ Run:
 /docket workers
 ```
 
-Press `p` on a worker row. Docket shows the latest tmux pane output inside the dashboard. It is read-only and costs zero model context.
+Press `p` on a worker row. Docket shows a bounded live tmux pane snapshot inside the dashboard. It is read-only, does not focus the pane, and costs zero model context.
 
 Use peek to answer quick questions:
 
@@ -167,7 +169,7 @@ A plan gate means the worker can inspect first, then must ask before its first e
 
 `/docket save` writes a small markdown note plus an artifact sidecar. It preserves evidence. It does not move your Pi session.
 
-`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens.
+`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens. Loading a ready worker also marks it `loaded` in the dock, so it stops presenting as unresolved review work without pretending you accepted it.
 
 Only these commands send evidence to the model:
 
@@ -187,7 +189,7 @@ This is the main rule: keep evidence available, not automatically injected.
 | `/docket workers` | See worker dashboard. |
 | `/docket verdict [w<N>]` | Resolve a worker decision. |
 | `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
-| `/docket attach [w<N>]` | Copy tmux attach command. |
+| `/docket attach [w<N>]` | Switch to worker tmux session when already in tmux; otherwise copy attach command. |
 | `/docket save [note]` | Save selected evidence as a bundle. |
 | `/docket load [id|last|w<N>]` | Mount bundle or worker artifacts. |
 | `/docket log decisions` | Show verdict history and unreviewed worker debt. |
@@ -202,7 +204,7 @@ Docket is built around a few rules:
 - Background work must be visible.
 - Workers are useful, but they are not trusted by default.
 - Evidence should be cheap to browse and explicit to inject.
-- Parallel work should not become parallel confusion.
+- Parallel work should not become parallel confusion; overlapping worker edits must be visible.
 - Failed work should leave evidence, not disappear.
 
 In short: pi keeps the conversation. tmux keeps the workers visible. Docket keeps the decisions organized.

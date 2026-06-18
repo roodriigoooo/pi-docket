@@ -62,6 +62,14 @@ _Avoid_: crash log, dump.
 A read-only snapshot of a worker's live tmux pane rendered inside the parent TUI (press `p` in the workers dashboard). Observation without attaching; never enters model context.
 _Avoid_: attach, monitor, tail.
 
+**Progress board**:
+The small ordered checklist a Worker publishes with `docket_todos`. It is parent visibility only; `docket_done` is the completion signal.
+_Avoid_: task manager, acceptance gate.
+
+**Worker overlap**:
+A warning that two Workers edited the same path in their isolated workspaces. Docket surfaces overlap and asks before promotion; it does not lock files or auto-merge.
+_Avoid_: conflict resolver, merge queue.
+
 **Decision ledger**:
 The append-only record of every verdict you resolve, written to `decisions.ndjson`. Each entry keeps the verb, the option chosen, any risk shown, and the evidence refs that were on the card. Read it with `/docket log decisions`.
 _Avoid_: history, audit log, transcript.
@@ -87,6 +95,8 @@ _Avoid_: continue, resume, restore.
 - **Load** = **Mount** the bundle into the current session.
 - A model summary is optional `--summarize` polish on top of a bundle, never the bundle's definition.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
+- A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
+- **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
 
 ## Example dialogue
 

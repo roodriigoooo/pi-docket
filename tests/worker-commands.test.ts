@@ -174,7 +174,7 @@ test("Worker Commands loads and unloads worker artifacts", async () => {
 	assert.deepEqual(loaded, ["worker-1"]);
 	assert.deepEqual(unloaded, ["worker-1"]);
 	assert.equal(announcements[0]?.subject, "loaded w2 · 1 artifact");
-	assert.match(announcements[0]?.detail ?? "", /attach: @w2\.<id>/);
+	assert.match(announcements[0]?.detail ?? "", /refs: @w2\.<id>/);
 	assert.equal(announcements[1]?.subject, "unloaded w2");
 });
 

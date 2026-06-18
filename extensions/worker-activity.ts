@@ -2,6 +2,7 @@ import { workerActivityChip, workerDisplayName, workerQuestions, workerSourceLab
 import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
+import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
 
 export type WorkerEvidence = {
 	reads: number;
@@ -30,6 +31,8 @@ export type WorkerActivityRow = {
 	recommendations: number;
 	filesChanged: number;
 	evidence: WorkerEvidence;
+	loaded: boolean;
+	conflicts: WorkerFileConflict[];
 	summary?: string;
 	updatedAt: number;
 };
@@ -48,6 +51,7 @@ export type WorkerActivityTotals = {
 	ready: number;
 	readyOpenTodos: number;
 	failed: number;
+	loaded: number;
 	todos: number;
 	completedTodos: number;
 };
@@ -80,7 +84,10 @@ function computeEvidence(artifacts: Artifact[]): { evidence: WorkerEvidence; fil
 	return { evidence, filesChanged };
 }
 
-function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefined, recommendations: number, filesChanged: number, progress: { total: number; completed: number }): string {
+function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefined, recommendations: number, filesChanged: number, progress: { total: number; completed: number }, conflicts: WorkerFileConflict[], loaded: boolean): string {
+	const conflict = conflictSummary(conflicts, 1);
+	if (loaded && (state === "ready" || state === "ready_open_todos")) return conflict ? `loaded · ${conflict}` : "loaded";
+	if (conflict) return conflict;
 	if (state === "needs_input") return "needs reply";
 	if (state === "starting" || state === "thinking") return "working";
 	if (state === "failed") return "error";
@@ -89,7 +96,7 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 		const parts: string[] = [];
 		if (recommendations > 0) parts.push(`${recommendations} ${recommendations === 1 ? "rec" : "recs"}`);
 		parts.push(filesChanged > 0 ? `${filesChanged} ${filesChanged === 1 ? "file" : "files"} changed` : "no files");
-		if (progress.total > 0) parts.push(`${progress.completed}/${progress.total} todos`);
+		if (progress.total > 0) parts.push(`${progress.completed}/${progress.total} progress`);
 		if (parts.length === 0 || (parts.length === 1 && parts[0] === "no files")) {
 			if (!answer || isWorkerStatusArtifact(answer)) return "summary only";
 		}
@@ -213,7 +220,7 @@ export function dockEventSubLine(events: WorkerEvent[] | undefined, state: Worke
 			const inProgress = Number(event.payload.inProgress ?? 0);
 			if (!Number.isFinite(total) || total <= 0) continue;
 			const active = inProgress > 0 ? ` · ${inProgress} active` : "";
-			latestLine = `todos ${completed}/${total}${active}`;
+			latestLine = `progress ${completed}/${total}${active}`;
 			break;
 		}
 	}
@@ -229,7 +236,9 @@ function relativeAgeLabel(updatedAtMs: number, now: number): string {
 }
 
 function dockProgressLabel(row: WorkerActivityRow): string {
-	if (row.progress.total > 0) return `${row.progress.completed}/${row.progress.total} todos`;
+	const conflict = conflictSummary(row.conflicts, 1);
+	if (conflict) return conflict;
+	if (row.progress.total > 0) return `${row.progress.completed}/${row.progress.total} progress`;
 	if (row.state === "ready" || row.state === "ready_open_todos") {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
 		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
@@ -239,14 +248,16 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 	return "";
 }
 
-function dockChip(state: WorkerDerivedState): string | undefined {
+function dockChip(state: WorkerDerivedState, loaded: boolean): string | undefined {
+	if (loaded && (state === "ready" || state === "ready_open_todos")) return "loaded";
 	if (state === "needs_input") return "← reply";
 	if (state === "failed") return "← inspect";
 	if (state === "ready" || state === "ready_open_todos") return "← review";
 	return undefined;
 }
 
-function isAttentionState(state: WorkerDerivedState): boolean {
+function isAttentionState(state: WorkerDerivedState, loaded: boolean): boolean {
+	if (loaded && (state === "ready" || state === "ready_open_todos")) return false;
 	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
 }
 
@@ -258,7 +269,7 @@ export function dockRowsForRender(
 	const workers = rows.map((row) => row.worker);
 	return rows.map((row) => {
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
-		const chip = dockChip(row.state);
+		const chip = dockChip(row.state, row.loaded);
 		const events = options.eventsByWorker?.get(row.worker.id);
 		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker });
 		const kindLabel = workerKindLabel(row.worker);
@@ -269,7 +280,7 @@ export function dockRowsForRender(
 			taskLabel: row.taskLabel,
 			progressLabel: dockProgressLabel(row),
 			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
-			attention: isAttentionState(row.state),
+			attention: isAttentionState(row.state, row.loaded),
 			...(chip ? { chip } : {}),
 			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),
@@ -280,7 +291,7 @@ export function dockRowsForRender(
 
 export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "needs_input") return "needs input";
-	if (state === "ready_open_todos") return "ready/open todos";
+	if (state === "ready_open_todos") return "ready/progress";
 	if (state === "ready") return "ready";
 	if (state === "failed") return "failed";
 	if (state === "thinking") return "active";
@@ -298,8 +309,9 @@ function workerActivityActionHint(state: WorkerDerivedState): string {
 	return "Enter details";
 }
 
-export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number } = {}): WorkerActivityRow[] {
+export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number; loadedWorkerIds?: ReadonlySet<string> } = {}): WorkerActivityRow[] {
 	const now = options.now ?? Date.now();
+	const conflictsByWorker = workerConflictMap(workers, artifactsByWorker);
 	return workers.map((worker) => {
 		const artifacts = artifactsByWorker.get(worker.id) ?? [];
 		const review = projectWorkerReview(worker, artifacts, now);
@@ -313,6 +325,8 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 		const recommendations = review.recommendations.length || countWorkerRecommendations(summary);
 		const { evidence, filesChanged } = computeEvidence(artifacts);
 		const progress = workerTodoProgress(worker);
+		const conflicts = conflictsByWorker.get(worker.id) ?? [];
+		const loaded = options.loadedWorkerIds?.has(worker.id) === true;
 		return {
 			worker,
 			label: workerSourceLabel(worker),
@@ -323,7 +337,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			message,
 			answer,
 			answerLine,
-			outputLabel: buildOutputLabel(state, answer, recommendations, filesChanged, progress),
+			outputLabel: buildOutputLabel(state, answer, recommendations, filesChanged, progress, conflicts, loaded),
 			actionHint: workerActivityActionHint(state),
 			questions,
 			progress,
@@ -331,6 +345,8 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			recommendations,
 			filesChanged,
 			evidence,
+			loaded,
+			conflicts,
 			...(summary ? { summary } : {}),
 			updatedAt: Date.parse(worker.updatedAt) || 0,
 		};
@@ -340,7 +356,8 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 export function workerActivityTotals(rows: WorkerActivityRow[]): WorkerActivityTotals {
 	return rows.reduce((acc, row) => {
 		acc.workers++;
-		if (row.state === "thinking" || row.state === "starting") acc.active++;
+		if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) acc.loaded++;
+		else if (row.state === "thinking" || row.state === "starting") acc.active++;
 		else if (row.state === "needs_input") acc.waiting++;
 		else if (row.state === "ready_open_todos") acc.readyOpenTodos++;
 		else if (row.state === "ready") acc.ready++;
@@ -348,14 +365,15 @@ export function workerActivityTotals(rows: WorkerActivityRow[]): WorkerActivityT
 		acc.todos += row.progress.total;
 		acc.completedTodos += row.progress.completed;
 		return acc;
-	}, { workers: 0, active: 0, waiting: 0, ready: 0, readyOpenTodos: 0, failed: 0, todos: 0, completedTodos: 0 });
+	}, { workers: 0, active: 0, waiting: 0, ready: 0, readyOpenTodos: 0, failed: 0, loaded: 0, todos: 0, completedTodos: 0 });
 }
 
 export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActivityStackLine[] {
 	const lines: WorkerActivityStackLine[] = [];
 	for (const row of rows) {
-		const todoStatus = row.progress.total ? ` · todos ${row.progress.completed}/${row.progress.total}` : "";
-		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${todoStatus} · ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}` });
+		const progressStatus = row.progress.total ? ` · progress ${row.progress.completed}/${row.progress.total}` : "";
+		const loadedStatus = row.loaded && (row.state === "ready" || row.state === "ready_open_todos") ? " · loaded" : "";
+		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${loadedStatus}${progressStatus} · ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}` });
 	}
 	return lines;
 }
@@ -374,10 +392,11 @@ function previewEvidenceBody(row: WorkerActivityRow): string {
 	if (row.evidence.edits > 0) counts.push(`${row.evidence.edits} edits`);
 	if (row.evidence.codeBlocks > 0) counts.push(`${row.evidence.codeBlocks} code blocks`);
 	if (row.evidence.errors > 0) counts.push(`${row.evidence.errors} errors`);
-	if (row.progress.total > 0) counts.push(`${row.progress.completed}/${row.progress.total} todos`);
+	if (row.progress.total > 0) counts.push(`${row.progress.completed}/${row.progress.total} progress`);
 	const sample = row.evidence.sampleFiles.length ? `Files: ${row.evidence.sampleFiles.slice(0, 3).join(", ")}${row.evidence.sampleFiles.length > 3 ? "…" : ""}` : undefined;
+	const conflict = conflictSummary(row.conflicts, 3);
 	const summary = counts.length ? counts.join(" · ") : "No artifacts captured yet.";
-	return sample ? `${summary}\n${sample}` : summary;
+	return [summary, sample, conflict ? `Overlap: ${conflict}` : undefined].filter((line): line is string => line !== undefined).join("\n");
 }
 
 function previewNextActions(row: WorkerActivityRow): string {
@@ -386,9 +405,10 @@ function previewNextActions(row: WorkerActivityRow): string {
 		: row.state === "failed"
 			? "[Enter Inspect failure]"
 			: row.state === "ready" || row.state === "ready_open_todos"
-				? "[Enter Review answer]"
+				? row.loaded ? "[Enter Details]" : "[Enter Review answer]"
 				: "[Enter Open]";
-	const buttons = [primary, "[p Peek]", "[l Load summary]", "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
+	const load = row.loaded ? "[l Loaded]" : "[l Load summary]";
+	const buttons = [primary, "[p Peek]", load, "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
 	return buttons.join(" ");
 }
 

@@ -41,7 +41,7 @@ test("Worker Result presents latest answer before status metadata", () => {
 
 test("Worker Result falls back to status artifact when no answer exists", () => {
 	assert.equal(workerResultArtifact(worker, [status])?.displayId, "w1.status");
-	assert.match(workerResultText(worker, [status]), /actions: \/docket use w1 · \/docket ask w1/);
+	assert.match(workerResultText(worker, [status]), /actions: \/docket load w1 · \/docket tell w1/);
 });
 
 test("Worker Result falls back to latest response artifact", () => {
@@ -67,7 +67,7 @@ test("Worker Result report sections include outcome, recommendations, references
 
 	assert.equal(report.primarySection, "outcome");
 	assert.equal(report.stateLabel, "ready");
-	assert.equal(report.progressLine, "2/2 todos complete");
+	assert.equal(report.progressLine, "2/2 progress complete");
 	assert.equal(report.changesLine, "none");
 	assert.equal(report.recommendations.length, 3);
 	assert.equal(report.recommendations[0], "Sync README commands with current behavior");
@@ -98,11 +98,11 @@ test("Worker Result includes lightweight progress board", () => {
 		summary: undefined,
 		todos: normalizeWorkerTodos([
 			{ text: "Inspect current dock", state: "completed" },
-			{ text: "Render worker todo board", state: "in_progress" },
+			{ text: "Render worker progress board", state: "in_progress" },
 		]),
 	};
 
-	assert.equal(workerResultHeadline(withTodos), "1/2 · Render worker todo board");
-	assert.match(workerResultText(withTodos), /progress:\nTodos \(1\/2\)/);
+	assert.equal(workerResultHeadline(withTodos), "1/2 · Render worker progress board");
+	assert.match(workerResultText(withTodos), /progress:\nProgress \(1\/2\)/);
 	assert.match(workerResultText(withTodos), /├ ✓ Inspect current dock/);
 });

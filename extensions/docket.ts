@@ -53,6 +53,7 @@ import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
@@ -539,7 +540,7 @@ function chipColor(theme: any, chip: string | undefined, text: string): string {
 	if (!chip) return theme.fg("muted", text);
 	if (chip === "needs reply") return theme.fg("warning", text);
 	if (chip === "failed" || chip === "error") return theme.fg("error", text);
-	if (chip === "ready" || chip === "ready · open todos") return theme.fg("success", text);
+	if (chip === "ready" || chip === "ready · progress") return theme.fg("success", text);
 	if (chip === "answer" || chip === "code") return theme.fg("accent", text);
 	if (chip === "changed" || chip === "new file") return theme.fg("toolDiffAdded", text);
 	if (chip === "stale") return theme.fg("dim", text);
@@ -1188,7 +1189,7 @@ class DocketVerdictView implements Component {
 		const border = (s: string) => this.theme.fg("border", s);
 		const divider = (s: string) => this.theme.fg("borderMuted", s);
 		const warning = (s: string) => this.theme.fg("warning", s);
-		const stateLabel = state === "ready_open_todos" ? "ready · open todos" : state.replace(/_/g, " ");
+		const stateLabel = state === "ready_open_todos" ? "ready · progress" : state.replace(/_/g, " ");
 		const active = state === "starting" || state === "thinking";
 		const glyph = active ? workerPulseGlyph() : "●";
 		const label = workerSourceLabel(this.worker);
@@ -1455,7 +1456,7 @@ function dockRowText(row: DockRow, width: number, now: number): string {
 	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
 	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
 	const labelCell = `${row.label}${kindCell}${modelCell}`;
-	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/todos" : row.state.replace(/_/g, " ");
+	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/progress" : row.state.replace(/_/g, " ");
 	const docketing = [row.progressLabel, row.ageLabel].filter(Boolean).join(" · ");
 	const left = `${marker} ${labelCell}${stateCell ? ` ${stateCell}` : ""} ${row.taskLabel}`.trim();
 	const right = [docketing, row.chip].filter(Boolean).join(" ");
@@ -1585,6 +1586,7 @@ class DocketParallelWorkView implements Component {
 		private artifactsByWorker: Map<string, Artifact[]>,
 		private done: (result: ParallelWorkAction) => void,
 		private groupByProject = false,
+		private loadedWorkerIds: ReadonlySet<string> = new Set(),
 	) {}
 
 	private finish(result: ParallelWorkAction): void {
@@ -1613,7 +1615,7 @@ class DocketParallelWorkView implements Component {
 	}
 
 	private activityRows(): WorkerActivityRow[] {
-		const rows = workerActivityRows(this.workers, this.artifactsByWorker);
+		const rows = workerActivityRows(this.workers, this.artifactsByWorker, { loadedWorkerIds: this.loadedWorkerIds });
 		if (!this.groupByProject) return rows;
 		return [...rows].sort((a, b) => workerProjectKey(a.worker).localeCompare(workerProjectKey(b.worker)));
 	}
@@ -1720,13 +1722,14 @@ class DocketParallelWorkView implements Component {
 		const status = [
 			workerCounts.waiting ? `${workerCounts.waiting} waiting` : undefined,
 			workerCounts.failed ? `${workerCounts.failed} failed` : undefined,
-			workerCounts.readyOpenTodos ? `${workerCounts.readyOpenTodos} ready/open todos` : undefined,
+			workerCounts.readyOpenTodos ? `${workerCounts.readyOpenTodos} ready/progress` : undefined,
 			workerCounts.ready ? `${workerCounts.ready} ready` : undefined,
+			workerCounts.loaded ? `${workerCounts.loaded} loaded` : undefined,
 			workerCounts.active ? `${workerCounts.active} active` : undefined,
 		].filter(Boolean).join(" · ") || plural(this.workers.length, "worker");
 
 		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket"))} ${dim("·")} ${accent("workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
-		const todoStatus = workerCounts.todos ? ` · todos ${workerCounts.completedTodos}/${workerCounts.todos}` : "";
+		const todoStatus = workerCounts.todos ? ` · progress ${workerCounts.completedTodos}/${workerCounts.todos}` : "";
 		const artifactStatus = entries.length ? ` · ${entries.length} items` : "";
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)}${dim(artifactStatus)}`, innerWidth - 2), 1, 0));
 		this.container.addChild(new DynamicBorder(divider));
@@ -1774,8 +1777,8 @@ class DocketParallelWorkView implements Component {
 
 }
 
-async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, groupByProject = false): Promise<ParallelWorkAction> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new DocketParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject), {
+async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, groupByProject = false, loadedWorkerIds: ReadonlySet<string> = new Set()): Promise<ParallelWorkAction> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new DocketParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject, loadedWorkerIds), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -2205,6 +2208,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 	let workerAutoEmbedSummary = true;
 	const workerReadyEmbedEmitted = new Set<string>();
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
+	let loadedWorkerIds = new Set<string>();
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
@@ -2539,7 +2543,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				ctx.ui.setWidget("docket-workers", undefined);
 				return;
 			}
-			const rows = workerActivityRows(workers, artifactsByWorker);
+			const rows = workerActivityRows(workers, artifactsByWorker, { loadedWorkerIds });
 			const counts = workerActivityTotals(rows);
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
@@ -2555,9 +2559,10 @@ export default function docketExtension(pi: ExtensionAPI) {
 						const attentionParts: string[] = [];
 						if (counts.waiting) attentionParts.push(`${counts.waiting} waiting`);
 						if (counts.failed) attentionParts.push(`${counts.failed} failed`);
-						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/todos`);
+						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/progress`);
 						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
-						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos;
+						if (counts.loaded) attentionParts.push(`${counts.loaded} loaded`);
+						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.loaded;
 						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
 						const summary = counts.workers > 0 ? (attentionParts.length ? attentionParts.join(" · ") : idlePart || plural(counts.workers, "worker")) : "no workers in this project";
 						const heading = `${accent(theme.bold("docket"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
@@ -2732,7 +2737,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name: "docket_todos",
-			label: "Docket Todos",
+			label: "Docket Progress",
 			description: "Docket worker only: publish a small ordered progress checklist visible to the parent session.",
 			promptSnippet: "Publish a small worker progress checklist for the parent dock/dashboard.",
 			promptGuidelines: ["See <docket_worker_guardrails> for when to call docket_todos and how it differs from a durable task manager."],
@@ -2748,7 +2753,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				markWorkerProtocolCalled();
 				const updated = await applyWorkerTodos(ctx, params.items as WorkerTodoInput[]);
 				const progress = updated ? workerTodoProgress(updated) : { completed: 0, total: 0 };
-				return { content: [{ type: "text", text: `Docket todos recorded (${progress.completed}/${progress.total}). Parent can see progress in the worker dock and /docket workers.` }], details: { todoCount: progress.total, completed: progress.completed } };
+				return { content: [{ type: "text", text: `Docket progress recorded (${progress.completed}/${progress.total}). Parent can see it in the worker dock and /docket workers.` }], details: { todoCount: progress.total, completed: progress.completed } };
 			},
 		});
 
@@ -2799,8 +2804,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				if (updated?.state === "needs_input") {
 					return { content: [{ type: "text", text: "Docket did not accept done; marked waiting. Stop now and wait for parent reply." }], details: { state: "needs_input", question: updated.question } };
 				}
-				const warning = open > 0 ? ` Docket marked ready/open-todos (${progress.completed}/${progress.total}); call docket_todos again if those items are actually complete.` : "";
-				return { content: [{ type: "text", text: `${workerProtocolResultText("ready")}${warning}` }], details: { state: open > 0 ? "ready_open_todos" : "ready", summary: updated?.summary ?? done.summary, outcome: done.outcome, evidence: done.evidence, recommended: done.recommended, todoCount: progress.total, todoOpenCount: open } };
+				const progressNote = open > 0 ? ` Progress board still shows ${progress.completed}/${progress.total}; parent will treat it as informational.` : "";
+				return { content: [{ type: "text", text: `${workerProtocolResultText("ready")}${progressNote}` }], details: { state: "ready", summary: updated?.summary ?? done.summary, outcome: done.outcome, evidence: done.evidence, recommended: done.recommended, todoCount: progress.total, todoOpenCount: open } };
 			},
 		});
 
@@ -2914,6 +2919,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		sessionProjectKey = projectKey(ctx.cwd);
 		pinnedRefs = new Set();
 		completedRefs = new Set();
+		loadedWorkerIds = new Set<string>();
 		loadedArtifacts.reset();
 		workerResult = undefined;
 		loadedCheckpoint = loadedCheckpointFromSession(ctx);
@@ -2965,6 +2971,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		activeCtx = undefined;
 		pinnedRefs = new Set();
 		completedRefs = new Set();
+		loadedWorkerIds = new Set<string>();
 		loadedArtifacts.reset();
 		workerResult = undefined;
 		loadedCheckpoint = undefined;
@@ -3087,12 +3094,29 @@ export default function docketExtension(pi: ExtensionAPI) {
 				showWorkerResult: showWorkerResultWidget,
 				clearWorkerResult: clearWorkerResultWidget,
 				markArtifactDone: (artifact) => completedRefs.add(artifact.ref),
+				markWorkerLoaded: (worker) => loadedWorkerIds.add(worker.id),
+				markWorkerUnloaded: (worker) => loadedWorkerIds.delete(worker.id),
+				markAllWorkersUnloaded: () => { loadedWorkerIds = new Set<string>(); },
 				promoteWorkerChangeSet: async (artifact) => {
 					const workerIdValue = typeof artifact.meta?.workerId === "string" ? artifact.meta.workerId : undefined;
 					const worker = workerIdValue ? await workerStore.find(workerIdValue) : undefined;
 					if (!worker) {
 						notifyDocket(pi, ctx, "Docket worker not found for change set", "error");
 						return false;
+					}
+					const peers = await workerStore.list({ projectRoot: sessionProjectKey ?? projectKey(ctx.cwd) });
+					const peerArtifacts = new Map<string, Artifact[]>();
+					await Promise.all(peers.map(async (peer) => {
+						peerArtifacts.set(peer.id, await readWorkerArtifactsForReview(peer));
+					}));
+					const overlap = conflictSummary(workerConflictMap(peers, peerArtifacts).get(worker.id) ?? [], 4);
+					if (overlap) {
+						if (!ctx.hasUI) {
+							notifyDocket(pi, ctx, `Docket promote blocked: ${overlap}`, "warning");
+							return false;
+						}
+						const ok = await ctx.ui.confirm("Promote despite worker overlap?", `${overlap}\n\n${artifact.title}`);
+						if (!ok) return false;
 					}
 					let result = promoteWorkerChangeSet(worker, ctx.cwd);
 					if (!result.ok && result.needsConfirmation && ctx.hasUI) {
@@ -3118,7 +3142,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 				},
 				readWorkersWithArtifacts: (options) => readWorkersWithArtifacts(workerStore, options?.allProjects ? undefined : sessionProjectKey ?? projectKey(ctx.cwd)),
-				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true),
+				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true, loadedWorkerIds),
 				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
 				showText: (title, text) => showTextViewer(ctx, title, text),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),

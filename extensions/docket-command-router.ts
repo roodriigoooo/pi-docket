@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { workerQuestions, workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
 import { renderDecisionLog, type DecisionEvent, type DecisionRecord } from "./decision-log.js";
 import { workerResultArtifact, workerResultText } from "./worker-result.js";
@@ -24,7 +25,7 @@ export type ParallelWorkEntry = {
 
 export type ParallelWorkAction =
 	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "details" | "load" | "copyAttach" | "answers" | "tell" | "stop"; worker: WorkerStatus }
+	| { action: "details" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
 export type LoadPickerMode = "checkpoint" | "worker";
@@ -58,6 +59,9 @@ export type DocketCommandRouterDeps = {
 	showWorkerResult(worker: WorkerStatus, artifacts: Artifact[], expanded: boolean): void;
 	clearWorkerResult(): boolean;
 	markArtifactDone(artifact: Artifact): void;
+	markWorkerLoaded(worker: WorkerStatus): void;
+	markWorkerUnloaded(worker: WorkerStatus): void;
+	markAllWorkersUnloaded(): void;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
@@ -82,12 +86,58 @@ export type DocketCommandRouterDeps = {
 	readDecisionEvents(): Promise<DecisionEvent[]>;
 };
 
-export function buildAttachCommand(target: string): string {
+export type TmuxNavigation = {
+	mode: "attach" | "switch";
+	target: string;
+	command: string;
+	args: string[];
+};
+
+function normalizeTmuxTarget(target: string): { session: string; window?: string } {
 	if (isSharedSessionTarget(target)) {
-		const window = target.split(":")[1] ?? "";
-		return window ? `tmux attach -t ${SHARED_TMUX_SESSION} \\; select-window -t ${window}` : `tmux attach -t ${SHARED_TMUX_SESSION}`;
+		const rawWindow = target.slice(`${SHARED_TMUX_SESSION}:`.length);
+		const window = rawWindow.replace(/^:+/, "");
+		return { session: SHARED_TMUX_SESSION, ...(window ? { window } : {}) };
 	}
-	return `tmux attach -t ${target}`;
+	return { session: target };
+}
+
+export function buildTmuxNavigation(target: string, options: { insideTmux?: boolean } = {}): TmuxNavigation {
+	const insideTmux = options.insideTmux ?? Boolean(process.env.TMUX);
+	const normalized = normalizeTmuxTarget(target);
+	const targetLabel = normalized.window ? `${normalized.session}:${normalized.window}` : normalized.session;
+	if (insideTmux) {
+		return {
+			mode: "switch",
+			target: targetLabel,
+			command: `tmux switch-client -t ${targetLabel}`,
+			args: ["switch-client", "-t", targetLabel],
+		};
+	}
+	if (normalized.session === SHARED_TMUX_SESSION && normalized.window) {
+		return {
+			mode: "attach",
+			target: targetLabel,
+			command: `tmux attach -t ${SHARED_TMUX_SESSION} \\; select-window -t ${normalized.window}`,
+			args: ["attach", "-t", SHARED_TMUX_SESSION, ";", "select-window", "-t", normalized.window],
+		};
+	}
+	return {
+		mode: "attach",
+		target: targetLabel,
+		command: `tmux attach -t ${targetLabel}`,
+		args: ["attach", "-t", targetLabel],
+	};
+}
+
+export function buildAttachCommand(target: string, options: { insideTmux?: boolean } = {}): string {
+	return buildTmuxNavigation(target, options).command;
+}
+
+function runTmuxNavigation(nav: TmuxNavigation): boolean {
+	if (nav.mode !== "switch") return false;
+	const result = spawnSync("tmux", nav.args, { stdio: "ignore" });
+	return result.status === 0;
 }
 
 function docketMetaString(artifact: Artifact, key: string): string | undefined {
@@ -108,7 +158,7 @@ function loadResultSubject(result: LoadResult): string {
 
 function loadResultDetail(result: LoadResult): string {
 	const slot = result.slot;
-	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nattach: @${slot.slot}.<id>`;
+	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`;
 	const checkpoint = result.source.checkpoint;
 	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} bundle`;
 	return `${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`;
@@ -116,6 +166,15 @@ function loadResultDetail(result: LoadResult): string {
 
 export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 	const announceLoadResult = (result: LoadResult): void => deps.announce(loadResultSubject(result), loadResultDetail(result), "success");
+	const navigateTmux = async (target: string): Promise<void> => {
+		const nav = buildTmuxNavigation(target);
+		if (nav.mode === "switch" && runTmuxNavigation(nav)) {
+			deps.notify(`Switched tmux client: ${nav.command}`, "info");
+			return;
+		}
+		const copied = await deps.copyText(nav.command);
+		deps.notify(copied ? `Copied: ${nav.command}` : nav.command, copied ? "info" : "warning");
+	};
 
 	const showWorkerResult = async (ref: string, action: "show" | "use"): Promise<void> => {
 		const worker = await deps.workerStore.find(ref);
@@ -130,6 +189,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			return;
 		}
 		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
+		deps.markWorkerLoaded(worker);
 		const artifact = workerResultArtifact(worker, result.slot.artifacts);
 		if (!artifact) {
 			deps.notify(`No result yet for ${workerSourceLabel(worker)}`, "warning");
@@ -212,9 +272,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					}
 					target = worker.tmuxSession;
 				}
-				const command = buildAttachCommand(target);
-				const copied = await deps.copyText(command);
-				deps.notify(copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
+				await navigateTmux(target);
 				return;
 			}
 
@@ -283,13 +341,12 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					}
 					if (result.action === "load") {
 						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
+						deps.markWorkerLoaded(result.worker);
 						await deps.refreshWorkerDockWidget();
 						return;
 					}
 					if (result.action === "copyAttach") {
-						const command = buildAttachCommand(result.worker.tmuxSession);
-						const copied = await deps.copyText(command);
-						deps.notify(copied ? `Copied: ${command}` : command, copied ? "info" : "warning");
+						await navigateTmux(result.worker.tmuxSession);
 						return;
 					}
 					if (result.action === "tell") {
@@ -301,23 +358,26 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 						await deps.refreshWorkerDockWidget();
 						return;
 					}
-					if (result.action === "answers") {
-						const loadResult = await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker });
-						await deps.refreshWorkerDockWidget();
-						const answers = loadResult.slot.artifacts.filter((artifact) => artifact.kind === "response");
-						if (answers.length === 0) {
-							deps.notify(`No answers yet for ${workerSourceLabel(result.worker)}`, "info");
-							return;
-						}
-						await deps.showDocketBrowser(await deps.catalog(), answers, "answers");
-						return;
-					}
 				}
 			}
 
 			if (intent.kind === "load") {
 				if (intent.refKind === "worker") {
-					await deps.workerCommands.load(intent.ref);
+					if (!intent.ref) {
+						deps.notify("Usage: /docket load w<N>", "error");
+						return;
+					}
+					const worker = await deps.workerStore.find(intent.ref);
+					if (!worker) {
+						deps.notify("Docket worker not found", "error");
+						return;
+					}
+					try {
+						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker }));
+						deps.markWorkerLoaded(worker);
+					} catch (err) {
+						deps.notify(`Docket load failed: ${String(err)}`, "error");
+					}
 					await deps.refreshWorkerDockWidget();
 					return;
 				}
@@ -368,7 +428,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				try {
 					const result = await deps.loadedArtifacts.loadSource(source);
 					announceLoadResult(result);
-					if (source.kind === "worker") await deps.refreshWorkerDockWidget();
+					if (source.kind === "worker") {
+						deps.markWorkerLoaded(source.worker);
+						await deps.refreshWorkerDockWidget();
+					}
 				} catch (err) {
 					deps.notify(`Docket load failed: ${String(err)}`, "error");
 				}
@@ -379,12 +442,15 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				if (intent.targetKind === "all") {
 					const slots = deps.loadedArtifacts.slots().map((entry) => entry.slot);
 					for (const slot of slots) deps.loadedArtifacts.unloadSlot(slot);
+					deps.markAllWorkersUnloaded();
 					if (slots.length) deps.announce(`unloaded ${slots.length} slot${slots.length === 1 ? "" : "s"}`, slots.join(", "));
 					else deps.notify("Docket had no loaded slots", "info");
 					return;
 				}
 				if (intent.targetKind === "worker") {
+					const worker = await deps.workerStore.find(intent.target);
 					await deps.workerCommands.unload(intent.target);
+					if (worker) deps.markWorkerUnloaded(worker);
 					await deps.refreshWorkerDockWidget();
 					return;
 				}

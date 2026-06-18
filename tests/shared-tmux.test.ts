@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { isSharedSessionTarget, SHARED_TMUX_SESSION, workerWindowTarget } from "../extensions/worker-store.js";
-import { buildAttachCommand } from "../extensions/docket-command-router.js";
+import { buildAttachCommand, buildTmuxNavigation } from "../extensions/docket-command-router.js";
 import { parseDocketCommand, docketUsage } from "../extensions/docket-command-grammar.js";
 
 test("workerWindowTarget formats as <session>:w<index>", () => {
@@ -17,13 +17,13 @@ test("isSharedSessionTarget detects shared-session targets", () => {
 
 test("buildAttachCommand emits select-window form for shared targets", () => {
 	const target = workerWindowTarget(2);
-	const cmd = buildAttachCommand(target);
+	const cmd = buildAttachCommand(target, { insideTmux: false });
 	assert.match(cmd, new RegExp(`tmux attach -t ${SHARED_TMUX_SESSION}`));
 	assert.match(cmd, /select-window -t w2/);
 });
 
 test("buildAttachCommand falls back to plain attach for legacy targets", () => {
-	const cmd = buildAttachCommand("docket-worker-legacy");
+	const cmd = buildAttachCommand("docket-worker-legacy", { insideTmux: false });
 	assert.equal(cmd, "tmux attach -t docket-worker-legacy");
 });
 
@@ -41,6 +41,18 @@ test("parseDocketCommand recognizes attach with and without worker", () => {
 	assert.equal(w.intent.kind, "attach");
 	if (w.intent.kind !== "attach") return;
 	assert.equal(w.intent.worker, "w2");
+});
+
+test("buildTmuxNavigation switches clients when already inside tmux", () => {
+	const nav = buildTmuxNavigation(workerWindowTarget(2), { insideTmux: true });
+	assert.equal(nav.mode, "switch");
+	assert.equal(nav.command, `tmux switch-client -t ${SHARED_TMUX_SESSION}:w2`);
+	assert.deepEqual(nav.args, ["switch-client", "-t", `${SHARED_TMUX_SESSION}:w2`]);
+});
+
+test("buildTmuxNavigation switches to shared session without worker", () => {
+	const nav = buildTmuxNavigation(`${SHARED_TMUX_SESSION}:`, { insideTmux: true });
+	assert.equal(nav.command, `tmux switch-client -t ${SHARED_TMUX_SESSION}`);
 });
 
 test("docketUsage mentions attach in primary view", () => {

@@ -189,8 +189,8 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	if (!options.verbose) return chip;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
-	if (state === "ready_open_todos") return `${chip} ready · open todos ${workerTodoSummary(worker) ?? ""}`.trim();
-	if (state === "ready") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "ready") ?? workerTodoSummary(worker) ?? "ready")}`;
+	if (state === "ready_open_todos") return `${chip} ready · progress ${workerTodoSummary(worker) ?? ""}`.trim();
+	if (state === "ready") return `${chip} ${truncateWorkerStatus(worker.summary ?? workerTodoSummary(worker) ?? workerStatusText(worker, "ready"))}`;
 	if (state === "stale") return `${chip} stale`;
 	if (state === "empty") return `${chip} done`;
 	return `${chip} ${truncateWorkerStatus(workerTodoSummary(worker) ?? workerDisplayName(worker, 28))}`;
@@ -207,7 +207,7 @@ export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number
 	return [
 		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
 		kindLine,
-		todos ? `todos:  ${todos}` : undefined,
+		todos ? `progress: ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
 		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,
 		`inbox:  /docket`,
@@ -336,7 +336,7 @@ export function workerTodoBoardLines(worker: WorkerStatus, options: { includeHea
 	const maxItems = options.maxItems ?? todos.length;
 	const maxText = options.maxText ?? 72;
 	const shown = todos.slice(0, maxItems);
-	const lines = options.includeHeader ? [`Todos (${progress.completed}/${progress.total})`] : [];
+	const lines = options.includeHeader ? [`Progress (${progress.completed}/${progress.total})`] : [];
 	for (let i = 0; i < shown.length; i++) {
 		const todo = shown[i]!;
 		const branch = i === shown.length - 1 && shown.length === todos.length ? "└" : "├";
@@ -420,10 +420,10 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	if (worker.state === "needs_input") return "needs_input";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
-	if (worker.state === "ready") return workerHasOpenTodos(worker) ? "ready_open_todos" : "ready";
+	if (worker.state === "ready") return "ready";
 	if (worker.state === "ended") {
 		if ((worker.artifactCount ?? 0) === 0) return "empty";
-		return workerHasOpenTodos(worker) ? "ready_open_todos" : "ready";
+		return "ready";
 	}
 	const ageMs = now - Date.parse(worker.updatedAt);
 	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
@@ -553,7 +553,7 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 	const title = state === "needs_input"
 		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
 		: ready
-			? `${label} ${state === "ready_open_todos" ? `ready · open todos ${openTodos}/${progress.total}` : "ready"}${text ? `: ${text}` : ""}`
+			? `${label} ${state === "ready_open_todos" ? `ready · progress ${progress.completed}/${progress.total}` : "ready"}${text ? `: ${text}` : ""}`
 			: `${label} failed${text ? `: ${text}` : ""}`;
 	return {
 		id: "status",

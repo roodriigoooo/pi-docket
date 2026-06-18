@@ -2,10 +2,18 @@
 
 ## Unreleased
 
+## 0.5.1
+
+- **attach switches inside tmux**: `/docket attach [w<N>]` now uses `tmux switch-client -t docket-workers[:wN]` when Pi is already running inside tmux. Outside tmux it still copies the equivalent attach command.
+- **loaded worker state**: `/docket load w<N>` marks a ready worker as `loaded` in the dock so it stops demanding review attention without recording an accept verdict.
+- **progress board semantics**: `docket_todos` remains the worker progress tool, but `docket_done` is authoritative. Stale progress no longer creates a `ready/open todos` attention state.
+- **worker overlap radar**: Docket detects workers editing the same path, surfaces `overlap w<N>: <path>` hints, and asks for confirmation before promoting an overlapping change set.
+- **command surface cleanup**: `workers` remains the fleet/operator dashboard; `answers` remains an advanced response lens. An unreachable dashboard answers action was removed.
 - **worker pre-flight briefs**: `task.md` now starts with kind, workspace, decision rights, and plan-gate policy so workers know their authority before they act.
 - **plan-gated patcher**: worker kinds can set `plan_gate: true` and `decision_rights`. The bundled `patcher` now does read-only discovery first, then asks through `docket_wait` before its first edit or mutating command.
-- **passive worker warnings**: the dock shows `silent Nm` when a running worker has no recent tool/todo event and `waiting Nm` when a parent question ages. No auto-kill, no auto-respawn.
+- **passive worker warnings**: the dock shows `silent Nm` when a running worker has no recent tool/progress event and `waiting Nm` when a parent question ages. No auto-kill, no auto-respawn.
 - **tmux docs**: README now spells out the tmux API boundary: shared session spawn, literal reply, paste-buffer multiline tell, capture-pane peek, dead-pane harvest, optional `pipe-pane`, and status-line HUD.
+- **release notes**: see [docs/releases/0.5.1.md](docs/releases/0.5.1.md).
 
 ## 0.5.0
 

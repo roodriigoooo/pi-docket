@@ -11,7 +11,7 @@ Primary subcommands:
 - `/docket` — open decision docket.
 - `/docket spawn [--fresh] [--as <kind>] <task>` — launch explicit worker in `docket-workers` tmux session.
 - `/docket tell w<N> [text]` — send parent input to worker.
-- `/docket attach [w<N>]` — copy tmux attach command.
+- `/docket attach [w<N>]` — switch to worker tmux session when already in tmux; otherwise copy attach command.
 - `/docket save [--once] [--summarize] [note]` — save selected evidence as bundle and label current Pi tree leaf.
 - `/docket load [id|last|w<N>]` — mount bundle or worker artifacts at zero model-context cost.
 
@@ -23,7 +23,7 @@ Removed public aliases from the old Trail era are intentional: no `/trail`, no `
 
 Every worker is one window in a single tmux session named `docket-workers`. Parent → worker stdin uses `tmux send-keys -l` so user text is literal and does not trigger tmux keybindings.
 
-Workers emit append-only NDJSON events to `workers/<id>/events.ndjson`. The parent watches the worker root with `fs.watch`, reads status/artifact files with mtime caching, and renders the dock without polling idle workers.
+Workers emit append-only NDJSON events to `workers/<id>/events.ndjson`. The parent watches the worker root with `fs.watch`, reads status/artifact files with mtime caching, and renders the dock without polling idle workers. `docket_todos` is a progress board, not a completion gate; `docket_done` is authoritative.
 
 ## Worker protocol
 
@@ -41,6 +41,6 @@ Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prom
 
 `/docket save` writes a deterministic orientation markdown file plus `<id>.artifacts.json`. It preserves evidence; it does not move the Pi session.
 
-`/docket load` mounts bundle or worker artifacts into the current Docket navigator. Artifacts cost zero model-context tokens until attached with `/docket ref` or `/docket inject-full`.
+`/docket load` mounts bundle or worker artifacts into the current Docket navigator. Artifacts cost zero model-context tokens until attached with `/docket ref` or `/docket inject-full`. Loading a worker marks it `loaded` in the dock without recording an accept verdict.
 
 Use Pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for session topology.

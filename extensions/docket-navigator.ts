@@ -301,7 +301,7 @@ function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): s
 	if (status === "needs_input") return "needs reply";
 	if (status === "failed") return "failed";
 	if (status === "ready") return isWorkerChangeSet(artifact) ? "change set" : "ready";
-	if (status === "ready_open_todos") return "ready · open todos";
+	if (status === "ready_open_todos") return "ready · progress";
 	if (status === "stale") return "stale";
 	if (artifact.kind === "error") return "error";
 	if (isFailedCommandArtifact(artifact)) return "failed";

@@ -46,18 +46,20 @@ test("Worker Activity keeps all workers visible as compact rows", () => {
 	const rows = workerActivityRows([active, ready, readyOpen], new Map([["ready-open", [answer]]]), { now: 0 });
 	const lines = workerActivityStackLines(rows).map((line) => line.text);
 
-	assert.deepEqual(rows.map((row) => row.label), ["w2", "w3", "w1"]);
-	assert.equal(rows[0]?.stateLabel, "ready/open todos");
-	assert.equal(rows[0]?.outputLabel, "3 recs · no files · 1/2 todos");
-	assert.equal(rows[0]?.actionHint, "press l to load");
-	assert.equal(workerActivityTotals(rows).readyOpenTodos, 1);
-	assert.match(lines.join("\n"), /w2\(\^_\?\) · ready\/open todos · todos 1\/2 · inspect worker flow · 3 recs · no files · 1\/2 todos · press l to load/);
+	assert.deepEqual(rows.map((row) => row.label), ["w3", "w2", "w1"]);
+	const w2 = rows.find((row) => row.label === "w2")!;
+	assert.equal(w2.stateLabel, "ready");
+	assert.equal(w2.outputLabel, "3 recs · no files · 1/2 progress");
+	assert.equal(w2.actionHint, "press l to load");
+	assert.equal(workerActivityTotals(rows).readyOpenTodos, 0);
+	assert.equal(workerActivityTotals(rows).ready, 2);
+	assert.match(lines.join("\n"), /w2\(\^_\^\) · ready · progress 1\/2 · inspect worker flow · 3 recs · no files · 1\/2 progress · press l to load/);
 	assert.match(lines.join("\n"), /w3\(\^_\^\) · ready · inspect worker flow · summary only · press l to load/);
 	assert.match(lines.join("\n"), /w1 · active · inspect worker flow · working · working/);
 	assert.doesNotMatch(lines.join("\n"), /├|└|said:|also tracking/);
 });
 
-test("Worker Activity result column standardizes to recs · files · todos", () => {
+test("Worker Activity result column standardizes to recs · files · progress", () => {
 	const fileEdit: Artifact = { id: "f1", displayId: "f1", ref: "file:1", kind: "file", title: "src/auth.ts", subtitle: "", body: "+", timestamp: 1, meta: { tool: "edit", diff: "+ line" } };
 	const fileRead: Artifact = { id: "f2", displayId: "f2", ref: "file:2", kind: "file", title: "README.md", subtitle: "", body: "", timestamp: 2, meta: { tool: "read" } };
 	const cmd: Artifact = { id: "c1", displayId: "c1", ref: "cmd:1", kind: "command", title: "npm test", subtitle: "", body: "", timestamp: 3 };
@@ -67,13 +69,13 @@ test("Worker Activity result column standardizes to recs · files · todos", () 
 
 	assert.equal(row.recommendations, 3);
 	assert.equal(row.filesChanged, 1);
-	assert.equal(row.outputLabel, "3 recs · 1 file changed · 1/1 todos");
+	assert.equal(row.outputLabel, "3 recs · 1 file changed · 1/1 progress");
 	assert.equal(row.evidence.reads, 1);
 	assert.equal(row.evidence.commands, 1);
 	assert.equal(row.evidence.edits, 1);
 
 	const preview = workerActivityPreviewLines(row).join("\n");
-	assert.match(preview, /1 reads · 1 commands · 1 edits · 1\/1 todos/);
+	assert.match(preview, /1 reads · 1 commands · 1 edits · 1\/1 progress/);
 	assert.match(preview, /Files: src\/auth\.ts, README\.md/);
 });
 
@@ -86,8 +88,21 @@ test("Worker Activity preview shows Outcome, Evidence, Next actions", () => {
 	assert.match(preview, /^Outcome$/m);
 	assert.match(preview, /Reviewed README and found improvements/);
 	assert.match(preview, /^Evidence$/m);
-	assert.match(preview, /1\/1 todos/);
+	assert.match(preview, /1\/1 progress/);
 	assert.match(preview, /^Next actions$/m);
 	assert.match(preview, /\[Enter Review answer\] \[p Peek\] \[l Load summary\] \[c Continue\] \[a Attach tmux\] \[x Dismiss\]/);
 	assert.doesNotMatch(preview, /├|└|Actions:/);
+});
+
+test("Worker Activity marks explicitly loaded ready workers as non-attention", () => {
+	const ready = worker({ state: "ready", summary: "Reviewed README and found improvements" });
+	const rows = workerActivityRows([ready], new Map([[ready.id, [answer]]]), { now: 0, loadedWorkerIds: new Set([ready.id]) });
+	const totals = workerActivityTotals(rows);
+	const preview = workerActivityPreviewLines(rows[0]!).join("\n");
+
+	assert.equal(rows[0]?.loaded, true);
+	assert.equal(rows[0]?.outputLabel, "loaded");
+	assert.equal(totals.loaded, 1);
+	assert.equal(totals.ready, 0);
+	assert.match(preview, /\[Enter Details\] \[p Peek\] \[l Loaded\]/);
 });

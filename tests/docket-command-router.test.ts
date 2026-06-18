@@ -99,6 +99,9 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		showWorkerResult: () => { calls.push("showWorkerResult"); },
 		clearWorkerResult: () => { calls.push("clearWorkerResult"); return false; },
 		markArtifactDone: (item) => { calls.push(`done:${item.ref}`); },
+		markWorkerLoaded: (item) => { calls.push(`loaded:${item.id}`); },
+		markWorkerUnloaded: (item) => { calls.push(`unloaded:${item.id}`); },
+		markAllWorkersUnloaded: () => { calls.push("unloaded:all"); },
 		promoteWorkerChangeSet: async (item) => { calls.push(`promote:${item.ref}`); return true; },
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
 		createCheckpoint: async () => { calls.push("createCheckpoint"); },
@@ -135,6 +138,12 @@ test("Docket Command Router loads default checkpoint without UI", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "load", refKind: "checkpoint" });
 	assert.deepEqual(calls, ["loadSource:checkpoint", "announce:loaded c1 · 1 artifact"]);
+});
+
+test("Docket Command Router marks explicit worker load", async () => {
+	const { calls, router } = harness();
+	await router.handle({ kind: "load", refKind: "worker", ref: "w2", includeConsumed: false });
+	assert.deepEqual(calls, ["loadSource:worker", "announce:loaded w2 · 1 artifact", "loaded:worker-1", "refreshWorkers"]);
 });
 
 test("Docket Command Router routes worker delete and refreshes dock", async () => {

@@ -71,12 +71,12 @@ test("dockEventSubLine picks latest non-protocol tool when thinking", () => {
 	assert.equal(dockEventSubLine(events, "thinking"), "tool: read src/foo.ts");
 });
 
-test("dockEventSubLine falls back to todo progress when no tool events", () => {
+test("dockEventSubLine falls back to progress when no tool events", () => {
 	const events: WorkerEvent[] = [
 		event("state", { state: "active" }),
 		event("todo", { total: 5, completed: 2, inProgress: 1 }),
 	];
-	assert.equal(dockEventSubLine(events, "thinking"), "todos 2/5 · 1 active");
+	assert.equal(dockEventSubLine(events, "thinking"), "progress 2/5 · 1 active");
 });
 
 test("dockEventSubLine returns undefined for non-thinking states", () => {
@@ -109,6 +109,15 @@ test("dockRowsForRender attaches eventLine for thinking rows when events present
 	const rows = workerActivityRows([thinking], new Map(), { now });
 	const dock = dockRowsForRender(rows, { eventsByWorker: events, now });
 	assert.equal(dock[0]!.eventLine, "tool: edit src/bar.ts");
+});
+
+test("dockRowsForRender dims loaded ready workers", () => {
+	const ready = makeWorker({ id: "a", index: 1, state: "ready" });
+	const rows = workerActivityRows([ready], new Map(), { loadedWorkerIds: new Set([ready.id]) });
+	const dock = dockRowsForRender(rows);
+
+	assert.equal(dock[0]!.attention, false);
+	assert.equal(dock[0]!.chip, "loaded");
 });
 
 test("dockRowsForRender exposes kindLabel for non-default kinds", () => {

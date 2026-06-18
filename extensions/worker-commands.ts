@@ -103,7 +103,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
 		deps.announce(
 			`loaded ${result.slot.slot} · ${result.slot.artifacts.length} artifact${result.slot.artifacts.length === 1 ? "" : "s"}`,
-			`${workerSummaryName(worker)}\nattach: @${result.slot.slot}.<id>`,
+			`${workerSummaryName(worker)}\nrefs: @${result.slot.slot}.<id>`,
 			"success",
 		);
 	};

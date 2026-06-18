@@ -55,7 +55,7 @@ export function docketUsage(advanced = false): string {
 		"/docket verdict [w<N>]          resolve the top worker decision (accept/reject/chat)",
 		"/docket spawn [--fresh] [--as <kind>] <task>  start explicit background worker",
 		"/docket tell w<N> [text]        reply to a worker",
-		"/docket attach [w<N>]           print/copy tmux attach command for the shared worker session",
+		"/docket attach [w<N>]           switch to worker tmux when inside tmux; otherwise copy attach command",
 		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
 		"/docket load [id|last|w<N>]     mount bundle/worker artifacts without model tokens",
 		"",

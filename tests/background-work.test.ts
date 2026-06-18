@@ -24,7 +24,7 @@ function question(text: string): WorkerQuestion {
 test("Background Work derives attention states", () => {
 	assert.equal(deriveWorkerState(worker({ state: "needs_input" })), "needs_input");
 	assert.equal(deriveWorkerState(worker({ state: "error" })), "failed");
-	assert.equal(deriveWorkerState(worker({ state: "ready", todos: normalizeWorkerTodos([{ text: "Report findings", state: "pending" }]) })), "ready_open_todos");
+	assert.equal(deriveWorkerState(worker({ state: "ready", todos: normalizeWorkerTodos([{ text: "Report findings", state: "pending" }]) })), "ready");
 	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 2 })), "ready");
 	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 0 })), "empty");
 	assert.equal(deriveWorkerState(worker({ state: "active", updatedAt: "2026-01-01T00:00:00.000Z" }), Date.parse("2026-01-01T00:02:00.000Z")), "stale");
@@ -95,7 +95,7 @@ test("Background Work formats compact activity chips", () => {
 	assert.equal(workerActivityChip(worker({ state: "needs_input", questions: [question("One?"), question("Two?")] })), "w2(?_?)");
 	assert.equal(workerActivityChip(worker({ state: "ready" }), { verbose: true }), "w2(^_^) ready");
 	assert.equal(workerActivityChip(worker({ state: "ready", summary: "mascot viable" }), { verbose: true }), "w2(^_^) mascot viable");
-	assert.equal(workerActivityChip(worker({ state: "ready", todos: normalizeWorkerTodos([{ text: "Report findings", state: "pending" }]) }), { verbose: true }), "w2(^_?) ready · open todos 0/1 · Report findings");
+	assert.equal(workerActivityChip(worker({ state: "ready", todos: normalizeWorkerTodos([{ text: "Report findings", state: "pending" }]) }), { verbose: true }), "w2(^_^) 0/1 · Report findings");
 	assert.equal(workerMascotFrame(worker({ state: "failed" })), "(x_x)");
 	assert.deepEqual(workerMascotLines(worker({ state: "ready" })).slice(0, 2), ["  (^_^)", "  /|\\  w2"]);
 });
@@ -154,7 +154,7 @@ test("Background Work normalizes and summarizes worker todos", () => {
 	assert.equal(workerHasOpenTodos(status), true);
 	assert.equal(workerTodoSummary(status), "1/3 · Render board in dock (wiring UI)");
 	assert.deepEqual(workerTodoBoardLines(status, { includeHeader: true }), [
-		"Todos (1/3)",
+		"Progress (1/3)",
 		"├ ✓ Read current worker flow",
 		"├ ◐ Render board in dock (wiring UI)",
 		"└ ○ Document protocol",
@@ -171,18 +171,19 @@ test("Background Work projects worker status into synthetic Review Artifact", ()
 	assert.equal(artifact?.meta?.workerStatus, "needs_input");
 	assert.equal(artifact?.meta?.todoCount, 1);
 	assert.match(artifact?.title ?? "", /w2 needs input/);
-	assert.match(artifact?.body ?? "", /progress:\nTodos \(0\/1\)/);
+	assert.match(artifact?.body ?? "", /progress:\nProgress \(0\/1\)/);
 });
 
-test("Background Work marks ready workers with open todos separately", () => {
+test("Background Work treats ready progress as informational", () => {
 	const status = worker({ state: "ready", summary: "done", todos: normalizeWorkerTodos([{ text: "Inspect", state: "completed" }, { text: "Report", state: "pending" }]) });
 	const artifact = workerStatusArtifact(status);
 
-	assert.equal(deriveWorkerState(status), "ready_open_todos");
-	assert.equal(artifact?.meta?.workerStatus, "ready_open_todos");
+	assert.equal(deriveWorkerState(status), "ready");
+	assert.equal(artifact?.meta?.workerStatus, "ready");
 	assert.equal(artifact?.meta?.todoOpenCount, 1);
-	assert.match(artifact?.title ?? "", /ready · open todos 1\/2/);
-	assert.match(artifact?.body ?? "", /state: ready_open_todos/);
+	assert.match(artifact?.title ?? "", /w2 ready: done/);
+	assert.match(artifact?.body ?? "", /state: ready/);
+	assert.match(artifact?.body ?? "", /Progress \(1\/2\)/);
 });
 
 test("Background Work namespaces worker artifacts by worker label", () => {

@@ -27,7 +27,7 @@ export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [
 		body && body !== review.summary ? `answer:\n${body}` : undefined,
 		questions ? `needs input:\n${questions}` : undefined,
 		todos.length ? `progress:\n${todos.join("\n")}` : undefined,
-		`actions: /docket use ${review.label} · /docket ask ${review.label}`,
+		`actions: /docket load ${review.label} · /docket tell ${review.label}`,
 		result && !review.resultIsStatus ? `ref: @${result.displayId}` : undefined,
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -57,11 +57,11 @@ export type WorkerResultReport = {
 
 function workerProgressLine(worker: WorkerStatus): string {
 	const todos = worker.todos ?? [];
-	if (todos.length === 0) return "no todos";
+	if (todos.length === 0) return "no progress";
 	const completed = todos.filter((t) => t.state === "completed").length;
 	const open = todos.length - completed;
-	if (open === 0) return `${completed}/${todos.length} todos complete`;
-	return `${completed}/${todos.length} todos · ${open} open`;
+	if (open === 0) return `${completed}/${todos.length} progress complete`;
+	return `${completed}/${todos.length} progress · ${open} open`;
 }
 
 function workerChangesLine(artifacts: Artifact[]): string {
@@ -102,7 +102,7 @@ export function workerResultReport(worker: WorkerStatus, artifacts: Artifact[] =
 		: primarySection === "failure"
 			? worker.lastError ?? review.summary
 			: review.summary;
-	const stateLabel = review.state === "ready_open_todos" ? "ready · open todos" : review.state === "needs_input" ? "needs reply" : review.state;
+	const stateLabel = review.state === "ready_open_todos" ? "ready · progress" : review.state === "needs_input" ? "needs reply" : review.state;
 	const nextActions: Array<{ key: string; label: string }> = [];
 	if (review.state === "needs_input") nextActions.push({ key: "c", label: "Reply" });
 	else if (review.state === "failed") nextActions.push({ key: "Enter", label: "Inspect failure" });
