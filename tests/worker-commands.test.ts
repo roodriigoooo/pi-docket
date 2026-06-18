@@ -79,7 +79,7 @@ function deps(workers = [worker]) {
 	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded };
 }
 
-test("Worker Commands spawns worker with cwd and parent session", async () => {
+test("Worker Commands spawns worker with cwd and fresh session by default", async () => {
 	const { commands, spawned, announcements } = deps();
 
 	await commands.spawn("inspect bug");
@@ -87,7 +87,7 @@ test("Worker Commands spawns worker with cwd and parent session", async () => {
 	assert.equal(spawned.length, 1);
 	assert.equal(spawned[0]?.task, "inspect bug");
 	assert.equal(spawned[0]?.cwd, "/repo");
-	assert.equal(spawned[0]?.parentSession, "/session.json");
+	assert.equal(spawned[0]?.parentSession, undefined); // default kind = fresh (no parent seed)
 	assert.equal(spawned[0]?.kind, "default");
 	assert.equal(spawned[0]?.worktree, true); // default kind has defaultWorktree=true
 	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
@@ -104,7 +104,30 @@ test("Worker Commands passes worktree spawn option", async () => {
 
 	assert.equal(spawned[0]?.task, "edit bug");
 	assert.equal(spawned[0]?.worktree, true);
+	assert.equal(spawned[0]?.parentSession, undefined); // default kind = fresh
+});
+
+test("Worker Commands --seed forces parent session seeding", async () => {
+	const { commands, spawned } = deps();
+
+	await commands.spawn("edit bug", { seed: true });
+
 	assert.equal(spawned[0]?.parentSession, "/session.json");
+});
+
+test("Worker Commands --fresh overrides a full kind", async () => {
+	const setup = deps();
+	const reg = createWorkerKindRegistry();
+	reg.register({ name: "seedy", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
+	const commands = createWorkerCommands({
+		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, captureTerminal: () => false, notify: () => {}, announce: () => {}, emitText: () => {},
+	});
+
+	await commands.spawn("x", { as: "seedy" });
+	assert.equal(setup.spawned[0]?.parentSession, "/session.json");
+
+	await commands.spawn("y", { as: "seedy", fresh: true });
+	assert.equal(setup.spawned[1]?.parentSession, undefined);
 });
 
 test("Worker Commands passes kind decision-rights and plan gate into spawn", async () => {

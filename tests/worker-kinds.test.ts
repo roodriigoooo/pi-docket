@@ -50,6 +50,15 @@ test("parseWorkerKindMarkdown normalises name to safe slug", () => {
 	assert.equal(kind?.name, "my-helper-bot");
 });
 
+test("default kind and unset parent_seed default to fresh (none)", () => {
+	const reg = createWorkerKindRegistry();
+	assert.equal(reg.get(undefined).parentSeedPolicy, "none");
+	const unset = parseWorkerKindMarkdown("---\nname: probe\n---\n", "user");
+	assert.equal(unset?.parentSeedPolicy, "none");
+	const explicitFull = parseWorkerKindMarkdown("---\nname: probe\nparent_seed: full\n---\n", "user");
+	assert.equal(explicitFull?.parentSeedPolicy, "full");
+});
+
 test("registry returns the builtin default for unknown names", () => {
 	const reg = createWorkerKindRegistry();
 	assert.equal(reg.get(undefined).name, DEFAULT_KIND_NAME);

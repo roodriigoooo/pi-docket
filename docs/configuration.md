@@ -75,6 +75,7 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 | `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
 | `worker.autoRespawn` | false | reserved; today `/docket respawn` is manual. |
 | `worker.autoEmbedSummary` | false | when true, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session as a worker reaches `ready`. Default false keeps the parent JSONL fully manual — the inbox card still surfaces the ready worker; nothing is auto-injected. |
+| `worker.parentSeedPolicy` | `none` | default parent-seed policy for `/docket spawn` when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers with no parent context; `"full"` seeds the worker with the parent session JSONL (reuses prompt cache prefix but inherits full parent context). Use as a project-wide escape hatch when most workers need parent context. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
 
 `worker.guardrailsPath` replaces `extensions/worker-guardrails.md` from this package. Use it to pin team-wide policies into every worker.
@@ -98,7 +99,7 @@ Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/`
 | `thinking` | `medium` | `off` / `low` / `medium` / `high` |
 | `read_only` | false | when true, appendix tells the worker not to edit files |
 | `default_worktree` | true | spawn this kind in a detached worktree by default |
-| `parent_seed` | `full` | `full` to seed parent session JSONL; `none` for a fresh worker |
+| `parent_seed` | `none` | `none` for a fresh worker; `full` to seed the worker session with the parent's JSONL (reuses prompt cache prefix but inherits full parent context — use only when the worker needs it). Per-spawn `--seed`/`--fresh` flags override. |
 | `max_artifacts` | — | soft cap surfaced as guidance; not enforced |
 | `max_duration_sec` | — | soft cap surfaced as guidance |
 | `can_spawn` | none | comma-list of kinds this worker may dispatch via `docket_spawn_child` |

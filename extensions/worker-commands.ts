@@ -19,13 +19,15 @@ type WorkerCommandsDeps = {
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
 	captureTerminal(): boolean;
+	/** Default parent-seed policy when neither the spawn flags nor the kind set one. */
+	parentSeedPolicy?(): "full" | "none";
 	notify(text: string, level: NotifyLevel): void;
 	announce(subject: string, detail?: string, kind?: DocketMessageKind, docket?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
 export type WorkerCommands = {
-	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean }): Promise<WorkerStatus | undefined>;
+	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean }): Promise<WorkerStatus | undefined>;
 	tell(ref: string, text: string): Promise<void>;
 	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
@@ -109,7 +111,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	};
 
 	return {
-		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean } = {}): Promise<WorkerStatus | undefined> {
+		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean } = {}): Promise<WorkerStatus | undefined> {
 			try {
 				const requestedName = options.as?.trim();
 				if (requestedName) {
@@ -128,14 +130,21 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					}
 				}
 				const git = readGitSnapshot(deps.cwd);
-				const seedSource = options.fresh === true || kind.parentSeedPolicy === "none" ? undefined : deps.parentSession;
+				// Precedence: --fresh forces a blank session; --seed forces parent seeding;
+			// otherwise the kind's parentSeedPolicy decides (default kind = none).
+			const wantSeed = options.fresh !== true && (options.seed === true || kind.parentSeedPolicy === "full" || deps.parentSeedPolicy?.() === "full");
+			const seedSource = wantSeed ? deps.parentSession : undefined;
+			// When seeding is wanted but no parent session is available (e.g. worker-side
+			// spawns with no parent JSONL), degrade to an explicit fresh launch rather
+			// than silently passing an undefined parentSession.
+			const freshLaunch = !wantSeed || !seedSource;
 				const useWorktree = options.worktree === true || kind.defaultWorktree;
 				const worker = await deps.store.spawn({
 					task,
 					cwd: deps.cwd,
 					...(seedSource ? { parentSession: seedSource } : {}),
 					worktree: useWorktree,
-					...(options.fresh ? { fresh: true } : {}),
+					...(freshLaunch ? { fresh: true } : {}),
 					...(git ? { git } : {}),
 					kind: kind.name,
 					readOnly: kind.readOnly,

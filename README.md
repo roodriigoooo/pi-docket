@@ -70,6 +70,8 @@ Start a background worker:
 /docket spawn --as scout find the auth middleware and list risky paths
 ```
 
+Workers start fresh by default (no parent context bloat). Add `--seed` to inherit the parent session.
+
 Review worker result:
 
 ```text
@@ -185,7 +187,7 @@ This is the main rule: keep evidence available, not automatically injected.
 | Command | Use |
 |---|---|
 | `/docket` | Open review inbox. |
-| `/docket spawn <task>` | Start a background worker. |
+| `/docket spawn <task>` | Start a background worker (fresh session by default; `--seed` inherits parent). |
 | `/docket workers` | See worker dashboard. |
 | `/docket verdict [w<N>]` | Resolve a worker decision. |
 | `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |

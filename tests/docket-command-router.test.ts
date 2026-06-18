@@ -158,6 +158,32 @@ test("Docket Command Router handles artifact ref chips through context", async (
 	assert.deepEqual(calls, ["done:command:1", "toggleChip", "refreshChips", "announceChip"]);
 });
 
+test("Docket Command Router routes spawn intent and forwards seed/fresh flags to worker spawn", async () => {
+	const captured: Array<{ task: string; fresh?: boolean; seed?: boolean; as?: string }> = [];
+	const spawnCommands: WorkerCommands = {
+		spawn: async (task, options) => { captured.push({ task, fresh: options?.fresh, seed: options?.seed, as: options?.as }); return undefined; },
+		tell: async () => {},
+		list: async () => {},
+		listKinds: async () => {},
+		delete: async () => {},
+		respawn: async () => {},
+		load: async () => {},
+		unload: async () => {},
+		completionCandidates: async () => [],
+	};
+	const { router } = harness({ workerCommands: spawnCommands });
+
+	await router.handle({ kind: "spawn", task: "map callers", seed: true });
+	await router.handle({ kind: "spawn", task: "recon", fresh: true, as: "scout" });
+	await router.handle({ kind: "spawn", task: "plain" });
+
+	assert.deepEqual(captured, [
+		{ task: "map callers", seed: true, fresh: false, as: undefined },
+		{ task: "recon", fresh: true, seed: false, as: "scout" },
+		{ task: "plain", fresh: false, seed: false, as: undefined },
+	]);
+});
+
 test("Docket Command Router verdict accept approves waiting worker without loading artifacts", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
 	const { calls, router } = harness({

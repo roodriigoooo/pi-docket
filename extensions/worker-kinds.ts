@@ -47,7 +47,7 @@ const BUILTIN_DEFAULT: WorkerKind = {
 	description: "General-purpose Docket worker; matches pre-kinds behavior.",
 	readOnly: false,
 	defaultWorktree: true,
-	parentSeedPolicy: "full",
+	parentSeedPolicy: "none",
 	canSpawn: [],
 	layout: "single",
 	source: "builtin",
@@ -74,12 +74,15 @@ function asInt(value: unknown): number | undefined {
 	return Number.isFinite(parsed) ? Math.floor(parsed) : undefined;
 }
 
+// Default is "none" (fresh worker) so spawned workers do not inherit the parent
+// session's full context. Kinds that want parent-context seeding opt in with
+// `parent_seed: full`; callers can force it per-spawn with `--seed`.
 function asSeedPolicy(value: unknown): WorkerParentSeedPolicy {
 	if (typeof value === "string") {
 		const lowered = value.trim().toLowerCase();
-		if (lowered === "none" || lowered === "fresh") return "none";
+		if (lowered === "full" || lowered === "seed" || lowered === "seeded") return "full";
 	}
-	return "full";
+	return "none";
 }
 
 function asLayout(value: unknown): WorkerLayout {

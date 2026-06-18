@@ -22,6 +22,8 @@ export type DocketWorkerConfig = {
 	captureTerminal?: boolean;
 	/** When true, /docket offers to re-window orphan workers when the shared tmux session is gone but their dirs are still live. */
 	autoRespawn?: boolean;
+	/** Default parent-seed policy when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers; `"full"` seeds the worker with the parent session JSONL. */
+	parentSeedPolicy?: "full" | "none";
 	/** When true, a short summary message is appended to the parent session when a worker reaches ready. Default false: nothing enters the parent JSONL automatically — the inbox card still surfaces the ready worker. */
 	autoEmbedSummary?: boolean;
 };
@@ -58,6 +60,7 @@ export const DEFAULT_CONFIG: DocketConfig = {
 		captureTerminal: false,
 		autoRespawn: false,
 		autoEmbedSummary: false,
+		parentSeedPolicy: "none",
 	},
 };
 
