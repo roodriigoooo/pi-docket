@@ -74,6 +74,10 @@ test("workerVerdictPayload summarizes deterministic change set metadata", () => 
 	assert.equal(payload.deletions, 3);
 	assert.equal(payload.hunkCount, 3);
 	assert.deepEqual(payload.lines, ["src/auth.ts   +8/-2", "test/auth.test.ts   +4/-1"]);
+	assert.deepEqual(payload.fileEntries, [
+		{ path: "src/auth.ts", additions: 8, deletions: 2 },
+		{ path: "test/auth.test.ts", additions: 4, deletions: 1 },
+	]);
 });
 
 test("workerVerdictPayload surfaces worker intent alongside a change set", () => {
