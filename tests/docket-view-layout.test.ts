@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DocketView } from "../extensions/docket.js";
+import { DocketView, renderArtifactPreviewLines } from "../extensions/docket.js";
 import type { Artifact } from "../extensions/types.js";
 
 const theme = {
@@ -10,6 +10,12 @@ const theme = {
 };
 
 const tui = { requestRender() {} };
+
+const colorTheme = {
+	fg: (token: string, s: string) => `<${token}:${s}>`,
+	bg: (_token: string, s: string) => s,
+	bold: (s: string) => s,
+};
 
 function errorArtifact(id: string, title: string, body: string): Artifact {
 	return { id, displayId: id, ref: `error:${id}`, kind: "error", title, subtitle: "", body, timestamp: Date.now() };
@@ -37,4 +43,47 @@ test("Docket review stays single-column under the breakpoint", () => {
 
 	assert.doesNotMatch(narrow, /│/, "no vertical divider in stacked layout");
 	assert.match(narrow, /TypeError: boom in auth\.ts/);
+});
+
+test("artifact preview colors file diff stats and diff body", () => {
+	const artifact: Artifact = {
+		id: "f1",
+		displayId: "f1",
+		ref: "file:1:0",
+		kind: "file",
+		title: "edit src/app.ts",
+		subtitle: "1 edit(s) · +1/-1",
+		body: "",
+		meta: { tool: "edit", diff: "@@ -1 +1 @@\n-old\n+new" },
+	};
+	const rendered = renderArtifactPreviewLines(colorTheme, artifact, ["meta: 1 edit(s) · +1/-1", "--- diff ---", "@@ -1 +1 @@", "-old", "+new"]);
+
+	assert.deepEqual(rendered, [
+		"<dim:meta: 1 edit(s) · ><toolDiffAdded:+1><dim:/><toolDiffRemoved:-1>",
+		"<muted:--- diff --->",
+		"<accent:@@ -1 +1 @@>",
+		"<toolDiffRemoved:-old>",
+		"<toolDiffAdded:+new>",
+	]);
+});
+
+test("artifact preview colors worker change-set stats before patch body", () => {
+	const artifact: Artifact = {
+		id: "changes",
+		displayId: "changes",
+		ref: "worker-changes:1:0",
+		kind: "response",
+		title: "w1 change set",
+		subtitle: "task",
+		body: "",
+		meta: { workerChangeSet: true },
+	};
+	const rendered = renderArtifactPreviewLines(colorTheme, artifact, ["src/app.ts +2/-1", "Patch:", "diff --git a/src/app.ts b/src/app.ts", "+new"]);
+
+	assert.deepEqual(rendered, [
+		"<dim:src/app.ts ><toolDiffAdded:+2><dim:/><toolDiffRemoved:-1>",
+		"<muted:Patch:>",
+		"<muted:diff --git a/src/app.ts b/src/app.ts>",
+		"<toolDiffAdded:+new>",
+	]);
 });

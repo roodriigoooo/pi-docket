@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.1
+
+- **diff-colored artifact previews**: Docket now treats file diffs and worker change sets as diff-like everywhere they are previewed or inspected. Inline `+N/-M` stats stay green/red in review cards, selected-item previews render patch bodies with Pi's diff palette, and opening a diff-like artifact uses the colored text viewer instead of plain text.
+- **release notes**: see [docs/releases/0.6.1.md](docs/releases/0.6.1.md).
+
 ## 0.6.0
 
 - **workers spawn fresh by default**: `/docket spawn` no longer forks the parent session JSONL into the worker, so spawned workers do not inherit the parent's full conversation and context bloat. `--seed` opts back into parent-session seeding (reuses the prompt cache prefix); `--fresh` is now explicit and overrides a kind with `parent_seed: full`. The bundled `default` kind and any kind without `parent_seed` now start fresh. Kinds that need parent context should set `parent_seed: full`. **Breaking** for users who relied on inherited parent context — add `worker.parentSeedPolicy: "full"` in `docket.json`, pass `--seed`, or set `parent_seed: full` on the kind.

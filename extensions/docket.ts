@@ -305,7 +305,7 @@ async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: Artifac
 		}
 	}
 	const inspected = await catalog.inspect(artifact);
-	await showTextViewer(ctx, inspected.title, inspected.text);
+	await showTextViewer(ctx, inspected.title, inspected.text, artifactIsDiffLike(artifact) ? "diff" : undefined);
 }
 
 function relativeTime(timestamp?: number): string {
@@ -440,6 +440,50 @@ function artifactMeta(artifact: Artifact): Record<string, unknown> {
 function artifactHasDiff(artifact: Artifact): boolean {
 	const diff = artifactMeta(artifact).diff;
 	return typeof diff === "string" && diff.length > 0;
+}
+
+function artifactIsWorkerChangeSet(artifact: Artifact): boolean {
+	return artifactMeta(artifact).workerChangeSet === true;
+}
+
+function artifactIsDiffLike(artifact: Artifact): boolean {
+	return artifactHasDiff(artifact) || artifactIsWorkerChangeSet(artifact);
+}
+
+function colorInlineDiffStats(theme: any, line: string, base: (s: string) => string): string {
+	const stat = /\+(\d+)(\s*\/\s*)-(\d+)/g;
+	let out = "";
+	let last = 0;
+	let matched = false;
+	let match: RegExpExecArray | null;
+	while ((match = stat.exec(line)) !== null) {
+		matched = true;
+		const prefix = line.slice(last, match.index);
+		if (prefix) out += base(prefix);
+		out += coloredAdditions(theme, Number(match[1]));
+		out += base(match[2] ?? "/");
+		out += coloredDeletions(theme, Number(match[3]));
+		last = match.index + match[0].length;
+	}
+	if (!matched) return base(line);
+	if (last < line.length) out += base(line.slice(last));
+	return out;
+}
+
+export function renderArtifactPreviewLines(theme: any, artifact: Artifact, lines: string[]): string[] {
+	const isDiffLike = artifactIsDiffLike(artifact);
+	const dim = (s: string) => theme.fg("dim", s);
+	const muted = (s: string) => theme.fg("muted", s);
+	let inDiff = false;
+	return lines.map((line) => {
+		if (!isDiffLike) return dim(line);
+		if (line === "--- diff ---" || (artifactIsWorkerChangeSet(artifact) && line === "Patch:")) {
+			inDiff = true;
+			return muted(line);
+		}
+		if (inDiff) return renderGitDiffLine(line, theme);
+		return colorInlineDiffStats(theme, line, dim);
+	});
 }
 
 function bucketName(bucket: ReviewBucket | undefined, mode: NavigatorMode): string {
@@ -781,7 +825,7 @@ export class DocketView implements Component {
 		lines.push(truncateToWidth(`${this.theme.fg("text", this.theme.bold(item.headline))}${chip}`, width));
 		const changeLines = workerChangeSetLines(artifact);
 		if (changeLines.length > 0) {
-			for (const line of changeLines) lines.push(truncateToWidth(`  ${dim(line)}`, width));
+			for (const line of changeLines) lines.push(truncateToWidth(`  ${colorInlineDiffStats(this.theme, line, dim)}`, width));
 		} else {
 			const bullets = item.recommendations.slice(0, 3);
 			for (const bullet of bullets) {
@@ -808,10 +852,11 @@ export class DocketView implements Component {
 	private selectionPaneLines(item: ReviewItem, width: number, maxRows: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): string[] {
 		const lines = this.inboxCardLines(item, width, accent, dim, muted);
 		const preview = this.fullText(item.artifact).split("\n");
+		const renderedPreview = renderArtifactPreviewLines(this.theme, item.artifact, preview);
 		const room = Math.max(0, maxRows - lines.length - 1);
 		if (preview.length > 0 && room > 2) {
 			lines.push(dim("·".repeat(Math.max(4, Math.min(width, 40)))));
-			for (const line of preview.slice(0, room - 1)) lines.push(truncateToWidth(dim(line), width));
+			for (const line of renderedPreview.slice(0, room - 1)) lines.push(truncateToWidth(line, width));
 			if (preview.length > room - 1) lines.push(muted(`… ${preview.length - (room - 1)} more lines · Enter to inspect`));
 		}
 		return lines.slice(0, maxRows);
@@ -957,8 +1002,8 @@ export class DocketView implements Component {
 			const artifact = view.selectedItem.artifact;
 			this.container.addChild(new DynamicBorder(dividerBorder));
 			this.container.addChild(new Text(`${accent("preview")} ${muted(artifact.ref)}`, 1, 0));
-			const detail = this.fullText(artifact).split("\n").slice(0, 14);
-			for (const line of detail) this.container.addChild(new Text(truncateToWidth(dim(line), listWidth - 2), 1, 0));
+			const detail = renderArtifactPreviewLines(this.theme, artifact, this.fullText(artifact).split("\n").slice(0, 14));
+			for (const line of detail) this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
