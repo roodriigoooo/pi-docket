@@ -87,7 +87,7 @@ test("Worker Activity reviewed workers render dim, count separately, and stay ra
 
 test("Worker Activity renders compact progress bars", () => {
 	assert.equal(workerProgressBar({ total: 5, completed: 3, inProgress: 1, pending: 1 }), "▰▰▰▱▱");
-	assert.equal(workerProgressCompact({ total: 5, completed: 3, inProgress: 1, pending: 1 }), "3/5 ▰▰▰▱▱");
+	assert.equal(workerProgressCompact({ total: 5, completed: 3, inProgress: 1, pending: 1 }), "▰▰▰▱▱");
 	assert.equal(workerProgressBar({ total: 10, completed: 1, inProgress: 0, pending: 9 }), "▰▱▱▱▱");
 	assert.equal(workerProgressBar({ total: 10, completed: 9, inProgress: 0, pending: 1 }), "▰▰▰▰▱");
 	assert.equal(workerProgressBar({ total: 0, completed: 0, inProgress: 0, pending: 0 }), undefined);
@@ -110,7 +110,7 @@ test("Worker Activity result column standardizes to recs · files · progress", 
 
 	const preview = workerActivityPreviewLines(row).join("\n");
 	assert.match(preview, /^Progress$/m);
-	assert.match(preview, /1\/1 ▰▰▰▰▰/);
+	assert.match(preview, /▰▰▰▰▰/);
 	assert.match(preview, /1 reads · 1 commands · 1 edits/);
 	assert.match(preview, /Files: src\/auth\.ts, README\.md/);
 });
@@ -122,7 +122,7 @@ test("Worker Activity preview shows Progress, Outcome, Evidence, Next actions", 
 	const preview = workerActivityPreviewLines(row).join("\n");
 
 	assert.match(preview, /^Progress$/m);
-	assert.match(preview, /1\/1 ▰▰▰▰▰/);
+	assert.match(preview, /▰▰▰▰▰/);
 	assert.match(preview, /└ ✓ Inspect/);
 	assert.match(preview, /^Outcome$/m);
 	assert.match(preview, /Reviewed README and found improvements/);

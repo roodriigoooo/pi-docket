@@ -4,7 +4,7 @@ import { parseDocketCommand, docketUsage } from "../extensions/docket-command-gr
 
 test("docketUsage primary view exposes core commands and a hint", () => {
 	const text = docketUsage();
-	for (const cmd of ["/docket ", "ctrl+shift+d", "/docket spawn", "/docket tell w<N>", "/docket save", "/docket load"]) {
+	for (const cmd of ["/docket ", "f8", "/docket spawn", "/docket tell w<N>", "/docket save", "/docket load"]) {
 		assert.equal(text.includes(cmd), true, `missing ${cmd}`);
 	}
 	assert.match(text, /more: \/docket help advanced/);

@@ -52,7 +52,7 @@ export function docketUsage(advanced = false): string {
 	const primary = [
 		"Docket · core loop:",
 		"/docket                         open decision docket",
-		"ctrl+shift+d                    open worker progress lens",
+		"f8                              open worker progress lens",
 		"/docket spawn [--seed|--fresh] [--as <kind>] <task>  start explicit background worker",
 		"/docket tell w<N> [text]        reply to a worker",
 		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",

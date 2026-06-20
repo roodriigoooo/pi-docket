@@ -154,10 +154,7 @@ export function workerProgressBar(progress: WorkerProgress, width = 5): string |
 }
 
 export function workerProgressCompact(progress: WorkerProgress, width = 5): string | undefined {
-	const bar = workerProgressBar(progress, width);
-	if (!bar) return undefined;
-	const completed = Math.max(0, Math.min(Number.isFinite(progress.completed) ? progress.completed : 0, progress.total));
-	return `${completed}/${progress.total} ${bar}`;
+	return workerProgressBar(progress, width);
 }
 
 function workerProgressDetail(progress: WorkerProgress): string | undefined {

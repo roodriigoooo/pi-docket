@@ -75,7 +75,7 @@ Workers start fresh by default (no parent context bloat). Add `--seed` to inheri
 Open worker progress:
 
 ```text
-ctrl+shift+d
+f8
 ```
 
 Worker decisions are available from the progress lens, or directly with `/docket verdict` when you want the advanced command.
@@ -115,7 +115,7 @@ Each worker is a normal pi process in one window inside one shared tmux session:
 tmux attach -t docket-workers
 ```
 
-You do not need to know tmux to use Docket. Most of the time, use `ctrl+shift+d` for the worker progress lens and `/docket tell` to reply.
+You do not need to know tmux to use Docket. Most of the time, use `f8` for the worker progress lens and `/docket tell` to reply.
 
 tmux gives Docket three useful things:
 
@@ -129,7 +129,7 @@ If you run `/docket attach [w<N>]` from inside tmux, Docket deliberately uses `t
 
 ### Peek without attaching
 
-Press `ctrl+shift+d` (or run `/docket workers`), then press `p` on a worker row. Docket shows a bounded live tmux pane snapshot inside the dashboard. It is read-only, does not focus the pane, and costs zero model context.
+Press `f8` (or run `/docket workers`), then press `p` on a worker row. Docket shows a bounded live tmux pane snapshot inside the dashboard. It is read-only, does not focus the pane, and costs zero model context.
 
 Use peek to answer quick questions:
 
@@ -184,7 +184,7 @@ This is the main rule: keep evidence available, not automatically injected.
 |---|---|
 | `/docket` | Open review inbox. |
 | `/docket spawn <task>` | Start a background worker (fresh session by default; `--seed` inherits parent). |
-| `ctrl+shift+d` | Open worker progress lens. |
+| `f8` | Open worker progress lens. |
 | `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
 | `/docket save [note]` | Save selected evidence as a bundle. |
 | `/docket load [id|last|w<N>]` | Mount bundle or worker artifacts. |

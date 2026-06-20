@@ -99,7 +99,7 @@ Primary commands:
 | Command | Purpose |
 |---|---|
 | `/docket` | Open decision docket. |
-| `ctrl+shift+d` | Open worker progress lens. |
+| `f8` | Open worker progress lens. |
 | `/docket spawn [--seed\|--fresh] [--as <kind>] <task>` | Start explicit background worker. Default: fresh session (no parent context). `--seed` inherits parent session; `--fresh` is explicit (overrides a `full` kind). |
 | `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
 | `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
@@ -147,7 +147,7 @@ The preview is read from disk. Browsing costs zero model context; attaching stil
 
 ## The verdict card
 
-`ctrl+shift+d` opens the worker progress lens. `Enter` opens a verdict for ready or waiting workers, and details for everything else. The advanced `/docket verdict` command opens one decision directly. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
+`f8` opens the worker progress lens. `Enter` opens a verdict for ready or waiting workers, and details for everything else. The advanced `/docket verdict` command opens one decision directly. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
 
 ```text
  docket · verdict                                        Esc close

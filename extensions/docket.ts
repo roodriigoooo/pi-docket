@@ -3107,7 +3107,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 
 	// One-key path to the worker progress lens. It stays zero-context until the user
 	// explicitly loads evidence or replies to a worker.
-	pi.registerShortcut?.("ctrl+shift+d", {
+	pi.registerShortcut?.("f8", {
 		description: "Docket: open worker progress lens",
 		handler: (ctx) => runDocketCommand("workers", ctx as ExtensionCommandContext),
 	});
