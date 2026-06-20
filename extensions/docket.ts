@@ -1546,23 +1546,25 @@ function renderDockRows(theme: any, rows: DockRow[], width: number, now: number)
 	return out;
 }
 
-const WORKER_PREVIEW_HEADINGS = new Set(["Kind", "Outcome", "Evidence", "Next actions"]);
+const WORKER_PREVIEW_HEADINGS = new Set(["Kind", "Progress", "Outcome", "Evidence", "Next actions"]);
 
-function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number): void {
+function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number, showProgressDetail = false): void {
 	if (!row) return;
 	const dim = (s: string) => theme.fg("dim", s);
 	const muted = (s: string) => theme.fg("muted", s);
 	const accent = (s: string) => theme.fg("accent", s);
 	container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
-	const lines = workerActivityPreviewLines(row);
+	const lines = workerActivityPreviewLines(row, { showProgressDetail });
+	let activeHeading = "";
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i]!;
 		if (WORKER_PREVIEW_HEADINGS.has(raw)) {
+			activeHeading = raw;
 			container.addChild(new Text(truncateToWidth(accent(theme.bold(raw)), width), 1, 0));
 			continue;
 		}
 		const isActionRow = raw.startsWith("[");
-		const maxLines = isActionRow ? 1 : 4;
+		const maxLines = isActionRow ? 1 : activeHeading === "Progress" ? (showProgressDetail ? 14 : 5) : 4;
 		for (const line of wrapPlainText(raw, width, maxLines)) {
 			if (isActionRow) {
 				const colored = line.replace(/\[([^\]]+)\]/g, (_, inner: string, offset: number) => offset === 0 ? accent(`[${inner}]`) : muted(`[${inner}]`));
@@ -1632,10 +1634,11 @@ function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<
 const PEEK_VISIBLE_LINES = 24;
 const PEEK_REFRESH_MS = 1000;
 
-class DocketParallelWorkView implements Component {
+export class DocketParallelWorkView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private showHelp = false;
+	private showProgressDetail = false;
 	private peek = false;
 	private peekTimer?: NodeJS.Timeout;
 	private cachedWidth?: number;
@@ -1686,6 +1689,15 @@ class DocketParallelWorkView implements Component {
 		return this.activityRows()[this.selected]?.worker;
 	}
 
+	private selectedRow(): WorkerActivityRow | undefined {
+		return this.activityRows()[this.selected];
+	}
+
+	private enterAction(row: WorkerActivityRow): ParallelWorkAction {
+		if (row.state === "needs_input" || row.state === "ready" || row.state === "ready_open_todos") return { action: "verdict", worker: row.worker };
+		return { action: "details", worker: row.worker };
+	}
+
 	private selectNext(): void {
 		const max = Math.max(0, this.activityRows().length - 1);
 		this.selected = Math.min(max, this.selected + 1);
@@ -1710,10 +1722,11 @@ class DocketParallelWorkView implements Component {
 		else if (data === "G") this.selected = max;
 		else if (matchesKey(data, Key.tab)) this.selectNext();
 		else if (data === "?") this.showHelp = !this.showHelp;
+		else if (data === "t") this.showProgressDetail = !this.showProgressDetail;
 		else if (data === "p") this.setPeek(!this.peek);
 		else if (matchesKey(data, Key.enter)) {
-			const worker = this.selectedWorker();
-			if (worker) this.finish({ action: "details", worker });
+			const row = this.selectedRow();
+			if (row) this.finish(this.enterAction(row));
 			return;
 		}
 		else if (data === "l") {
@@ -1821,13 +1834,14 @@ class DocketParallelWorkView implements Component {
 				this.container.addChild(new Text(renderedRows[i]!, 1, 0));
 			}
 			if (this.peek && selectedRow) this.renderPeek(selectedRow, listWidth - 2);
-			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
+			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2, this.showProgressDetail);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Enter details · p peek · c continue · a attach · l load · ? more · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("↑↓ move · Enter verdict/details · p peek · t todos · c continue · a attach · l load · ? more · Esc close"), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Progress")} ${dim("t toggles full todo board; completion comes only from docket_done")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Advanced")} ${dim("Tab switch worker · x stop worker (destructive)")}`, 1, 0));
 		}
@@ -3091,11 +3105,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 		handler: (args, ctx) => runDocketCommand(args, ctx),
 	});
 
-	// One-key path to the highest-attention decision. Only ever fires the verdict intent,
-	// which uses base-context members (ui/store/sessionManager) — safe to upcast the shortcut ctx.
+	// One-key path to the worker progress lens. It stays zero-context until the user
+	// explicitly loads evidence or replies to a worker.
 	pi.registerShortcut?.("ctrl+shift+d", {
-		description: "Docket: resolve the top worker decision",
-		handler: (ctx) => runDocketCommand("verdict", ctx as ExtensionCommandContext),
+		description: "Docket: open worker progress lens",
+		handler: (ctx) => runDocketCommand("workers", ctx as ExtensionCommandContext),
 	});
 
 	async function runDocketCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {

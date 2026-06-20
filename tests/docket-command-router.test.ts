@@ -197,6 +197,21 @@ test("Docket Command Router verdict accept approves waiting worker without loadi
 	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
 });
 
+test("Docket Command Router routes worker dashboard verdict actions", async () => {
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
+	const { calls, router } = harness({
+		hasUI: true,
+		workerStore: { find: async () => waiting, list: async () => [waiting], readArtifacts: async () => [] } as unknown as WorkerStore,
+		readWorkersWithArtifacts: async () => ({ workers: [waiting], artifactsByWorker: new Map([[waiting.id, []]]) }),
+		showParallelWorkDashboard: async () => ({ action: "verdict", worker: waiting }),
+		showVerdict: async () => ({ verb: "accept", worker: waiting }),
+	});
+
+	await router.handle({ kind: "workers" });
+
+	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
+});
+
 test("Docket Command Router records a verdict in the decision ledger", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
 	const { decisions, router } = harness({

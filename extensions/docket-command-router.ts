@@ -25,7 +25,7 @@ export type ParallelWorkEntry = {
 
 export type ParallelWorkAction =
 	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "details" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
+	| { action: "details" | "verdict" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
 export type LoadPickerMode = "checkpoint" | "worker";
@@ -338,6 +338,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					if (result.action === "details") {
 						await deps.showText(`${workerSourceLabel(result.worker)} · details`, workerResultText(result.worker, artifactsByWorker.get(result.worker.id) ?? []));
 						continue;
+					}
+					if (result.action === "verdict") {
+						await runWorkerVerdict(deps, result.worker);
+						return;
 					}
 					if (result.action === "load") {
 						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));

@@ -76,7 +76,7 @@ test("dockEventSubLine falls back to progress when no tool events", () => {
 		event("state", { state: "active" }),
 		event("todo", { total: 5, completed: 2, inProgress: 1 }),
 	];
-	assert.equal(dockEventSubLine(events, "thinking"), "progress 2/5 · 1 active");
+	assert.equal(dockEventSubLine(events, "thinking"), "progress 2/5 ▰▰▱▱▱ · 1 active");
 });
 
 test("dockEventSubLine returns undefined for non-thinking states", () => {
@@ -109,6 +109,19 @@ test("dockRowsForRender attaches eventLine for thinking rows when events present
 	const rows = workerActivityRows([thinking], new Map(), { now });
 	const dock = dockRowsForRender(rows, { eventsByWorker: events, now });
 	assert.equal(dock[0]!.eventLine, "tool: edit src/bar.ts");
+});
+
+test("dockRowsForRender uses compact progress bars", () => {
+	const worker = makeWorker({ id: "progress", index: 7, state: "active" });
+	worker.todos = [
+		{ id: "a", text: "read", state: "completed" },
+		{ id: "b", text: "patch", state: "completed" },
+		{ id: "c", text: "test", state: "pending" },
+		{ id: "d", text: "docs", state: "pending" },
+	];
+	const rows = workerActivityRows([worker]);
+	const dock = dockRowsForRender(rows);
+	assert.equal(dock[0]!.progressLabel, "2/4 ▰▰▱▱▱");
 });
 
 test("dockRowsForRender dims loaded ready workers", () => {

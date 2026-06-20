@@ -99,10 +99,9 @@ Primary commands:
 | Command | Purpose |
 |---|---|
 | `/docket` | Open decision docket. |
-| `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
+| `ctrl+shift+d` | Open worker progress lens. |
 | `/docket spawn [--seed\|--fresh] [--as <kind>] <task>` | Start explicit background worker. Default: fresh session (no parent context). `--seed` inherits parent session; `--fresh` is explicit (overrides a `full` kind). |
 | `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
-| `/docket attach [w<N>]` | Switch to the shared worker tmux session when already in tmux; otherwise copy attach command. |
 | `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
 | `/docket load [id\|last\|w<N>]` | Mount bundle or worker artifacts at zero model-context cost. |
 
@@ -110,7 +109,9 @@ Advanced commands:
 
 | Command | Purpose |
 |---|---|
-| `/docket workers [--all]` | Worker dashboard. |
+| `/docket workers [--all]` | Worker progress lens/dashboard. |
+| `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
+| `/docket attach [w<N>]` | Switch to the shared worker tmux session when already in tmux; otherwise copy attach command. |
 | `/docket kinds` | List worker kinds. |
 | `/docket respawn <w<N>\|all>` | Relaunch worker whose tmux window died. |
 | `/docket answers [query]` | Browse assistant/worker answers. |
@@ -146,7 +147,7 @@ The preview is read from disk. Browsing costs zero model context; attaching stil
 
 ## The verdict card
 
-`/docket verdict` (or `Enter` on a worker row) opens one decision at a time. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
+`ctrl+shift+d` opens the worker progress lens. `Enter` opens a verdict for ready or waiting workers, and details for everything else. The advanced `/docket verdict` command opens one decision directly. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
 
 ```text
  docket · verdict                                        Esc close
