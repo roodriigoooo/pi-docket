@@ -61,6 +61,7 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment } from "./worker-diff-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
@@ -1154,7 +1155,7 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
 }
 
-class DocketVerdictView implements Component {
+export class DocketVerdictView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private cachedWidth?: number;
@@ -1210,6 +1211,10 @@ class DocketVerdictView implements Component {
 		else if (data === "G") this.selected = max;
 		else if (data === "d" && this.changeSet) {
 			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
+			return;
+		}
+		else if (data === "h" && this.changeSet) {
+			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
 		else if (matchesKey(data, Key.enter)) {
@@ -1314,7 +1319,7 @@ class DocketVerdictView implements Component {
 			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
-		const diffHint = this.changeSet ? "d full diff · " : "";
+		const diffHint = this.changeSet ? "d full diff · h Hunk review · " : "";
 		const pickHint = optionCount > 0 ? `1-${optionCount} pick · ` : "";
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
 		this.container.addChild(new Text(dim(`${diffHint}${pickHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
@@ -1333,6 +1338,24 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
+}
+
+async function chooseHunkReviewAction(ctx: ExtensionCommandContext, worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction> {
+	if (!ctx.hasUI) return "ignore";
+	const preview = comments.slice(0, 3).map((comment, index) => `${index + 1}. ${formatHunkCommentLocation(comment)} — ${comment.summary}`).join("\n");
+	const overflow = comments.length > 3 ? `\n… ${comments.length - 3} more` : "";
+	if (preview) ctx.ui.notify(`${preview}${overflow}`, "info");
+	const choice = await ctx.ui.select(
+		`Hunk comments for ${workerSourceLabel(worker)}`,
+		[
+			`Send to ${workerSourceLabel(worker)} for revision`,
+			"Copy comments to clipboard",
+			"Ignore for now",
+		],
+	).catch(() => undefined);
+	if (choice?.startsWith("Send")) return "send";
+	if (choice?.startsWith("Copy")) return "copy";
+	return "ignore";
 }
 
 function compactTokens(tokens: number): string {
@@ -3207,6 +3230,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
+				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunk(worker, changeSet),
+				chooseHunkReviewAction: (worker, comments) => chooseHunkReviewAction(ctx, worker, comments),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
 				createCheckpoint: async (options) => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);

@@ -147,7 +147,7 @@ The preview is read from disk. Browsing costs zero model context; attaching stil
 
 ## The verdict card
 
-`f8` opens the worker progress lens. `Enter` opens a verdict for ready or waiting workers, and details for everything else. The advanced `/docket verdict` command opens one decision directly. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
+`f8` opens the worker progress lens. `Enter` opens a verdict for ready or waiting workers, and details for everything else. The advanced `/docket verdict` command opens one decision directly. It reads only status fields and the deterministic change set, never the transcript, so it costs zero model context. Resolve it from the verb menu, press `h` to review a worker patch in Hunk, or, when a blocked worker proposes options, press `1`..`9` to pick one directly:
 
 ```text
  docket · verdict                                        Esc close
@@ -164,6 +164,8 @@ The preview is read from disk. Browsing costs zero model context; attaching stil
 ```
 
 `Reject & stop` is set apart with a blank line and warning color because it kills the worker and removes its workspace, and it always asks for confirmation. Number keys only reach the offered options, never the destructive verb.
+
+When a ready worker has a change set, `h` opens Hunk with the exact patch Docket would promote. Docket does not auto-promote or inject context after Hunk exits. If Hunk comments exist, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is missing, Docket shows `npm i -g hunkdiff` and opens the built-in full diff viewer.
 
 ## Decision ledger
 

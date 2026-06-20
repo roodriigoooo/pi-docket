@@ -78,7 +78,7 @@ Open worker progress:
 f8
 ```
 
-Worker decisions are available from the progress lens, or directly with `/docket verdict` when you want the advanced command.
+Worker decisions are available from the progress lens, or directly with `/docket verdict` when you want the advanced command. On a worker change set, press `h` in the verdict card to review the exact patch in Hunk; any Hunk comments can be sent back to the worker for revision.
 
 Save useful evidence:
 
@@ -142,6 +142,10 @@ Use attach only when you need full terminal control:
 ```text
 /docket attach w2
 ```
+
+### Review worker diffs in Hunk
+
+When a ready worker has a patch, the verdict card offers `h Hunk review`. Docket pipes the exact worker patch into `hunk patch -`, lets Hunk own the visual diff review, then returns to Docket. If you leave Hunk comments, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is not installed, Docket shows the install hint and opens its built-in full diff viewer.
 
 ## Workers
 
