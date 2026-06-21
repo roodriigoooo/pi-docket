@@ -61,7 +61,10 @@ test("Docket review stays single-column under the breakpoint", () => {
 });
 
 test("Docket worker progress lens renders compact and expanded todo boards", () => {
+	const fresh = new Date().toISOString();
 	const w = worker({
+		createdAt: fresh,
+		updatedAt: fresh,
 		todos: normalizeWorkerTodos([
 			{ text: "Map dock state", state: "completed" },
 			{ text: "Add progress bar", state: "completed" },
@@ -73,6 +76,10 @@ test("Docket worker progress lens renders compact and expanded todo boards", () 
 	const view = new DocketParallelWorkView(tui as never, theme, [w], new Map(), () => {}, false, new Set());
 	const compact = view.render(120).join("\n");
 
+	assert.match(compact, /work\s+status\s+task\s+result/);
+	assert.doesNotMatch(compact, /result\s+action/);
+	assert.match(compact, /▌ w1\s+\[active\]/);
+	assert.match(compact, /Enter verdict\/details · p peek · l load · c continue · a attach · x dismiss · \? more · Esc/);
 	assert.match(compact, /progress 2\/5/);
 	assert.match(compact, /Progress/);
 	assert.match(compact, /▰▰▱▱▱ · 1 active · 2 pending/);

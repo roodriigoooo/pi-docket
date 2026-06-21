@@ -440,16 +440,13 @@ function previewEvidenceBody(row: WorkerActivityRow): string {
 }
 
 function previewNextActions(row: WorkerActivityRow): string {
-	const primary = row.state === "needs_input"
-		? "[Enter Verdict]"
-		: row.state === "failed"
-			? "[Enter Inspect failure]"
-			: row.state === "ready" || row.state === "ready_open_todos"
-				? row.loaded ? "[Enter Verdict]" : "[Enter Review answer]"
-				: "[Enter Open]";
-	const load = row.loaded ? "[l Loaded]" : "[l Load summary]";
-	const buttons = [primary, "[p Peek]", load, "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
-	return buttons.join(" ");
+	const primary = row.state === "failed"
+		? "Enter inspect"
+		: row.state === "starting" || row.state === "thinking"
+			? "Enter details"
+			: "Enter verdict";
+	const load = row.loaded ? "l loaded" : "l load";
+	return [primary, "p peek", load, "c continue", "a attach", "x dismiss"].join(" · ");
 }
 
 function previewProgressBody(row: WorkerActivityRow, options: WorkerActivityPreviewOptions): string | undefined {
@@ -463,7 +460,8 @@ function previewProgressBody(row: WorkerActivityRow, options: WorkerActivityPrev
 export function workerActivityPreviewLines(row: WorkerActivityRow, options: WorkerActivityPreviewOptions = {}): string[] {
 	const kindLabel = workerKindLabel(row.worker);
 	const progress = previewProgressBody(row, options);
-	const lines: string[] = [];
+	const task = row.worker.task?.trim() || row.taskLabel;
+	const lines: string[] = ["Task", task];
 	if (kindLabel) lines.push("Kind", kindLabel);
 	if (progress) lines.push("Progress", progress);
 	lines.push(

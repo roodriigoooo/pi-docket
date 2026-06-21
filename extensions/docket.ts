@@ -1562,34 +1562,80 @@ function fitColumn(text: string, width: number): string {
 	return padAnsi(truncateToWidth(text, width, ""), width);
 }
 
-function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false, options: { hideAction?: boolean } = {}): string {
-	const marker = selected ? "▸" : "●";
-	if (width < 92) {
-		const tail = options.hideAction ? row.outputLabel : `${row.outputLabel} · ${row.actionHint}`;
-		return truncateToWidth(`${marker} ${row.label} ${row.stateLabel} ${row.taskLabel} · ${tail}`, width, "");
-	}
-	const labelWidth = 4;
-	const statusWidth = 14;
-	const outputWidth = 32;
-	const actionWidth = options.hideAction ? 0 : row.actionHint.length;
-	const fixed = 2 + labelWidth + 2 + statusWidth + 2 + outputWidth + (options.hideAction ? 0 : 2);
-	const taskWidth = Math.max(14, Math.min(40, width - fixed - actionWidth));
-	const cells: string[] = [
-		marker,
-		fitColumn(row.label, labelWidth),
-		fitColumn(row.stateLabel, statusWidth),
-		fitColumn(row.taskLabel, taskWidth),
-		options.hideAction ? row.outputLabel : fitColumn(row.outputLabel, outputWidth),
-	];
-	if (!options.hideAction) cells.push(row.actionHint);
-	return truncateToWidth(cells.join("  "), width, "");
+type WorkerTableColumns = { label: number; status: number; task: number; result: number };
+
+function workerRowNeedsAction(row: WorkerActivityRow): boolean {
+	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return false;
+	return row.state === "needs_input" || row.state === "failed" || row.state === "ready" || row.state === "ready_open_todos";
 }
 
-function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number, options: { hideAction?: boolean } = {}): string[] {
+function workerStatusBadgeLabel(row: WorkerActivityRow): string {
+	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return "loaded";
+	if (row.state === "needs_input") return "needs input";
+	if (row.state === "ready_open_todos") return "ready";
+	if (row.state === "thinking" || row.state === "starting") return "active";
+	if (row.state === "empty") return "done";
+	return row.state.replace(/_/g, " ");
+}
+
+function workerStatusText(row: WorkerActivityRow): string {
+	return `[${workerStatusBadgeLabel(row)}]`;
+}
+
+function workerStatusBadge(theme: any, row: WorkerActivityRow, selected: boolean): string {
+	const badge = workerStatusText(row);
+	const styled = row.state === "failed"
+		? theme.fg("error", badge)
+		: workerRowNeedsAction(row)
+			? theme.fg("warning", badge)
+			: row.state === "ready" || row.state === "ready_open_todos"
+				? theme.fg("success", badge)
+				: selected ? theme.fg("text", badge) : theme.fg("muted", badge);
+	return selected ? theme.bold(styled) : styled;
+}
+
+function workerResultLabel(row: WorkerActivityRow): string {
+	return row.outputLabel.replace(/(\d+\/\d+) progress/g, "$1 todos");
+}
+
+function workerTableColumns(width: number): WorkerTableColumns {
+	const label = 5;
+	const status = 15;
+	const result = Math.max(22, Math.min(34, Math.floor(width * 0.26)));
+	const fixed = 1 + 4 + label + status + result;
+	return { label, status, result, task: Math.max(18, width - fixed) };
+}
+
+function workerActivityHeaderText(width: number): string {
+	if (width < 92) return truncateToWidth("  worker  status         task — result", width, "");
+	const cols = workerTableColumns(width);
+	return truncateToWidth(`  ${fitColumn("work", cols.label)} ${fitColumn("status", cols.status)} ${fitColumn("task", cols.task)} ${fitColumn("result", cols.result)}`, width, "");
+}
+
+function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
+	const rail = selected ? "▌" : " ";
+	if (width < 92) {
+		return truncateToWidth(`${rail} ${row.label} ${workerStatusText(row)} ${row.taskLabel} — ${workerResultLabel(row)}`, width, "");
+	}
+	const cols = workerTableColumns(width);
+	const cells = [
+		rail,
+		fitColumn(row.label, cols.label),
+		fitColumn(workerStatusText(row), cols.status),
+		fitColumn(row.taskLabel, cols.task),
+		fitColumn(workerResultLabel(row), cols.result),
+	];
+	return truncateToWidth(cells.join(" "), width, "");
+}
+
+function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number): string[] {
 	return rows.map((row, index) => {
-		const plain = workerActivityRowText(row, width, selectedIndex === index, options);
-		if (selectedIndex === index) return theme.bold(theme.fg("text", plain));
-		return workerStateColor(theme, row.state, plain);
+		const selected = selectedIndex === index;
+		const raw = workerActivityRowText(row, width, selected);
+		const badge = workerStatusText(row);
+		const colored = raw.replace(badge, workerStatusBadge(theme, row, selected));
+		const line = selected ? theme.fg("text", theme.bold(colored)) : workerStateColor(theme, row.state, colored);
+		return selected ? theme.bg("selectedBg", padAnsi(line, width)) : line;
 	});
 }
 
@@ -1627,13 +1673,13 @@ function renderDockRows(theme: any, rows: DockRow[], width: number, now: number)
 	return out;
 }
 
-const WORKER_PREVIEW_HEADINGS = new Set(["Kind", "Progress", "Outcome", "Evidence", "Next actions"]);
+const WORKER_PREVIEW_HEADINGS = new Set(["Task", "Kind", "Progress", "Outcome", "Evidence", "Next actions"]);
 
 function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number, showProgressDetail = false): void {
 	if (!row) return;
 	const dim = (s: string) => theme.fg("dim", s);
 	const muted = (s: string) => theme.fg("muted", s);
-	const accent = (s: string) => theme.fg("accent", s);
+	const warning = (s: string) => theme.fg("warning", s);
 	container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
 	const lines = workerActivityPreviewLines(row, { showProgressDetail });
 	let activeHeading = "";
@@ -1641,18 +1687,15 @@ function addWorkerActivityPreview(container: Container | Box, theme: any, row: W
 		const raw = lines[i]!;
 		if (WORKER_PREVIEW_HEADINGS.has(raw)) {
 			activeHeading = raw;
-			container.addChild(new Text(truncateToWidth(accent(theme.bold(raw)), width), 1, 0));
+			const heading = raw === "Next actions" && workerRowNeedsAction(row) ? warning(theme.bold(raw)) : muted(theme.bold(raw));
+			container.addChild(new Text(truncateToWidth(heading, width), 1, 0));
 			continue;
 		}
-		const isActionRow = raw.startsWith("[");
+		const isActionRow = activeHeading === "Next actions";
 		const maxLines = isActionRow ? 1 : activeHeading === "Progress" ? (showProgressDetail ? 14 : 5) : 4;
 		for (const line of wrapPlainText(raw, width, maxLines)) {
-			if (isActionRow) {
-				const colored = line.replace(/\[([^\]]+)\]/g, (_, inner: string, offset: number) => offset === 0 ? accent(`[${inner}]`) : muted(`[${inner}]`));
-				container.addChild(new Text(truncateToWidth(colored, width), 1, 0));
-			} else {
-				container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, width), 1, 0));
-			}
+			const colored = isActionRow && workerRowNeedsAction(row) ? warning(line) : dim(line);
+			container.addChild(new Text(truncateToWidth(`  ${colored}`, width), 1, 0));
 		}
 	}
 }
@@ -1884,7 +1927,7 @@ export class DocketParallelWorkView implements Component {
 			workerCounts.active ? `${workerCounts.active} active` : undefined,
 		].filter(Boolean).join(" · ") || plural(this.workers.length, "worker");
 
-		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket"))} ${dim("·")} ${accent("workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
+		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket"))} ${dim("· workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
 		const todoStatus = workerCounts.todos ? ` · progress ${workerCounts.completedTodos}/${workerCounts.todos}` : "";
 		const artifactStatus = entries.length ? ` · ${entries.length} items` : "";
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)}${dim(artifactStatus)}`, innerWidth - 2), 1, 0));
@@ -1900,7 +1943,7 @@ export class DocketParallelWorkView implements Component {
 			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
 			this.container.addChild(new Spacer(1));
 		} else {
-			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 14)}  ${fitColumn("task", Math.max(14, Math.min(40, listWidth - 64)))}  ${fitColumn("result", 32)}  action`), 1, 0));
+			this.container.addChild(new Text(dim(workerActivityHeaderText(listWidth - 2)), 1, 0));
 			const renderedRows = renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected);
 			let previousProject: string | undefined;
 			for (let i = 0; i < activityRows.length; i++) {
@@ -1919,12 +1962,12 @@ export class DocketParallelWorkView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Enter verdict/details · p peek · t todos · c continue · a attach · l load · ? more · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("Enter verdict/details · p peek · l load · c continue · a attach · x dismiss · ? more · Esc"), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Progress")} ${dim("t toggles full todo board; completion comes only from docket_done")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("Tab switch worker · x stop worker (destructive)")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("↑↓ move · t todos · Tab switch worker · x stop worker (destructive)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);

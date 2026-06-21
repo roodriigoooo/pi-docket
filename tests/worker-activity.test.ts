@@ -115,12 +115,14 @@ test("Worker Activity result column standardizes to recs · files · progress", 
 	assert.match(preview, /Files: src\/auth\.ts, README\.md/);
 });
 
-test("Worker Activity preview shows Progress, Outcome, Evidence, Next actions", () => {
+test("Worker Activity preview shows Task, Progress, Outcome, Evidence, Next actions", () => {
 	const row = workerActivityRows([
 		worker({ state: "ready", summary: "Reviewed README and found improvements", todos: normalizeWorkerTodos([{ text: "Inspect", state: "completed" }]) }),
 	], new Map([["worker-1", [answer]]]), { now: 0 })[0]!;
 	const preview = workerActivityPreviewLines(row).join("\n");
 
+	assert.match(preview, /^Task$/m);
+	assert.match(preview, /inspect worker flow/);
 	assert.match(preview, /^Progress$/m);
 	assert.match(preview, /▰▰▰▰▰/);
 	assert.match(preview, /└ ✓ Inspect/);
@@ -129,7 +131,7 @@ test("Worker Activity preview shows Progress, Outcome, Evidence, Next actions", 
 	assert.match(preview, /^Evidence$/m);
 	assert.doesNotMatch(preview, /1\/1 progress/);
 	assert.match(preview, /^Next actions$/m);
-	assert.match(preview, /\[Enter Review answer\] \[p Peek\] \[l Load summary\] \[c Continue\] \[a Attach tmux\] \[x Dismiss\]/);
+	assert.match(preview, /Enter verdict · p peek · l load · c continue · a attach · x dismiss/);
 	assert.doesNotMatch(preview, /Actions:/);
 });
 
@@ -143,5 +145,5 @@ test("Worker Activity marks explicitly loaded ready workers as non-attention", (
 	assert.equal(rows[0]?.outputLabel, "loaded");
 	assert.equal(totals.loaded, 1);
 	assert.equal(totals.ready, 0);
-	assert.match(preview, /\[Enter Verdict\] \[p Peek\] \[l Loaded\]/);
+	assert.match(preview, /Enter verdict · p peek · l loaded/);
 });
