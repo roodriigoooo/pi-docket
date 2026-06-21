@@ -70,25 +70,30 @@ test("formatHunkReviewComments creates revision message for worker", () => {
 	assert.match(text, /Please address these comments/);
 });
 
-test("launchHunkPatch pipes patch into hunk and harvests comments", async () => {
+test("launchHunkPatch writes patch file for Hunk and harvests comments", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "docket-hunk-"));
 	const capture = join(dir, "patch.txt");
+	const argCapture = join(dir, "patch-arg.txt");
 	const comments = join(dir, "comments.json");
 	const hunk = join(dir, "hunk");
 	await writeFile(comments, JSON.stringify([{ filePath: "src/app.ts", newLine: 8, summary: "review note" }]), "utf8");
 	await writeFile(hunk, `#!/bin/sh
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "patch" ]; then cat > "$HUNK_CAPTURE"; exit 0; fi
+if [ "$1" = "patch" ]; then printf '%s' "$2" > "$HUNK_ARG_CAPTURE"; cat "$2" > "$HUNK_CAPTURE"; exit 0; fi
 if [ "$1" = "session" ]; then cat "$HUNK_COMMENTS"; exit 0; fi
 exit 1
 `, "utf8");
 	chmodSync(hunk, 0o755);
 
-	const result = await launchHunkPatch(dir, patch, { hunkBin: hunk, env: { ...process.env, HUNK_CAPTURE: capture, HUNK_COMMENTS: comments } });
+	const result = await launchHunkPatch(dir, patch, { hunkBin: hunk, env: { ...process.env, HUNK_CAPTURE: capture, HUNK_ARG_CAPTURE: argCapture, HUNK_COMMENTS: comments } });
 
 	assert.equal(result.available, true);
 	assert.deepEqual(result.comments, [{ filePath: "src/app.ts", newLine: 8, summary: "review note" }]);
-	assert.equal(await import("node:fs/promises").then((fs) => fs.readFile(capture, "utf8")), patch);
+	const fs = await import("node:fs/promises");
+	assert.equal(await fs.readFile(capture, "utf8"), patch);
+	const patchArg = await fs.readFile(argCapture, "utf8");
+	assert.notEqual(patchArg, "-");
+	await assert.rejects(fs.stat(patchArg));
 });
 
 test("reviewWorkerChangeSetInHunk uses worker workspace and exact change-set patch", async () => {
@@ -99,7 +104,7 @@ test("reviewWorkerChangeSetInHunk uses worker workspace and exact change-set pat
 	await writeFile(comments, "[]", "utf8");
 	await writeFile(hunk, `#!/bin/sh
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "patch" ]; then pwd > "$HUNK_CAPTURE.cwd"; cat > "$HUNK_CAPTURE"; exit 0; fi
+if [ "$1" = "patch" ]; then pwd > "$HUNK_CAPTURE.cwd"; cat "$2" > "$HUNK_CAPTURE"; exit 0; fi
 if [ "$1" = "session" ]; then cat "$HUNK_COMMENTS"; exit 0; fi
 exit 1
 `, "utf8");

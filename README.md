@@ -145,7 +145,7 @@ Use attach only when you need full terminal control:
 
 ### Review worker diffs in Hunk
 
-When a ready worker has a patch, the verdict card offers `h Hunk review`. Docket pipes the exact worker patch into `hunk patch -`, lets Hunk own the visual diff review, then returns to Docket. If you leave Hunk comments, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is not installed, Docket shows the install hint and opens its built-in full diff viewer.
+When a ready worker has a patch, the verdict card offers `h Hunk review`. Docket opens the exact worker patch in `hunk patch`, lets Hunk own the visual diff review, then returns to Docket. If you leave Hunk comments, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is not installed, Docket shows the install hint and opens its built-in full diff viewer.
 
 ## Workers
 

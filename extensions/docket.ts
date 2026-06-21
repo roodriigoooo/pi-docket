@@ -61,7 +61,7 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment } from "./worker-diff-review.js";
+import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
@@ -1338,6 +1338,64 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
+}
+
+class HunkExternalReviewView implements Component {
+	private launched = false;
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private label: string,
+		private run: () => Promise<HunkReviewResult>,
+		private done: (result: HunkReviewResult) => void,
+	) {
+		setTimeout(() => { void this.launch(); }, 0);
+	}
+
+	handleInput(_data: string): void {}
+
+	invalidate(): void {}
+
+	private async launch(): Promise<void> {
+		if (this.launched) return;
+		this.launched = true;
+		let result: HunkReviewResult;
+		let stopped = false;
+		try {
+			this.tui.requestRender(true);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			// Hunk is a full-screen TUI; Pi must release stdin/raw mode while it runs.
+			this.tui.stop();
+			stopped = true;
+			result = await this.run();
+		} catch (err) {
+			result = { available: true, comments: [], message: `Hunk review failed: ${String(err)}` };
+		} finally {
+			if (stopped) {
+				this.tui.start();
+				this.tui.requestRender(true);
+			}
+		}
+		this.done(result);
+	}
+
+	render(width: number): string[] {
+		const dim = (s: string) => this.theme.fg("dim", s);
+		return [
+			dim(truncateToWidth(`Opening Hunk for ${this.label}…`, width)),
+			dim(truncateToWidth("Pi TUI paused while Hunk owns terminal. Exit Hunk to return.", width)),
+		];
+	}
+}
+
+async function reviewWorkerChangeSetInHunkFromTui(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult> {
+	if (!ctx.hasUI) return { available: true, comments: [], message: "Hunk review requires Pi TUI." };
+	const label = workerSourceLabel(worker);
+	return ctx.ui.custom<HunkReviewResult>(
+		(tui, theme, _kb, done) => new HunkExternalReviewView(tui, theme, label, () => reviewWorkerChangeSetInHunk(worker, changeSet), done),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 64, maxHeight: 4, margin: 1 } },
+	);
 }
 
 async function chooseHunkReviewAction(ctx: ExtensionCommandContext, worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction> {
@@ -3230,7 +3288,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
-				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunk(worker, changeSet),
+				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, worker, changeSet),
 				chooseHunkReviewAction: (worker, comments) => chooseHunkReviewAction(ctx, worker, comments),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
 				createCheckpoint: async (options) => {

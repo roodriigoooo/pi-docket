@@ -1,4 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 
@@ -103,16 +106,21 @@ export async function launchHunkPatch(cwd: string, patch: string, options: HunkR
 	if (!(await checkHunkAvailable(options))) {
 		return { available: false, comments: [], message: "Hunk not found. Install with: npm i -g hunkdiff" };
 	}
+	let tempDir: string | undefined;
 	try {
+		tempDir = await mkdtemp(join(tmpdir(), "docket-hunk-"));
+		const patchPath = join(tempDir, "worker.patch");
+		await writeFile(patchPath, patch, "utf8");
+		// Keep stdin attached to terminal so Hunk can receive navigation/comment keys.
 		await new Promise<number | null>((resolve, reject) => {
-			const proc = spawn(hunkBin(options), ["patch", "-"], { cwd, stdio: ["pipe", "inherit", "inherit"], env: options.env });
-			proc.stdin?.write(patch);
-			proc.stdin?.end();
+			const proc = spawn(hunkBin(options), ["patch", patchPath], { cwd, stdio: "inherit", env: options.env });
 			proc.on("close", resolve);
 			proc.on("error", reject);
 		});
 	} catch (err) {
 		return { available: true, comments: [], message: `Hunk review failed: ${String(err)}` };
+	} finally {
+		if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 	}
 	return { available: true, comments: extractHunkComments(cwd, options) };
 }
