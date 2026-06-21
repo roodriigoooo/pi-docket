@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeWorkerTodos, type WorkerStatus } from "../extensions/background-work.js";
-import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityStackLines, workerActivityTotals } from "../extensions/worker-activity.js";
+import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityStackLines, workerActivityTotals, workerProgressBar, workerProgressCompact } from "../extensions/worker-activity.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -85,6 +85,14 @@ test("Worker Activity reviewed workers render dim, count separately, and stay ra
 	assert.deepEqual(rows.map((row) => row.label), ["w5", "w4"]);
 });
 
+test("Worker Activity renders compact progress bars", () => {
+	assert.equal(workerProgressBar({ total: 5, completed: 3, inProgress: 1, pending: 1 }), "▰▰▰▱▱");
+	assert.equal(workerProgressCompact({ total: 5, completed: 3, inProgress: 1, pending: 1 }), "▰▰▰▱▱");
+	assert.equal(workerProgressBar({ total: 10, completed: 1, inProgress: 0, pending: 9 }), "▰▱▱▱▱");
+	assert.equal(workerProgressBar({ total: 10, completed: 9, inProgress: 0, pending: 1 }), "▰▰▰▰▱");
+	assert.equal(workerProgressBar({ total: 0, completed: 0, inProgress: 0, pending: 0 }), undefined);
+});
+
 test("Worker Activity result column standardizes to recs · files · progress", () => {
 	const fileEdit: Artifact = { id: "f1", displayId: "f1", ref: "file:1", kind: "file", title: "src/auth.ts", subtitle: "", body: "+", timestamp: 1, meta: { tool: "edit", diff: "+ line" } };
 	const fileRead: Artifact = { id: "f2", displayId: "f2", ref: "file:2", kind: "file", title: "README.md", subtitle: "", body: "", timestamp: 2, meta: { tool: "read" } };
@@ -101,23 +109,30 @@ test("Worker Activity result column standardizes to recs · files · progress", 
 	assert.equal(row.evidence.edits, 1);
 
 	const preview = workerActivityPreviewLines(row).join("\n");
-	assert.match(preview, /1 reads · 1 commands · 1 edits · 1\/1 progress/);
+	assert.match(preview, /^Progress$/m);
+	assert.match(preview, /▰▰▰▰▰/);
+	assert.match(preview, /1 reads · 1 commands · 1 edits/);
 	assert.match(preview, /Files: src\/auth\.ts, README\.md/);
 });
 
-test("Worker Activity preview shows Outcome, Evidence, Next actions", () => {
+test("Worker Activity preview shows Task, Progress, Outcome, Evidence, Next actions", () => {
 	const row = workerActivityRows([
 		worker({ state: "ready", summary: "Reviewed README and found improvements", todos: normalizeWorkerTodos([{ text: "Inspect", state: "completed" }]) }),
 	], new Map([["worker-1", [answer]]]), { now: 0 })[0]!;
 	const preview = workerActivityPreviewLines(row).join("\n");
 
+	assert.match(preview, /^Task$/m);
+	assert.match(preview, /inspect worker flow/);
+	assert.match(preview, /^Progress$/m);
+	assert.match(preview, /▰▰▰▰▰/);
+	assert.match(preview, /└ ✓ Inspect/);
 	assert.match(preview, /^Outcome$/m);
 	assert.match(preview, /Reviewed README and found improvements/);
 	assert.match(preview, /^Evidence$/m);
-	assert.match(preview, /1\/1 progress/);
+	assert.doesNotMatch(preview, /1\/1 progress/);
 	assert.match(preview, /^Next actions$/m);
-	assert.match(preview, /\[Enter Review answer\] \[p Peek\] \[l Load summary\] \[c Continue\] \[a Attach tmux\] \[x Dismiss\]/);
-	assert.doesNotMatch(preview, /├|└|Actions:/);
+	assert.match(preview, /Enter verdict · p peek · l load · c continue · a attach · x dismiss/);
+	assert.doesNotMatch(preview, /Actions:/);
 });
 
 test("Worker Activity marks explicitly loaded ready workers as non-attention", () => {
@@ -130,5 +145,5 @@ test("Worker Activity marks explicitly loaded ready workers as non-attention", (
 	assert.equal(rows[0]?.outputLabel, "loaded");
 	assert.equal(totals.loaded, 1);
 	assert.equal(totals.ready, 0);
-	assert.match(preview, /\[Enter Details\] \[p Peek\] \[l Loaded\]/);
+	assert.match(preview, /Enter verdict · p peek · l loaded/);
 });

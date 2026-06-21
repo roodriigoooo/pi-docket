@@ -103,6 +103,8 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		markWorkerUnloaded: (item) => { calls.push(`unloaded:${item.id}`); },
 		markAllWorkersUnloaded: () => { calls.push("unloaded:all"); },
 		promoteWorkerChangeSet: async (item) => { calls.push(`promote:${item.ref}`); return true; },
+		reviewWorkerChangeSetInHunk: async () => ({ available: true, comments: [] }),
+		chooseHunkReviewAction: async () => "ignore",
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
 		createCheckpoint: async () => { calls.push("createCheckpoint"); },
 		createHandoffCheckpoint: async () => { calls.push("createHandoffCheckpoint"); },
@@ -193,6 +195,21 @@ test("Docket Command Router verdict accept approves waiting worker without loadi
 	});
 
 	await router.handle({ kind: "verdict", worker: "w2" });
+
+	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
+});
+
+test("Docket Command Router routes worker dashboard verdict actions", async () => {
+	const waiting: WorkerStatus = { ...worker, state: "needs_input", question: "Proceed?" };
+	const { calls, router } = harness({
+		hasUI: true,
+		workerStore: { find: async () => waiting, list: async () => [waiting], readArtifacts: async () => [] } as unknown as WorkerStore,
+		readWorkersWithArtifacts: async () => ({ workers: [waiting], artifactsByWorker: new Map([[waiting.id, []]]) }),
+		showParallelWorkDashboard: async () => ({ action: "verdict", worker: waiting }),
+		showVerdict: async () => ({ verb: "accept", worker: waiting }),
+	});
+
+	await router.handle({ kind: "workers" });
 
 	assert.deepEqual(calls, ["worker.tell", "refreshWorkers"]);
 });

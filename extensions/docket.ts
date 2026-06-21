@@ -61,6 +61,7 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
@@ -1154,7 +1155,7 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
 }
 
-class DocketVerdictView implements Component {
+export class DocketVerdictView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private cachedWidth?: number;
@@ -1210,6 +1211,10 @@ class DocketVerdictView implements Component {
 		else if (data === "G") this.selected = max;
 		else if (data === "d" && this.changeSet) {
 			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
+			return;
+		}
+		else if (data === "h" && this.changeSet) {
+			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
 		else if (matchesKey(data, Key.enter)) {
@@ -1314,7 +1319,7 @@ class DocketVerdictView implements Component {
 			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
-		const diffHint = this.changeSet ? "d full diff · " : "";
+		const diffHint = this.changeSet ? "d full diff · h Hunk review · " : "";
 		const pickHint = optionCount > 0 ? `1-${optionCount} pick · ` : "";
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
 		this.container.addChild(new Text(dim(`${diffHint}${pickHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
@@ -1333,6 +1338,82 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
+}
+
+class HunkExternalReviewView implements Component {
+	private launched = false;
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private label: string,
+		private run: () => Promise<HunkReviewResult>,
+		private done: (result: HunkReviewResult) => void,
+	) {
+		setTimeout(() => { void this.launch(); }, 0);
+	}
+
+	handleInput(_data: string): void {}
+
+	invalidate(): void {}
+
+	private async launch(): Promise<void> {
+		if (this.launched) return;
+		this.launched = true;
+		let result: HunkReviewResult;
+		let stopped = false;
+		try {
+			this.tui.requestRender(true);
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			// Hunk is a full-screen TUI; Pi must release stdin/raw mode while it runs.
+			this.tui.stop();
+			stopped = true;
+			result = await this.run();
+		} catch (err) {
+			result = { available: true, comments: [], message: `Hunk review failed: ${String(err)}` };
+		} finally {
+			if (stopped) {
+				this.tui.start();
+				this.tui.requestRender(true);
+			}
+		}
+		this.done(result);
+	}
+
+	render(width: number): string[] {
+		const dim = (s: string) => this.theme.fg("dim", s);
+		return [
+			dim(truncateToWidth(`Opening Hunk for ${this.label}…`, width)),
+			dim(truncateToWidth("Pi TUI paused while Hunk owns terminal. Exit Hunk to return.", width)),
+		];
+	}
+}
+
+async function reviewWorkerChangeSetInHunkFromTui(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult> {
+	if (!ctx.hasUI) return { available: true, comments: [], message: "Hunk review requires Pi TUI." };
+	const label = workerSourceLabel(worker);
+	return ctx.ui.custom<HunkReviewResult>(
+		(tui, theme, _kb, done) => new HunkExternalReviewView(tui, theme, label, () => reviewWorkerChangeSetInHunk(worker, changeSet), done),
+		{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 64, maxHeight: 4, margin: 1 } },
+	);
+}
+
+async function chooseHunkReviewAction(ctx: ExtensionCommandContext, worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction> {
+	if (!ctx.hasUI) return "ignore";
+	const preview = comments.slice(0, 3).map((comment, index) => `${index + 1}. ${formatHunkCommentLocation(comment)} — ${comment.summary}`).join("\n");
+	const overflow = comments.length > 3 ? `\n… ${comments.length - 3} more` : "";
+	if (preview) ctx.ui.notify(`${preview}${overflow}`, "info");
+	const choice = await ctx.ui.select(
+		`Hunk comments for ${workerSourceLabel(worker)}`,
+		[
+			`Send to ${workerSourceLabel(worker)} for revision`,
+			"Copy comments to clipboard",
+			"Ignore for now",
+		],
+	).catch(() => undefined);
+	if (choice?.startsWith("Send")) return "send";
+	if (choice?.startsWith("Copy")) return "copy";
+	return "ignore";
 }
 
 function compactTokens(tokens: number): string {
@@ -1481,34 +1562,80 @@ function fitColumn(text: string, width: number): string {
 	return padAnsi(truncateToWidth(text, width, ""), width);
 }
 
-function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false, options: { hideAction?: boolean } = {}): string {
-	const marker = selected ? "▸" : "●";
-	if (width < 92) {
-		const tail = options.hideAction ? row.outputLabel : `${row.outputLabel} · ${row.actionHint}`;
-		return truncateToWidth(`${marker} ${row.label} ${row.stateLabel} ${row.taskLabel} · ${tail}`, width, "");
-	}
-	const labelWidth = 4;
-	const statusWidth = 14;
-	const outputWidth = 32;
-	const actionWidth = options.hideAction ? 0 : row.actionHint.length;
-	const fixed = 2 + labelWidth + 2 + statusWidth + 2 + outputWidth + (options.hideAction ? 0 : 2);
-	const taskWidth = Math.max(14, Math.min(40, width - fixed - actionWidth));
-	const cells: string[] = [
-		marker,
-		fitColumn(row.label, labelWidth),
-		fitColumn(row.stateLabel, statusWidth),
-		fitColumn(row.taskLabel, taskWidth),
-		options.hideAction ? row.outputLabel : fitColumn(row.outputLabel, outputWidth),
-	];
-	if (!options.hideAction) cells.push(row.actionHint);
-	return truncateToWidth(cells.join("  "), width, "");
+type WorkerTableColumns = { label: number; status: number; task: number; result: number };
+
+function workerRowNeedsAction(row: WorkerActivityRow): boolean {
+	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return false;
+	return row.state === "needs_input" || row.state === "failed" || row.state === "ready" || row.state === "ready_open_todos";
 }
 
-function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number, options: { hideAction?: boolean } = {}): string[] {
+function workerStatusBadgeLabel(row: WorkerActivityRow): string {
+	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return "loaded";
+	if (row.state === "needs_input") return "needs input";
+	if (row.state === "ready_open_todos") return "ready";
+	if (row.state === "thinking" || row.state === "starting") return "active";
+	if (row.state === "empty") return "done";
+	return row.state.replace(/_/g, " ");
+}
+
+function workerStatusText(row: WorkerActivityRow): string {
+	return `[${workerStatusBadgeLabel(row)}]`;
+}
+
+function workerStatusBadge(theme: any, row: WorkerActivityRow, selected: boolean): string {
+	const badge = workerStatusText(row);
+	const styled = row.state === "failed"
+		? theme.fg("error", badge)
+		: workerRowNeedsAction(row)
+			? theme.fg("warning", badge)
+			: row.state === "ready" || row.state === "ready_open_todos"
+				? theme.fg("success", badge)
+				: selected ? theme.fg("text", badge) : theme.fg("muted", badge);
+	return selected ? theme.bold(styled) : styled;
+}
+
+function workerResultLabel(row: WorkerActivityRow): string {
+	return row.outputLabel.replace(/(\d+\/\d+) progress/g, "$1 todos");
+}
+
+function workerTableColumns(width: number): WorkerTableColumns {
+	const label = 5;
+	const status = 15;
+	const result = Math.max(22, Math.min(34, Math.floor(width * 0.26)));
+	const fixed = 1 + 4 + label + status + result;
+	return { label, status, result, task: Math.max(18, width - fixed) };
+}
+
+function workerActivityHeaderText(width: number): string {
+	if (width < 92) return truncateToWidth("  worker  status         task — result", width, "");
+	const cols = workerTableColumns(width);
+	return truncateToWidth(`  ${fitColumn("work", cols.label)} ${fitColumn("status", cols.status)} ${fitColumn("task", cols.task)} ${fitColumn("result", cols.result)}`, width, "");
+}
+
+function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
+	const rail = selected ? "▌" : " ";
+	if (width < 92) {
+		return truncateToWidth(`${rail} ${row.label} ${workerStatusText(row)} ${row.taskLabel} — ${workerResultLabel(row)}`, width, "");
+	}
+	const cols = workerTableColumns(width);
+	const cells = [
+		rail,
+		fitColumn(row.label, cols.label),
+		fitColumn(workerStatusText(row), cols.status),
+		fitColumn(row.taskLabel, cols.task),
+		fitColumn(workerResultLabel(row), cols.result),
+	];
+	return truncateToWidth(cells.join(" "), width, "");
+}
+
+function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: number, selectedIndex?: number): string[] {
 	return rows.map((row, index) => {
-		const plain = workerActivityRowText(row, width, selectedIndex === index, options);
-		if (selectedIndex === index) return theme.bold(theme.fg("text", plain));
-		return workerStateColor(theme, row.state, plain);
+		const selected = selectedIndex === index;
+		const raw = workerActivityRowText(row, width, selected);
+		const badge = workerStatusText(row);
+		const colored = raw.replace(badge, workerStatusBadge(theme, row, selected));
+		const line = selected ? theme.fg("text", theme.bold(colored)) : workerStateColor(theme, row.state, colored);
+		return selected ? theme.bg("selectedBg", padAnsi(line, width)) : line;
 	});
 }
 
@@ -1546,30 +1673,29 @@ function renderDockRows(theme: any, rows: DockRow[], width: number, now: number)
 	return out;
 }
 
-const WORKER_PREVIEW_HEADINGS = new Set(["Kind", "Outcome", "Evidence", "Next actions"]);
+const WORKER_PREVIEW_HEADINGS = new Set(["Task", "Kind", "Progress", "Outcome", "Evidence", "Next actions"]);
 
-function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number): void {
+function addWorkerActivityPreview(container: Container | Box, theme: any, row: WorkerActivityRow | undefined, width: number, showProgressDetail = false): void {
 	if (!row) return;
 	const dim = (s: string) => theme.fg("dim", s);
 	const muted = (s: string) => theme.fg("muted", s);
-	const accent = (s: string) => theme.fg("accent", s);
+	const warning = (s: string) => theme.fg("warning", s);
 	container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
-	const lines = workerActivityPreviewLines(row);
+	const lines = workerActivityPreviewLines(row, { showProgressDetail });
+	let activeHeading = "";
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i]!;
 		if (WORKER_PREVIEW_HEADINGS.has(raw)) {
-			container.addChild(new Text(truncateToWidth(accent(theme.bold(raw)), width), 1, 0));
+			activeHeading = raw;
+			const heading = raw === "Next actions" && workerRowNeedsAction(row) ? warning(theme.bold(raw)) : muted(theme.bold(raw));
+			container.addChild(new Text(truncateToWidth(heading, width), 1, 0));
 			continue;
 		}
-		const isActionRow = raw.startsWith("[");
-		const maxLines = isActionRow ? 1 : 4;
+		const isActionRow = activeHeading === "Next actions";
+		const maxLines = isActionRow ? 1 : activeHeading === "Progress" ? (showProgressDetail ? 14 : 5) : 4;
 		for (const line of wrapPlainText(raw, width, maxLines)) {
-			if (isActionRow) {
-				const colored = line.replace(/\[([^\]]+)\]/g, (_, inner: string, offset: number) => offset === 0 ? accent(`[${inner}]`) : muted(`[${inner}]`));
-				container.addChild(new Text(truncateToWidth(colored, width), 1, 0));
-			} else {
-				container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, width), 1, 0));
-			}
+			const colored = isActionRow && workerRowNeedsAction(row) ? warning(line) : dim(line);
+			container.addChild(new Text(truncateToWidth(`  ${colored}`, width), 1, 0));
 		}
 	}
 }
@@ -1632,10 +1758,11 @@ function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<
 const PEEK_VISIBLE_LINES = 24;
 const PEEK_REFRESH_MS = 1000;
 
-class DocketParallelWorkView implements Component {
+export class DocketParallelWorkView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private showHelp = false;
+	private showProgressDetail = false;
 	private peek = false;
 	private peekTimer?: NodeJS.Timeout;
 	private cachedWidth?: number;
@@ -1686,6 +1813,15 @@ class DocketParallelWorkView implements Component {
 		return this.activityRows()[this.selected]?.worker;
 	}
 
+	private selectedRow(): WorkerActivityRow | undefined {
+		return this.activityRows()[this.selected];
+	}
+
+	private enterAction(row: WorkerActivityRow): ParallelWorkAction {
+		if (row.state === "needs_input" || row.state === "ready" || row.state === "ready_open_todos") return { action: "verdict", worker: row.worker };
+		return { action: "details", worker: row.worker };
+	}
+
 	private selectNext(): void {
 		const max = Math.max(0, this.activityRows().length - 1);
 		this.selected = Math.min(max, this.selected + 1);
@@ -1710,10 +1846,11 @@ class DocketParallelWorkView implements Component {
 		else if (data === "G") this.selected = max;
 		else if (matchesKey(data, Key.tab)) this.selectNext();
 		else if (data === "?") this.showHelp = !this.showHelp;
+		else if (data === "t") this.showProgressDetail = !this.showProgressDetail;
 		else if (data === "p") this.setPeek(!this.peek);
 		else if (matchesKey(data, Key.enter)) {
-			const worker = this.selectedWorker();
-			if (worker) this.finish({ action: "details", worker });
+			const row = this.selectedRow();
+			if (row) this.finish(this.enterAction(row));
 			return;
 		}
 		else if (data === "l") {
@@ -1790,7 +1927,7 @@ class DocketParallelWorkView implements Component {
 			workerCounts.active ? `${workerCounts.active} active` : undefined,
 		].filter(Boolean).join(" · ") || plural(this.workers.length, "worker");
 
-		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket"))} ${dim("·")} ${accent("workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
+		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket"))} ${dim("· workers")} `, ` ${dim("Esc close")} `, innerWidth, border, TOP_CORNERS), 0, 0));
 		const todoStatus = workerCounts.todos ? ` · progress ${workerCounts.completedTodos}/${workerCounts.todos}` : "";
 		const artifactStatus = entries.length ? ` · ${entries.length} items` : "";
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)}${dim(artifactStatus)}`, innerWidth - 2), 1, 0));
@@ -1806,7 +1943,7 @@ class DocketParallelWorkView implements Component {
 			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
 			this.container.addChild(new Spacer(1));
 		} else {
-			if (listWidth >= 92) this.container.addChild(new Text(dim(`  ${fitColumn("worker", 4)}  ${fitColumn("status", 14)}  ${fitColumn("task", Math.max(14, Math.min(40, listWidth - 64)))}  ${fitColumn("result", 32)}  action`), 1, 0));
+			this.container.addChild(new Text(dim(workerActivityHeaderText(listWidth - 2)), 1, 0));
 			const renderedRows = renderWorkerActivityRows(this.theme, activityRows, listWidth - 2, this.selected);
 			let previousProject: string | undefined;
 			for (let i = 0; i < activityRows.length; i++) {
@@ -1821,15 +1958,16 @@ class DocketParallelWorkView implements Component {
 				this.container.addChild(new Text(renderedRows[i]!, 1, 0));
 			}
 			if (this.peek && selectedRow) this.renderPeek(selectedRow, listWidth - 2);
-			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2);
+			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2, this.showProgressDetail);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("↑↓ move · Enter details · p peek · c continue · a attach · l load · ? more · Esc close"), 1, 0));
+		this.container.addChild(new Text(dim("Enter verdict/details · p peek · l load · c continue · a attach · x dismiss · ? more · Esc"), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Progress")} ${dim("t toggles full todo board; completion comes only from docket_done")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("Tab switch worker · x stop worker (destructive)")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Advanced")} ${dim("↑↓ move · t todos · Tab switch worker · x stop worker (destructive)")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -3091,11 +3229,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 		handler: (args, ctx) => runDocketCommand(args, ctx),
 	});
 
-	// One-key path to the highest-attention decision. Only ever fires the verdict intent,
-	// which uses base-context members (ui/store/sessionManager) — safe to upcast the shortcut ctx.
-	pi.registerShortcut?.("ctrl+shift+d", {
-		description: "Docket: resolve the top worker decision",
-		handler: (ctx) => runDocketCommand("verdict", ctx as ExtensionCommandContext),
+	// One-key path to the worker progress lens. It stays zero-context until the user
+	// explicitly loads evidence or replies to a worker.
+	pi.registerShortcut?.("f8", {
+		description: "Docket: open worker progress lens",
+		handler: (ctx) => runDocketCommand("workers", ctx as ExtensionCommandContext),
 	});
 
 	async function runDocketCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -3193,6 +3331,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
+				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, worker, changeSet),
+				chooseHunkReviewAction: (worker, comments) => chooseHunkReviewAction(ctx, worker, comments),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
 				createCheckpoint: async (options) => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);

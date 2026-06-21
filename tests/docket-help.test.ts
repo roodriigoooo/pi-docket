@@ -4,19 +4,21 @@ import { parseDocketCommand, docketUsage } from "../extensions/docket-command-gr
 
 test("docketUsage primary view exposes core commands and a hint", () => {
 	const text = docketUsage();
-	for (const cmd of ["/docket ", "/docket spawn", "/docket tell w<N>", "/docket attach", "/docket save", "/docket load"]) {
+	for (const cmd of ["/docket ", "f8", "/docket spawn", "/docket tell w<N>", "/docket save", "/docket load"]) {
 		assert.equal(text.includes(cmd), true, `missing ${cmd}`);
 	}
 	assert.match(text, /more: \/docket help advanced/);
 	assert.equal(text.includes("/docket checkpoint"), false);
 	assert.equal(text.includes("/docket continue"), false);
+	assert.equal(text.includes("/docket verdict"), false);
+	assert.equal(text.includes("/docket attach"), false);
 	assert.equal(text.includes("/docket ref"), false);
 	assert.equal(text.includes("/docket search"), false);
 });
 
 test("docketUsage advanced view includes secondary commands", () => {
 	const text = docketUsage(true);
-	for (const cmd of ["/docket search", "/docket ref", "/docket workers", "/docket answers", "/docket log", "/docket verdict"]) {
+	for (const cmd of ["/docket search", "/docket ref", "/docket workers", "/docket answers", "/docket log", "/docket verdict", "/docket attach"]) {
 		assert.equal(text.includes(cmd), true, `missing ${cmd}`);
 	}
 	assert.equal(text.includes("alias"), false);

@@ -72,11 +72,13 @@ Start a background worker:
 
 Workers start fresh by default (no parent context bloat). Add `--seed` to inherit the parent session.
 
-Review worker result:
+Open worker progress:
 
 ```text
-/docket verdict
+f8
 ```
+
+Worker decisions are available from the progress lens, or directly with `/docket verdict` when you want the advanced command. On a worker change set, press `h` in the verdict card to review the exact patch in Hunk; any Hunk comments can be sent back to the worker for revision.
 
 Save useful evidence:
 
@@ -113,7 +115,7 @@ Each worker is a normal pi process in one window inside one shared tmux session:
 tmux attach -t docket-workers
 ```
 
-You do not need to know tmux to use Docket. Most of the time, use `/docket workers`, `/docket verdict`, and `/docket tell`.
+You do not need to know tmux to use Docket. Most of the time, use `f8` for the worker progress lens and `/docket tell` to reply.
 
 tmux gives Docket three useful things:
 
@@ -127,13 +129,7 @@ If you run `/docket attach [w<N>]` from inside tmux, Docket deliberately uses `t
 
 ### Peek without attaching
 
-Run:
-
-```text
-/docket workers
-```
-
-Press `p` on a worker row. Docket shows a bounded live tmux pane snapshot inside the dashboard. It is read-only, does not focus the pane, and costs zero model context.
+Press `f8` (or run `/docket workers`), then press `p` on a worker row. Docket shows a bounded live tmux pane snapshot inside the dashboard. It is read-only, does not focus the pane, and costs zero model context.
 
 Use peek to answer quick questions:
 
@@ -146,6 +142,10 @@ Use attach only when you need full terminal control:
 ```text
 /docket attach w2
 ```
+
+### Review worker diffs in Hunk
+
+When a ready worker has a patch, the verdict card offers `h Hunk review`. Docket opens the exact worker patch in `hunk patch`, lets Hunk own the visual diff review, then returns to Docket. If you leave Hunk comments, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is not installed, Docket shows the install hint and opens its built-in full diff viewer.
 
 ## Workers
 
@@ -188,13 +188,10 @@ This is the main rule: keep evidence available, not automatically injected.
 |---|---|
 | `/docket` | Open review inbox. |
 | `/docket spawn <task>` | Start a background worker (fresh session by default; `--seed` inherits parent). |
-| `/docket workers` | See worker dashboard. |
-| `/docket verdict [w<N>]` | Resolve a worker decision. |
+| `f8` | Open worker progress lens. |
 | `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
-| `/docket attach [w<N>]` | Switch to worker tmux session when already in tmux; otherwise copy attach command. |
 | `/docket save [note]` | Save selected evidence as a bundle. |
 | `/docket load [id|last|w<N>]` | Mount bundle or worker artifacts. |
-| `/docket log decisions` | Show verdict history and unreviewed worker debt. |
 
 For the full command reference, see [docs/full-reference.md](./docs/full-reference.md).
 

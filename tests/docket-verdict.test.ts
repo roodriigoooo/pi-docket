@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/docket.js";
+import { DocketVerdictView, diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/docket.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
 import type { Artifact } from "../extensions/types.js";
 
@@ -93,6 +93,22 @@ test("verdictVerbs renders worker-proposed options as send verbs", () => {
 	assert.deepEqual(verbs.slice(0, 2).map((verb) => verb.send), ["Proceed as proposed", "Use migration-safe path"]);
 	assert.equal(verbs[2]?.label, "Steer");
 	assert.deepEqual(verdictVerbs("needs_input", false).map((verb) => verb.label), ["Accept", "Reject", "Reject & stop", "Chat"]);
+});
+
+test("DocketVerdictView exposes Hunk review for worker change sets", () => {
+	let action: unknown;
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, worker({ state: "ready" }), changeSet, (result) => { action = result; });
+	const rendered = view.render(100).join("\n");
+	assert.match(rendered, /h Hunk review/);
+
+	view.handleInput("h");
+
+	assert.deepEqual(action, { verb: "hunk", worker: worker({ state: "ready" }), changeSet });
 });
 
 test("workerVerdictPayload surfaces structured risk on a waiting worker", () => {

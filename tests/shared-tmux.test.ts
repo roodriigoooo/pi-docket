@@ -55,6 +55,7 @@ test("buildTmuxNavigation switches to shared session without worker", () => {
 	assert.equal(nav.command, `tmux switch-client -t ${SHARED_TMUX_SESSION}`);
 });
 
-test("docketUsage mentions attach in primary view", () => {
-	assert.match(docketUsage(), /\/docket attach \[w<N>\]/);
+test("docketUsage keeps attach in advanced view", () => {
+	assert.doesNotMatch(docketUsage(), /\/docket attach \[w<N>\]/);
+	assert.match(docketUsage(true), /\/docket attach \[w<N>\]/);
 });

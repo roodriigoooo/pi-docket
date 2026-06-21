@@ -57,6 +57,8 @@ export type WorkerActivityTotals = {
 	completedTodos: number;
 };
 
+type WorkerProgress = { total: number; completed: number; inProgress: number; pending: number };
+
 function artifactTool(artifact: Artifact): string | undefined {
 	const tool = artifact.meta?.tool;
 	return typeof tool === "string" ? tool : undefined;
@@ -139,6 +141,31 @@ export function pickModelBadge(worker: WorkerStatus, allWorkers: WorkerStatus[],
 	return workerLabel;
 }
 
+export function workerProgressBar(progress: WorkerProgress, width = 5): string | undefined {
+	if (!Number.isFinite(progress.total) || progress.total <= 0) return undefined;
+	const slots = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 5;
+	const completed = Math.max(0, Math.min(Number.isFinite(progress.completed) ? progress.completed : 0, progress.total));
+	const filled = completed >= progress.total
+		? slots
+		: completed <= 0
+			? 0
+			: Math.max(1, Math.floor((completed / progress.total) * slots));
+	return `${"▰".repeat(filled)}${"▱".repeat(slots - filled)}`;
+}
+
+export function workerProgressCompact(progress: WorkerProgress, width = 5): string | undefined {
+	return workerProgressBar(progress, width);
+}
+
+function workerProgressDetail(progress: WorkerProgress): string | undefined {
+	const compact = workerProgressCompact(progress);
+	if (!compact) return undefined;
+	const parts = [compact];
+	if (progress.inProgress > 0) parts.push(`${progress.inProgress} active`);
+	if (progress.pending > 0) parts.push(`${progress.pending} pending`);
+	return parts.join(" · ");
+}
+
 export type DockRow = {
 	worker: WorkerStatus;
 	label: string;
@@ -151,6 +178,11 @@ export type DockRow = {
 	kindLabel?: string;
 	modelBadge?: string;
 	eventLine?: string;
+};
+
+export type WorkerActivityPreviewOptions = {
+	showProgressDetail?: boolean;
+	maxTodoItems?: number;
 };
 
 const SKIP_TOOL_EVENT_NAMES = new Set([
@@ -221,8 +253,9 @@ export function dockEventSubLine(events: WorkerEvent[] | undefined, state: Worke
 			const completed = Number(event.payload.completed ?? 0);
 			const inProgress = Number(event.payload.inProgress ?? 0);
 			if (!Number.isFinite(total) || total <= 0) continue;
+			const compact = workerProgressCompact({ total, completed, inProgress, pending: Math.max(0, total - completed - inProgress) });
 			const active = inProgress > 0 ? ` · ${inProgress} active` : "";
-			latestLine = `progress ${completed}/${total}${active}`;
+			latestLine = compact ? `progress ${compact}${active}` : `progress ${completed}/${total}${active}`;
 			break;
 		}
 	}
@@ -241,7 +274,7 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 	const conflict = conflictSummary(row.conflicts, 1);
 	if (conflict) return conflict;
 	if (row.state === "reviewed") return "reviewed";
-	if (row.progress.total > 0) return `${row.progress.completed}/${row.progress.total} progress`;
+	if (row.progress.total > 0) return workerProgressCompact(row.progress) ?? `${row.progress.completed}/${row.progress.total} progress`;
 	if (row.state === "ready" || row.state === "ready_open_todos") {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
 		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
@@ -400,7 +433,6 @@ function previewEvidenceBody(row: WorkerActivityRow): string {
 	if (row.evidence.edits > 0) counts.push(`${row.evidence.edits} edits`);
 	if (row.evidence.codeBlocks > 0) counts.push(`${row.evidence.codeBlocks} code blocks`);
 	if (row.evidence.errors > 0) counts.push(`${row.evidence.errors} errors`);
-	if (row.progress.total > 0) counts.push(`${row.progress.completed}/${row.progress.total} progress`);
 	const sample = row.evidence.sampleFiles.length ? `Files: ${row.evidence.sampleFiles.slice(0, 3).join(", ")}${row.evidence.sampleFiles.length > 3 ? "…" : ""}` : undefined;
 	const conflict = conflictSummary(row.conflicts, 3);
 	const summary = counts.length ? counts.join(" · ") : "No artifacts captured yet.";
@@ -408,22 +440,30 @@ function previewEvidenceBody(row: WorkerActivityRow): string {
 }
 
 function previewNextActions(row: WorkerActivityRow): string {
-	const primary = row.state === "needs_input"
-		? "[c Reply]"
-		: row.state === "failed"
-			? "[Enter Inspect failure]"
-			: row.state === "ready" || row.state === "ready_open_todos"
-				? row.loaded ? "[Enter Details]" : "[Enter Review answer]"
-				: "[Enter Open]";
-	const load = row.loaded ? "[l Loaded]" : "[l Load summary]";
-	const buttons = [primary, "[p Peek]", load, "[c Continue]", "[a Attach tmux]", "[x Dismiss]"];
-	return buttons.join(" ");
+	const primary = row.state === "failed"
+		? "Enter inspect"
+		: row.state === "starting" || row.state === "thinking"
+			? "Enter details"
+			: "Enter verdict";
+	const load = row.loaded ? "l loaded" : "l load";
+	return [primary, "p peek", load, "c continue", "a attach", "x dismiss"].join(" · ");
 }
 
-export function workerActivityPreviewLines(row: WorkerActivityRow): string[] {
+function previewProgressBody(row: WorkerActivityRow, options: WorkerActivityPreviewOptions): string | undefined {
+	const detail = workerProgressDetail(row.progress);
+	if (!detail) return undefined;
+	const maxTodoItems = options.maxTodoItems ?? (options.showProgressDetail ? 12 : 3);
+	const todoLines = workerTodoBoardLines(row.worker, { maxItems: maxTodoItems, maxText: options.showProgressDetail ? 96 : 72 });
+	return [detail, ...todoLines].join("\n");
+}
+
+export function workerActivityPreviewLines(row: WorkerActivityRow, options: WorkerActivityPreviewOptions = {}): string[] {
 	const kindLabel = workerKindLabel(row.worker);
-	const lines: string[] = [];
+	const progress = previewProgressBody(row, options);
+	const task = row.worker.task?.trim() || row.taskLabel;
+	const lines: string[] = ["Task", task];
 	if (kindLabel) lines.push("Kind", kindLabel);
+	if (progress) lines.push("Progress", progress);
 	lines.push(
 		"Outcome",
 		previewOutcomeBody(row),

@@ -13,6 +13,7 @@ import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
+import type { HunkReviewAction, HunkReviewComment, HunkReviewResult } from "./worker-diff-review.js";
 
 export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "save" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
 
@@ -25,7 +26,7 @@ export type ParallelWorkEntry = {
 
 export type ParallelWorkAction =
 	| { action: "peek"; entry: ParallelWorkEntry }
-	| { action: "details" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
+	| { action: "details" | "verdict" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
 export type LoadPickerMode = "checkpoint" | "worker";
@@ -63,6 +64,8 @@ export type DocketCommandRouterDeps = {
 	markWorkerUnloaded(worker: WorkerStatus): void;
 	markAllWorkersUnloaded(): void;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
+	reviewWorkerChangeSetInHunk(worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult>;
+	chooseHunkReviewAction(worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
 	createHandoffCheckpoint(): Promise<void>;
@@ -338,6 +341,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					if (result.action === "details") {
 						await deps.showText(`${workerSourceLabel(result.worker)} · details`, workerResultText(result.worker, artifactsByWorker.get(result.worker.id) ?? []));
 						continue;
+					}
+					if (result.action === "verdict") {
+						await runWorkerVerdict(deps, result.worker);
+						return;
 					}
 					if (result.action === "load") {
 						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
