@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
-import { formatHunkReviewComments, launchHunkPatch, parseHunkComments, reviewWorkerChangeSetInHunk, workerChangeSetPatch } from "../extensions/worker-diff-review.js";
+import { formatHunkReviewComments, launchHunkPatch, parseHunkComments, parseHunkSessionId, reviewWorkerChangeSetInHunk, workerChangeSetPatch } from "../extensions/worker-diff-review.js";
 
 const patch = "diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new";
 
@@ -38,11 +38,12 @@ function changeSet(body = `worker: w1\n\nPatch:\n${patch}\n`): Artifact {
 	};
 }
 
-test("parseHunkComments accepts camelCase, snake_case, and wrapped payloads", () => {
+test("parseHunkComments accepts live comments and Hunk user notes", () => {
 	const comments = parseHunkComments(JSON.stringify({
 		comments: [
 			{ id: "a", filePath: "src/app.ts", newLine: 12, summary: "tighten guard", rationale: "avoids null" },
 			{ file_path: "src/old.ts", old_line: "4", comment: "remove dead branch" },
+			{ noteId: "n1", filePath: "src/note.ts", newRange: [8, 2], body: "user note" },
 			{ file: "src/empty.ts", new_line: 5, body: "" },
 		],
 	}));
@@ -50,7 +51,14 @@ test("parseHunkComments accepts camelCase, snake_case, and wrapped payloads", ()
 	assert.deepEqual(comments, [
 		{ id: "a", filePath: "src/app.ts", newLine: 12, summary: "tighten guard", rationale: "avoids null" },
 		{ filePath: "src/old.ts", oldLine: 4, summary: "remove dead branch" },
+		{ id: "n1", filePath: "src/note.ts", newLine: 8, summary: "user note" },
 	]);
+});
+
+test("parseHunkSessionId matches patch sessions by cwd", () => {
+	assert.equal(parseHunkSessionId(JSON.stringify({ sessions: [{ sessionId: "s1", cwd: "/tmp/worktree" }] }), "/tmp/worktree"), "s1");
+	assert.equal(parseHunkSessionId(JSON.stringify({ sessions: [{ sessionId: "s1", repoRoot: "/tmp/repo" }] }), "/tmp/repo"), "s1");
+	assert.equal(parseHunkSessionId(JSON.stringify({ sessions: [{ sessionId: "s1", cwd: "/tmp/a" }, { sessionId: "s2", cwd: "/tmp/b" }] }), "/tmp/nope"), undefined);
 });
 
 test("workerChangeSetPatch extracts exact patch after Patch marker", () => {
@@ -76,11 +84,12 @@ test("launchHunkPatch writes patch file for Hunk and harvests comments", async (
 	const argCapture = join(dir, "patch-arg.txt");
 	const comments = join(dir, "comments.json");
 	const hunk = join(dir, "hunk");
-	await writeFile(comments, JSON.stringify([{ filePath: "src/app.ts", newLine: 8, summary: "review note" }]), "utf8");
+	await writeFile(comments, JSON.stringify({ comments: [{ noteId: "n1", filePath: "src/app.ts", newRange: [8, 2], body: "review note" }] }), "utf8");
 	await writeFile(hunk, `#!/bin/sh
 if [ "$1" = "--version" ]; then exit 0; fi
-if [ "$1" = "patch" ]; then printf '%s' "$2" > "$HUNK_ARG_CAPTURE"; cat "$2" > "$HUNK_CAPTURE"; exit 0; fi
-if [ "$1" = "session" ]; then cat "$HUNK_COMMENTS"; exit 0; fi
+if [ "$1" = "patch" ]; then printf '%s' "$2" > "$HUNK_ARG_CAPTURE"; cat "$2" > "$HUNK_CAPTURE"; sleep 0.4; exit 0; fi
+if [ "$1" = "session" ] && [ "$2" = "list" ]; then printf '{"sessions":[{"sessionId":"s1","cwd":"%s"}]}' "$PWD"; exit 0; fi
+if [ "$1" = "session" ] && [ "$2" = "comment" ]; then cat "$HUNK_COMMENTS"; exit 0; fi
 exit 1
 `, "utf8");
 	chmodSync(hunk, 0o755);
@@ -88,7 +97,7 @@ exit 1
 	const result = await launchHunkPatch(dir, patch, { hunkBin: hunk, env: { ...process.env, HUNK_CAPTURE: capture, HUNK_ARG_CAPTURE: argCapture, HUNK_COMMENTS: comments } });
 
 	assert.equal(result.available, true);
-	assert.deepEqual(result.comments, [{ filePath: "src/app.ts", newLine: 8, summary: "review note" }]);
+	assert.deepEqual(result.comments, [{ id: "n1", filePath: "src/app.ts", newLine: 8, summary: "review note" }]);
 	const fs = await import("node:fs/promises");
 	assert.equal(await fs.readFile(capture, "utf8"), patch);
 	const patchArg = await fs.readFile(argCapture, "utf8");
