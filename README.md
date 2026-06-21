@@ -64,6 +64,12 @@ Open it:
 /docket
 ```
 
+Dependencies:
+
+- `tmux` is required for background workers.
+- `hunk` is optional for `h` worker-diff review; Docket falls back to its built-in diff viewer.
+- Clipboard actions use `pbcopy`, `wl-copy`, or `xclip` when available.
+
 Start a background worker:
 
 ```text
