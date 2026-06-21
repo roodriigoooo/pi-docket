@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0
+
+- **Hunk worker-diff review**: ready-worker verdict cards can open the exact worker patch in Hunk with `h`. Docket pauses Pi's TUI while Hunk owns the terminal, harvests user comments while the live Hunk session is open, and then offers to send those comments to the worker for revision, copy them, or ignore them. Missing Hunk still falls back to the built-in full diff viewer.
+- **cleaner worker dashboard**: `f8` / `/docket workers` now uses compact status badges, a stronger selected-row rail/background, fixed `work/status/task/result` columns, full task text in the detail pane, a simplified footer, and softer headings so yellow is reserved for attention/action-needed states.
+- **release notes**: see [docs/releases/0.7.0.md](docs/releases/0.7.0.md).
+
 ## 0.6.1
 
 - **diff-colored artifact previews**: Docket now treats file diffs and worker change sets as diff-like everywhere they are previewed or inspected. Inline `+N/-M` stats stay green/red in review cards, selected-item previews render patch bodies with Pi's diff palette, and opening a diff-like artifact uses the colored text viewer instead of plain text.
