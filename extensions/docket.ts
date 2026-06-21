@@ -3205,7 +3205,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("docket", {
-		description: "Inspect unresolved agent work and save/load evidence bundles",
+		description: "Review Pi agent work, worker output, and saved evidence",
 		getArgumentCompletions: async (prefix: string) => {
 			const trimmed = prefix.replace(/^\s+/, "");
 			const firstSpace = trimmed.indexOf(" ");

@@ -1,7 +1,7 @@
 {
   "name": "@roodriigoooo/pi-docket",
   "version": "0.7.0",
-  "description": "Docket: decision queue and evidence bundles for Pi agent work",
+  "description": "Review Pi agent work, run visible tmux workers, and save evidence outside model context",
   "keywords": [
     "pi-package",
     "pi-extension",
