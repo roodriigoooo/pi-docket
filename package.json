@@ -1,6 +1,6 @@
 {
   "name": "@roodriigoooo/pi-docket",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Review Pi agent work, run visible tmux workers, and save evidence outside model context",
   "keywords": [
     "pi-package",

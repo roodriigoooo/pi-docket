@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.1
+
+- **attach back to parent from workers**: `/docket attach parent` now returns a worker to the parent tmux target recorded at spawn. Top-level workers store the spawning tmux session/window/pane, child workers can fall back to their parent worker window, and non-tmux launches get a clear warning instead of a bogus attach command.
+- **release notes**: see [docs/releases/0.7.1.md](docs/releases/0.7.1.md).
+
 ## 0.7.0
 
 - **Hunk worker-diff review**: ready-worker verdict cards can open the exact worker patch in Hunk with `h`. Docket pauses Pi's TUI while Hunk owns the terminal, harvests user comments while the live Hunk session is open, and then offers to send those comments to the worker for revision, copy them, or ignore them. Missing Hunk still falls back to the built-in full diff viewer.
