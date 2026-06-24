@@ -170,6 +170,14 @@ function readWindowId(target: string): string | undefined {
 	return trimmed.startsWith("@") ? trimmed : undefined;
 }
 
+function currentTmuxTarget(): string | undefined {
+	if (!process.env.TMUX) return undefined;
+	const result = spawnSync("tmux", ["display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) return undefined;
+	const target = result.stdout.trim();
+	return target.length > 0 ? target : undefined;
+}
+
 export function sharedSessionExists(): boolean {
 	return tmuxSessionExists(SHARED_TMUX_SESSION);
 }
@@ -503,6 +511,7 @@ export function createWorkerStore(): WorkerStore {
 			const windowName = `w${index}`;
 			const parentWorker = input.parentWorkerId ? await this.find(input.parentWorkerId) : undefined;
 			const parentLabel = parentWorker ? workerShortLabel(parentWorker.index) : undefined;
+			const parentTmuxTarget = parentWorker ? parentWorker.tmuxSession : currentTmuxTarget();
 			const depth = typeof input.depth === "number" ? input.depth : (parentWorker?.depth ?? 0) + (parentWorker ? 1 : 0);
 			await fs.writeFile(path.join(dir, "task.md"), buildWorkerTaskDocument({
 				task: input.task,
@@ -531,6 +540,7 @@ export function createWorkerStore(): WorkerStore {
 				state: "starting",
 				...(input.kind ? { kind: input.kind } : {}),
 				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
+				...(parentTmuxTarget ? { parentTmuxTarget } : {}),
 				...(depth ? { depth } : {}),
 				...(input.canSpawn && input.canSpawn.length > 0 ? { canSpawn: input.canSpawn } : {}),
 			};

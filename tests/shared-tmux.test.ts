@@ -27,13 +27,20 @@ test("buildAttachCommand falls back to plain attach for legacy targets", () => {
 	assert.equal(cmd, "tmux attach -t docket-worker-legacy");
 });
 
-test("parseDocketCommand recognizes attach with and without worker", () => {
+test("parseDocketCommand recognizes attach with parent or worker", () => {
 	const bare = parseDocketCommand("attach");
 	assert.equal(bare.ok, true);
 	if (!bare.ok) return;
 	assert.equal(bare.intent.kind, "attach");
 	if (bare.intent.kind !== "attach") return;
 	assert.equal(bare.intent.worker, undefined);
+
+	const parent = parseDocketCommand("attach parent");
+	assert.equal(parent.ok, true);
+	if (!parent.ok) return;
+	assert.equal(parent.intent.kind, "attach");
+	if (parent.intent.kind !== "attach") return;
+	assert.equal(parent.intent.worker, "parent");
 
 	const w = parseDocketCommand("attach w2");
 	assert.equal(w.ok, true);
@@ -56,6 +63,6 @@ test("buildTmuxNavigation switches to shared session without worker", () => {
 });
 
 test("docketUsage keeps attach in advanced view", () => {
-	assert.doesNotMatch(docketUsage(), /\/docket attach \[w<N>\]/);
-	assert.match(docketUsage(true), /\/docket attach \[w<N>\]/);
+	assert.doesNotMatch(docketUsage(), /\/docket attach \[parent\|w<N>\]/);
+	assert.match(docketUsage(true), /\/docket attach \[parent\|w<N>\]/);
 });

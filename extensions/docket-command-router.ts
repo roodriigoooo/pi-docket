@@ -267,7 +267,20 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 
 			if (intent.kind === "attach") {
 				let target = `${SHARED_TMUX_SESSION}:`;
-				if (intent.worker) {
+				if (intent.worker?.toLowerCase() === "parent") {
+					if (!deps.workerId) {
+						deps.notify("Docket attach parent only works inside a Docket worker", "warning");
+						return;
+					}
+					const worker = await deps.workerStore.find(deps.workerId);
+					const parent = worker?.parentWorkerId ? await deps.workerStore.find(worker.parentWorkerId) : undefined;
+					const parentTarget = worker?.parentTmuxTarget ?? parent?.tmuxSession;
+					if (!parentTarget) {
+						deps.notify("Docket parent tmux target not recorded for this worker", "warning");
+						return;
+					}
+					target = parentTarget;
+				} else if (intent.worker) {
 					const worker = await deps.workerStore.find(intent.worker);
 					if (!worker) {
 						deps.notify("Docket worker not found", "error");

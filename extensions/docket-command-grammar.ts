@@ -72,7 +72,7 @@ export function docketUsage(advanced = false): string {
 		"/docket workers [--all]         worker progress lens/dashboard",
 		"/docket kinds                   list registered worker kinds",
 		"/docket verdict [w<N>]          resolve the top worker decision (accept/reject/chat)",
-		"/docket attach [w<N>]           switch to worker tmux when inside tmux; otherwise copy attach command",
+		"/docket attach [parent|w<N>]    switch to parent/worker tmux when inside tmux; otherwise copy attach command",
 		"/docket respawn <w<N>|all>      relaunch a worker whose tmux window died",
 		SAVE_USAGE,
 		"/docket load [id|last|w<N>] [--include-consumed]   mount bundle or worker artifacts (no model tokens)",
@@ -304,7 +304,7 @@ export function parseDocketCommand(args: string): ParseResult {
 	}
 	if (command === "attach") {
 		if (rest.length === 0) return { ok: true, intent: { kind: "attach" } };
-		if (rest.length > 1) return parseError("Usage: /docket attach [w<N>]");
+		if (rest.length > 1) return parseError("Usage: /docket attach [parent|w<N>]");
 		return { ok: true, intent: { kind: "attach", worker: rest[0]! } };
 	}
 	if (command === "wait") {

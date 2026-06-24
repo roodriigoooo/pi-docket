@@ -111,7 +111,7 @@ Advanced commands:
 |---|---|
 | `/docket workers [--all]` | Worker progress lens/dashboard. |
 | `/docket verdict [w<N>]` | Resolve the top worker decision (accept/reject/chat). |
-| `/docket attach [w<N>]` | Switch to the shared worker tmux session when already in tmux; otherwise copy attach command. |
+| `/docket attach [parent|w<N>]` | Switch to the parent/worker tmux target when already in tmux; otherwise copy attach command. |
 | `/docket kinds` | List worker kinds. |
 | `/docket respawn <w<N>\|all>` | Relaunch worker whose tmux window died. |
 | `/docket answers [query]` | Browse assistant/worker answers. |
@@ -297,7 +297,7 @@ Docket uses tmux as the worker process and visibility layer, not as the decision
 tmux attach -t docket-workers
 ```
 
-`/docket attach` is deliberate terminal control. If Pi is already running inside tmux, Docket runs `tmux switch-client -t docket-workers` (or `docket-workers:w2`) so you move directly to the worker session. Outside tmux, it copies the equivalent `tmux attach` command. Attaching is for direct inspection or emergency debugging; normal coordination should go through `/docket tell`, `/docket verdict`, and the worker protocol tools.
+`/docket attach` is deliberate terminal control. If Pi is already running inside tmux, Docket runs `tmux switch-client -t docket-workers` (or `docket-workers:w2`) so you move directly to the worker session. From a worker, `/docket attach parent` switches back to the parent tmux target recorded at spawn. Outside tmux, it copies the equivalent `tmux attach` command. Attaching is for direct inspection or emergency debugging; normal coordination should go through `/docket tell`, `/docket verdict`, and the worker protocol tools.
 
 ### How Docket uses tmux
 

@@ -79,6 +79,8 @@ export type WorkerStatus = {
 	projectRoot?: string;
 	kind?: string;
 	parentWorkerId?: string;
+	/** tmux target for the direct parent session/window, used by `/docket attach parent` from a worker. */
+	parentTmuxTarget?: string;
 	depth?: number;
 	canSpawn?: string[];
 	git?: GitSnapshot;

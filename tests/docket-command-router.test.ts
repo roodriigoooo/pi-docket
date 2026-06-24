@@ -154,6 +154,33 @@ test("Docket Command Router routes worker delete and refreshes dock", async () =
 	assert.deepEqual(calls, ["worker.delete", "refreshWorkers"]);
 });
 
+test("Docket Command Router attaches from worker back to recorded parent target", async () => {
+	const copied: string[] = [];
+	const currentWorker: WorkerStatus = { ...worker, id: "current-worker", index: 1, parentTmuxTarget: "parent-session:3.0" };
+	const workerStore = {
+		find: async (id: string) => id === currentWorker.id ? currentWorker : undefined,
+		list: async () => [currentWorker],
+		readArtifacts: async () => [],
+	} as unknown as WorkerStore;
+	const { calls, router } = harness({
+		workerId: currentWorker.id,
+		workerStore,
+		copyText: async (text) => { copied.push(text); return true; },
+	});
+
+	const priorTmux = process.env.TMUX;
+	delete process.env.TMUX;
+	try {
+		await router.handle({ kind: "attach", worker: "parent" });
+	} finally {
+		if (priorTmux === undefined) delete process.env.TMUX;
+		else process.env.TMUX = priorTmux;
+	}
+
+	assert.deepEqual(copied, ["tmux attach -t parent-session:3.0"]);
+	assert.deepEqual(calls, ["notify:Copied: tmux attach -t parent-session:3.0"]);
+});
+
 test("Docket Command Router handles artifact ref chips through context", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "artifact", action: "ref", idOrRef: "a1" });

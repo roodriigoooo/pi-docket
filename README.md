@@ -150,7 +150,7 @@ Why tmux:
 
 Docket stores status, artifacts, verdicts, and bundles on disk. tmux owns only the live worker terminals and scrollback.
 
-If you run `/docket attach [w<N>]` from inside tmux, Docket switches you to the worker session with `tmux switch-client`. Outside tmux, it copies the normal `tmux attach` command.
+If you run `/docket attach [w<N>]` from inside tmux, Docket switches you to the worker session with `tmux switch-client`. From a worker, `/docket attach parent` switches back to the parent tmux target recorded at spawn. Outside tmux, Docket copies the normal `tmux attach` command.
 
 ### Peek without attaching
 

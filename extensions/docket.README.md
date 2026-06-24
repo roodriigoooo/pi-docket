@@ -11,7 +11,7 @@ Primary subcommands:
 - `/docket` — open decision docket.
 - `/docket spawn [--fresh] [--as <kind>] <task>` — launch explicit worker in `docket-workers` tmux session.
 - `/docket tell w<N> [text]` — send parent input to worker.
-- `/docket attach [w<N>]` — switch to worker tmux session when already in tmux; otherwise copy attach command.
+- `/docket attach [parent|w<N>]` — switch to parent/worker tmux target when already in tmux; otherwise copy attach command.
 - `/docket save [--once] [--summarize] [note]` — save selected evidence as bundle and label current Pi tree leaf.
 - `/docket load [id|last|w<N>]` — mount bundle or worker artifacts at zero model-context cost.
 
