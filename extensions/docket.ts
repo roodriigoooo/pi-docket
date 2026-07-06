@@ -56,7 +56,7 @@ import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-change
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
+import { captureWorkerPane, createWorkerStore, explicitExtensionArgs, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
@@ -64,6 +64,7 @@ import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorker
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
+import { workerKindLaunchArgs } from "./worker-spawn-policy.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -3076,6 +3077,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						return { content: [{ type: "text", text: `Docket: kind "${requestedKind}" not in allowlist (${allowedList}).` }], details: { error: "not-allowed" } };
 					}
 					const childKind = kindRegistry.get(requestedKind);
+					const childLaunchArgs = workerKindLaunchArgs(childKind, { model: current.model });
 					const taskText = ((params as { task: string }).task ?? "").trim();
 					if (!taskText) return { content: [{ type: "text", text: "Docket: child task is empty." }], details: { error: "empty-task" } };
 					try {
@@ -3092,6 +3094,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 							parentWorkerId: current.id,
 							depth: currentDepth + 1,
 							layout: childKind.layout,
+							...(childLaunchArgs.length ? { extensionArgs: [...explicitExtensionArgs(), ...childLaunchArgs] } : {}),
 						});
 						appendWorkerEventSync(store.root(), current.id, { kind: "message", payload: { event: "spawn-child", childId: child.id, childIndex: child.index, kind: childKind.name } });
 						return { content: [{ type: "text", text: `Docket: dispatched child ${workerShortLabel(child.index)} (kind: ${childKind.name}). Their docket_done will surface in your inbox.` }], details: { childId: child.id, childIndex: child.index, kind: childKind.name } };
@@ -3256,9 +3259,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
+				parentModel: () => ctx.model?.id,
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
 				captureTerminal: () => captureTerminal,
+				defaultKind: () => docketConfig?.worker?.defaultKind,
 				parentSeedPolicy: () => (docketConfig?.worker?.parentSeedPolicy === "full" ? "full" : "none"),
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				announce: (subject, detail, kind, docket, meta) => announceAction(pi, ctx, subject, detail, kind, docket, meta),

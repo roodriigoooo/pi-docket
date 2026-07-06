@@ -166,6 +166,118 @@ test("Worker Commands passes kind decision-rights and plan gate into spawn", asy
 	assert.deepEqual(setup.spawned[0]?.decisionRights, ["May edit docs after approval"]);
 });
 
+test("Worker Commands uses configured default kind", async () => {
+	const setup = deps();
+	const reg = createWorkerKindRegistry();
+	reg.register({
+		name: "planner",
+		readOnly: true,
+		defaultWorktree: false,
+		parentSeedPolicy: "none",
+		canSpawn: [],
+		layout: "split-events",
+		source: "runtime",
+	});
+	const commands = createWorkerCommands({
+		store: setup.store,
+		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
+		cwd: "/repo",
+		parentSession: "/session.json",
+		kinds: reg,
+		maxActive: () => 8,
+		captureTerminal: () => false,
+		defaultKind: () => "planner",
+		notify: () => {},
+		announce: () => {},
+		emitText: () => {},
+	});
+
+	await commands.spawn("draft docs");
+
+	assert.equal(setup.spawned[0]?.kind, "planner");
+	assert.equal(setup.spawned[0]?.readOnly, true);
+	assert.equal(setup.spawned[0]?.worktree, false);
+	assert.equal(setup.spawned[0]?.layout, "split-events");
+});
+
+test("Worker Commands passes kind model and thinking to worker launch", async () => {
+	const setup = deps();
+	const reg = createWorkerKindRegistry();
+	reg.register({
+		name: "opus",
+		model: "anthropic/claude-opus-4-7",
+		thinking: "high",
+		readOnly: false,
+		defaultWorktree: true,
+		parentSeedPolicy: "none",
+		canSpawn: [],
+		layout: "single",
+		source: "runtime",
+	});
+	const commands = createWorkerCommands({
+		store: setup.store,
+		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
+		cwd: "/repo",
+		parentSession: "/session.json",
+		kinds: reg,
+		maxActive: () => 8,
+		captureTerminal: () => false,
+		notify: () => {},
+		announce: () => {},
+		emitText: () => {},
+	});
+
+	await commands.spawn("deep review", { as: "opus" });
+
+	assert.deepEqual(setup.spawned[0]?.extensionArgs, ["--model", "anthropic/claude-opus-4-7", "--thinking", "high"]);
+});
+
+test("Worker Commands inherits parent model when kind has no model override", async () => {
+	const setup = deps();
+	const reg = createWorkerKindRegistry();
+	reg.register({ name: "reviewer", readOnly: true, defaultWorktree: false, parentSeedPolicy: "none", canSpawn: [], layout: "single", source: "runtime" });
+	const commands = createWorkerCommands({
+		store: setup.store,
+		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
+		cwd: "/repo",
+		parentSession: "/session.json",
+		parentModel: () => "google/gemini-3-pro",
+		kinds: reg,
+		maxActive: () => 8,
+		captureTerminal: () => false,
+		notify: () => {},
+		announce: () => {},
+		emitText: () => {},
+	});
+
+	await commands.spawn("review", { as: "reviewer" });
+
+	assert.deepEqual(setup.spawned[0]?.extensionArgs, ["--model", "google/gemini-3-pro"]);
+});
+
+test("Worker Commands warns and falls back when configured default kind is missing", async () => {
+	const setup = deps();
+	const notifications: string[] = [];
+	const commands = createWorkerCommands({
+		store: setup.store,
+		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
+		cwd: "/repo",
+		parentSession: "/session.json",
+		kinds: createWorkerKindRegistry(),
+		maxActive: () => 8,
+		captureTerminal: () => false,
+		defaultKind: () => "ghost",
+		notify: (text) => notifications.push(text),
+		announce: () => {},
+		emitText: () => {},
+	});
+
+	await commands.spawn("do work");
+
+	assert.equal(setup.spawned[0]?.kind, "default");
+	assert.deepEqual(notifications, ["Docket: configured default worker kind \"ghost\" not found. Falling back to default."]);
+});
+
 test("Worker Commands sends parent messages to workers", async () => {
 	const waiting: WorkerStatus = { ...worker, state: "needs_input", questions: [
 		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },

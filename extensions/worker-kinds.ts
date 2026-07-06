@@ -8,7 +8,7 @@ export const DEFAULT_KIND_NAME = "default";
 
 export type WorkerParentSeedPolicy = "full" | "none";
 export type WorkerLayout = "single" | "split-events";
-export type WorkerThinking = "off" | "low" | "medium" | "high";
+export type WorkerThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type WorkerKind = {
 	name: string;
@@ -93,7 +93,7 @@ function asLayout(value: unknown): WorkerLayout {
 function asThinking(value: unknown): WorkerThinking | undefined {
 	if (typeof value !== "string") return undefined;
 	const lowered = value.trim().toLowerCase();
-	if (["off", "low", "medium", "high"].includes(lowered)) return lowered as WorkerThinking;
+	if (["off", "minimal", "low", "medium", "high", "xhigh"].includes(lowered)) return lowered as WorkerThinking;
 	return undefined;
 }
 
@@ -103,7 +103,7 @@ function asStringList(value: unknown): string[] | undefined {
 	return cleaned.length ? cleaned : undefined;
 }
 
-function normalizeName(value: string | undefined): string | undefined {
+export function normalizeWorkerKindName(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const trimmed = value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "");
 	return trimmed.length > 0 ? trimmed.slice(0, 32) : undefined;
@@ -112,7 +112,7 @@ function normalizeName(value: string | undefined): string | undefined {
 export function parseWorkerKindMarkdown(text: string, source: WorkerKind["source"], sourcePath?: string): WorkerKind | undefined {
 	const parsed = parseFrontmatter<Record<string, unknown>>(text);
 	const fm = (parsed.frontmatter ?? {}) as Record<string, unknown>;
-	const name = normalizeName(typeof fm.name === "string" ? fm.name : undefined);
+	const name = normalizeWorkerKindName(typeof fm.name === "string" ? fm.name : undefined);
 	if (!name || name === DEFAULT_KIND_NAME) return undefined;
 	const body = (parsed.body ?? "").trim();
 	const description = typeof fm.description === "string" ? fm.description.trim() : undefined;
@@ -139,7 +139,7 @@ export function parseWorkerKindMarkdown(text: string, source: WorkerKind["source
 		parentSeedPolicy,
 		...(maxArtifacts !== undefined ? { maxArtifacts } : {}),
 		...(maxDurationSec !== undefined ? { maxDurationSec } : {}),
-		canSpawn: canSpawn.map(normalizeName).filter((value): value is string => typeof value === "string"),
+		canSpawn: canSpawn.map(normalizeWorkerKindName).filter((value): value is string => typeof value === "string"),
 		...(planGate ? { planGate } : {}),
 		...(decisionRights ? { decisionRights } : {}),
 		...(guardrailsAppend ? { guardrailsAppend } : {}),
@@ -254,7 +254,7 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 			return Array.from(kinds.keys()).sort();
 		},
 		register(kind: WorkerKind): () => void {
-			const normalized = normalizeName(kind.name);
+			const normalized = normalizeWorkerKindName(kind.name);
 			if (!normalized || normalized === DEFAULT_KIND_NAME) {
 				throw new Error(`Docket: invalid worker kind name "${kind.name}"`);
 			}
@@ -266,14 +266,14 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 			};
 		},
 		unregister(name: string): boolean {
-			const normalized = normalizeName(name);
+			const normalized = normalizeWorkerKindName(name);
 			if (!normalized || normalized === DEFAULT_KIND_NAME) return false;
 			return kinds.delete(normalized);
 		},
 		reload,
 		defaultKind(projectDefault?: string): WorkerKind {
 			if (projectDefault) {
-				const explicit = kinds.get(normalizeName(projectDefault) ?? "");
+				const explicit = kinds.get(normalizeWorkerKindName(projectDefault) ?? "");
 				if (explicit) return explicit;
 			}
 			return BUILTIN_DEFAULT;
