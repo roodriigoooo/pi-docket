@@ -62,6 +62,7 @@ import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
+import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { workerKindLaunchArgs } from "./worker-spawn-policy.js";
@@ -3336,8 +3337,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
-				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, worker, changeSet),
-				chooseHunkReviewAction: (worker, comments) => chooseHunkReviewAction(ctx, worker, comments),
+				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({
+					showBuiltinDiff: (reviewWorker, reviewChangeSet) => showTextViewer(ctx, `${workerSourceLabel(reviewWorker)} · full diff`, formatArtifact(reviewChangeSet), "diff"),
+					reviewInHunk: (reviewWorker, reviewChangeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, reviewWorker, reviewChangeSet),
+					chooseAction: (reviewWorker, comments) => chooseHunkReviewAction(ctx, reviewWorker, comments),
+					sendToWorker: (reviewWorker, text) => workerCommands.tell(workerSourceLabel(reviewWorker), text),
+					copyText: copyToClipboard,
+					notify: (text, level) => notifyDocket(pi, ctx, text, level),
+				}, worker, changeSet, options),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
 				createCheckpoint: async (options) => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);

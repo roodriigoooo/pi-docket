@@ -42,9 +42,7 @@ function depsFor(w: WorkerStatus, overrides: Partial<WorkerVerdictDeps> = {}): {
 		input: async () => undefined,
 		promoteWorkerChangeSet: async () => { calls.push("promote"); return true; },
 		markArtifactDone: (artifact: Artifact) => { calls.push(`done:${artifact.ref}`); },
-		reviewWorkerChangeSetInHunk: async () => ({ available: true, comments: [] }),
-		chooseHunkReviewAction: async () => "ignore",
-		copyText: async (text: string) => { calls.push(`copy:${text}`); return true; },
+		reviewWorkerChangeSet: async () => ({ kind: "returned" }),
 		refreshWorkerDockWidget: async () => { calls.push("refresh"); },
 		recordDecision: async (record) => { decisions.push(record); },
 		...overrides,
@@ -81,11 +79,13 @@ test("runWorkerVerdict sends option text and records visible risk/evidence", asy
 test("runWorkerVerdict diff verb opens full diff in diff mode", async () => {
 	const w = worker({ state: "ready" });
 	const changeSet: Artifact = { id: "changes", displayId: "changes", ref: "worker-changes:worker-1:0", kind: "response", title: "x change set", subtitle: "", body: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new", timestamp: 1, meta: { workerChangeSet: true, workerId: "worker-1", changedFiles: [{ path: "x", additions: 1, deletions: 1 }], hunkCount: 1 } };
-	const seen: Array<{ verb: string; diff?: boolean }> = [];
-	const { deps, calls } = depsFor(w, {
+	const seen: string[] = [];
+	const { deps } = depsFor(w, {
 		showVerdict: async () => ({ verb: "diff", worker: w, changeSet }),
-		showText: async (title, _text, options) => { seen.push({ verb: "diff", diff: options?.diff }); calls.push(`showText:${title}:${options?.diff ? "diff" : "plain"}`); },
-		formatArtifact: (artifact) => artifact.body,
+		reviewWorkerChangeSet: async (_worker, seenChangeSet, options) => {
+			seen.push(`${seenChangeSet.ref}:${options.preferred}`);
+			return { kind: "returned" };
+		},
 	});
 
 	// diff verb re-enters the loop; follow it with accept to terminate.
@@ -96,63 +96,54 @@ test("runWorkerVerdict diff verb opens full diff in diff mode", async () => {
 
 	await runWorkerVerdict(deps, w);
 
-	assert.equal(seen.some((s) => s.diff === true), true, `expected showText called with diff:true, got: ${JSON.stringify(seen)}`);
-	assert.ok(calls.some((c) => /showText:.*:diff$/.test(c)));
+	assert.deepEqual(seen, ["worker-changes:worker-1:0:builtin"]);
 });
 
-test("runWorkerVerdict opens Hunk review and sends harvested comments to worker", async () => {
+test("runWorkerVerdict records chat only after review comments are sent", async () => {
 	const w = worker({ state: "ready" });
 	const cs = changeSet();
 	const { deps, calls, decisions } = depsFor(w, {
 		showVerdict: async () => ({ verb: "hunk", worker: w, changeSet: cs }),
-		reviewWorkerChangeSetInHunk: async () => ({ available: true, comments: [{ filePath: "x", newLine: 2, summary: "tighten this" }] }),
-		chooseHunkReviewAction: async () => "send",
+		reviewWorkerChangeSet: async (_worker, _changeSet, options) => {
+			assert.equal(options.preferred, "hunk");
+			return { kind: "comments-sent", commentCount: 1 };
+		},
 	});
 
 	const outcome = await runWorkerVerdict(deps, w);
 
 	assert.equal(outcome, "advance");
-	assert.match(calls[0] ?? "", /^tell:w1:revise from Hunk review \(1 comment\):/);
-	assert.match(calls[0] ?? "", /1\. x:2\n   tighten this/);
+	assert.equal(calls.some((call) => call.startsWith("tell:")), false);
 	assert.equal(decisions[0]?.verb, "chat");
 	assert.equal(decisions[0]?.option, "Hunk review comments (1)");
 	assert.deepEqual(decisions[0]?.evidenceRefs, ["worker-changes:worker-1:0", "worker-status:worker-1:0"]);
 	assert.equal(calls.at(-1), "refresh");
 });
 
-test("runWorkerVerdict copies Hunk comments without replying", async () => {
+test("runWorkerVerdict returns to card without recording when review sends no comments", async () => {
 	const w = worker({ state: "ready" });
 	const cs = changeSet();
 	let first = true;
-	const { deps, calls } = depsFor(w, {
+	const { deps, decisions } = depsFor(w, {
 		showVerdict: async () => first ? (first = false, { verb: "hunk", worker: w, changeSet: cs }) : null,
-		reviewWorkerChangeSetInHunk: async () => ({ available: true, comments: [{ filePath: "x", newLine: 2, summary: "copy this" }] }),
-		chooseHunkReviewAction: async () => "copy",
+		reviewWorkerChangeSet: async () => ({ kind: "returned" }),
 	});
 
 	await runWorkerVerdict(deps, w);
 
-	assert.ok(calls.some((call) => call.startsWith("copy:revise from Hunk review")), `expected copy call, got ${JSON.stringify(calls)}`);
-	assert.ok(calls.includes("notify:info:Copied Hunk review comments"));
-	assert.equal(calls.some((call) => call.startsWith("tell:")), false);
+	assert.equal(decisions.length, 0);
 });
 
-test("runWorkerVerdict opens full diff when Hunk is missing", async () => {
+test("runWorkerVerdict returns to card when Hunk falls back to builtin", async () => {
 	const w = worker({ state: "ready" });
 	const cs = changeSet();
 	let first = true;
-	const { deps, calls } = depsFor(w, {
+	const { deps } = depsFor(w, {
 		showVerdict: async () => first ? (first = false, { verb: "hunk", worker: w, changeSet: cs }) : null,
-		reviewWorkerChangeSetInHunk: async () => ({ available: false, comments: [], message: "Hunk not found. Install with: npm i -g hunkdiff" }),
-		formatArtifact: (artifact) => artifact.body,
+		reviewWorkerChangeSet: async () => ({ kind: "returned" }),
 	});
 
 	await runWorkerVerdict(deps, w);
-
-	assert.deepEqual(calls, [
-		"notify:warning:Hunk not found. Install with: npm i -g hunkdiff",
-		"showText:w1 · full diff:diff",
-	]);
 });
 
 test("runWorkerVerdict marks ready worker reviewed on accept without changeset", async () => {

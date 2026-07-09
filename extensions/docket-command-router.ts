@@ -13,7 +13,7 @@ import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
-import type { HunkReviewAction, HunkReviewComment, HunkReviewResult } from "./worker-diff-review.js";
+import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
 
 export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "save" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
 
@@ -64,8 +64,7 @@ export type DocketCommandRouterDeps = {
 	markWorkerUnloaded(worker: WorkerStatus): void;
 	markAllWorkersUnloaded(): void;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
-	reviewWorkerChangeSetInHunk(worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult>;
-	chooseHunkReviewAction(worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction>;
+	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference }): Promise<WorkerChangeReviewOutcome>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
 	createHandoffCheckpoint(): Promise<void>;

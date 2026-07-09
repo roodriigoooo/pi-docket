@@ -21,6 +21,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
 | Worker Conflicts | `extensions/worker-conflicts.ts` | Edited-file overlap detection across workers; warning text for dock, dashboard, and promote confirmation. |
 | Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
+| Worker Change Review | `extensions/worker-change-review.ts` | One review operation over a deterministic change set: built-in diff, Hunk fallback, comment disposition, and worker-only comment delivery. It cannot promote or mount artifacts. |
+| Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
 | Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
@@ -41,6 +43,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 5. `Background Work` projects the snapshot into a synthetic status artifact. Navigator ranks it alongside file edits and errors. The dock renders one row per worker plus an event sub-line when thinking. Passive warnings use the same data: `silent Nm` for no recent tool/todo events, `waiting Nm` for an old parent question.
 6. Worker calls `docket_done` / `docket_fail` → state goes terminal → row enters `ready` / `failed` until evicted (`worker.dockIdleHideMinutes`) or pruned (`worker.pruneAfterHours`). When the prune sweep removes a terminal worker that never got a verdict (its id is absent from the decision ledger), it records a `worker_evicted_unreviewed` event first so the debt is counted before the record is gone.
 7. If the worker *process* dies, `remain-on-exit` keeps the dead pane. The dock's harvest sweep (`isPaneHarvestCandidate` → `WorkerStore.harvestPaneTail`) captures the last 200 lines to `pane-tail.txt`, kills the window, and stamps `paneCapturedAt` on the status so the probe never repeats. The tail surfaces as a `terminal tail` artifact in review and as the last lines on the failed verdict card. Workers in a terminal state whose pane is still alive (a protocol `docket_fail` with pi still running) are left untouched so you can keep chatting with them.
+
+For a ready worker, the verdict card can open the deterministic change-set artifact directly or ask Hunk to annotate its exact patch. `Worker Change Review` owns the fallback to the built-in diff and comment send/copy/ignore handling. Only a successful send returns `comments-sent`; `Worker Verdict` then records the chat decision and advances the queue.
 
 ## Worker protocol
 
