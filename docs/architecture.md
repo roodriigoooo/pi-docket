@@ -33,6 +33,10 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Extension Surface | `extensions/docket.ts` (via `globalThis.__docket`) | `registerWorkerKind`, `listWorkerKinds`, `onWorkerEvent`. |
 | Navigator | `extensions/docket-navigator.ts` | View model, ranking, selection state, mode/source transitions. |
 | Command Router | `extensions/docket-command-router.ts` | Routes parsed intents to the modules above. |
+| Shared Session Runtime | `extensions/shared-session-runtime.ts` | Parent/worker-neutral registration: `/docket` routing, message rendering, mounted artifact expansion, checkpoint lifecycle, and session cleanup. |
+| Parent Runtime | `extensions/parent-runtime.ts` | Parent-only worker watch/dock startup and teardown. The parent owns cache refresh, reconciliation, harvest, tmux status, and dock animation. |
+| Worker Runtime | `extensions/worker-runtime.ts` | Worker-only guardrail/protocol registration plus heartbeat lifecycle. The worker owns protocol tools, nudges, shell fallback, event capture, and allowed child spawning. |
+| Docket Views | `extensions/docket-views/` | Artifact/file viewers, shared layout primitives, and router/verdict action type boundaries. Runtime state is not imported into views. |
 
 ## Worker lifecycle
 

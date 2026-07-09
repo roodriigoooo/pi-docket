@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum, Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, getLanguageFromPath, highlightCode, isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import {
 	Box,
@@ -67,6 +67,11 @@ import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { workerKindLaunchArgs } from "./worker-spawn-policy.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
+import { createSharedSessionRuntime } from "./shared-session-runtime.js";
+import { createParentRuntime } from "./parent-runtime.js";
+import { createWorkerRuntime } from "./worker-runtime.js";
+import { BOTTOM_CORNERS, fitBorder, padAnsi, TOP_CORNERS, wrapPlainText } from "./docket-views/primitives.js";
+import { showArtifactViewer, showFileViewer, showTextViewer } from "./docket-views/artifact-viewers.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -117,200 +122,6 @@ function toolEventTarget(event: { toolName?: string; input?: Record<string, unkn
 	return undefined;
 }
 
-class DocketTextViewer implements Component {
-	private offset = 0;
-	private column = 0;
-	private lines: string[];
-	private rendered: string[];
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-	private viewportHeight = 34;
-
-	constructor(private tui: TUI, private theme: any, private title: string, text: string, private done: () => void, private mode?: "diff") {
-		const rawLines = text.split("\n");
-		this.lines = rawLines;
-		this.rendered = this.mode === "diff" ? rawLines.map((line) => renderGitDiffLine(line, this.theme)) : rawLines;
-	}
-
-	handleInput(data: string): void {
-		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
-		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
-		const page = Math.max(1, this.viewportHeight - 2);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done();
-			return;
-		}
-		const before = this.offset;
-		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
-		if (this.offset === before && this.column === beforeColumn) return;
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const container = new Box(2, 1, docketCardBg(this.theme));
-		const innerWidth = Math.max(20, width - 4);
-		const accent = (s: string) => this.theme.fg("accent", s);
-		const dim = (s: string) => this.theme.fg("dim", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
-		const headerLeft = ` ${accent(this.theme.bold("docket · inspect"))} ${dim(this.title)} `;
-		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${Math.min(this.offset + 34, this.lines.length)}/${this.lines.length} · col ${this.column}`)} `;
-		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		for (const line of this.rendered.slice(this.offset, this.offset + 34)) {
-			const visible = this.column > 0 ? [...line].slice(this.column).join("") : line;
-			container.addChild(new Text(truncateToWidth(visible, innerWidth - 2), 1, 0));
-		}
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
-		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = container.render(width);
-		this.cachedWidth = width;
-		return this.cachedLines;
-	}
-}
-
-class DocketFileViewer implements Component {
-	private offset = 0;
-	private column = 0;
-	private viewportHeight = 30;
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	constructor(
-		private tui: TUI,
-		private theme: any,
-		private filePath: string,
-		private language: string | undefined,
-		private lines: string[],
-		private done: () => void,
-	) {}
-
-	handleInput(data: string): void {
-		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done();
-			return;
-		}
-		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
-		const page = Math.max(1, this.viewportHeight - 2);
-		const before = this.offset;
-		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
-		if (this.offset === before && this.column === beforeColumn) return;
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const container = new Box(2, 1, docketCardBg(this.theme));
-		const innerWidth = Math.max(20, width - 4);
-		const accent = (s: string) => this.theme.fg("accent", s);
-		const dim = (s: string) => this.theme.fg("dim", s);
-		const muted = (s: string) => this.theme.fg("muted", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
-
-		const lineNumWidth = Math.max(3, String(this.lines.length).length);
-		const last = Math.min(this.offset + this.viewportHeight, this.lines.length);
-		const visible = this.lines.slice(this.offset, this.offset + this.viewportHeight).map((line) => this.column > 0 ? [...line].slice(this.column).join("") : line);
-		const highlighted = highlightCode(visible.join("\n"), this.language);
-		const langTag = this.language ?? "text";
-		const headerLeft = ` ${accent(this.theme.bold(this.filePath))} ${dim(langTag)} `;
-		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${last}/${this.lines.length} · col ${this.column}`)} `;
-		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-
-		for (let i = 0; i < visible.length; i++) {
-			const lineNo = this.offset + i + 1;
-			const numStr = muted(String(lineNo).padStart(lineNumWidth));
-			const code = highlighted[i] ?? "";
-			container.addChild(new Text(truncateToWidth(`${numStr}  ${code}`, innerWidth - 2), 1, 0));
-		}
-		for (let i = visible.length; i < this.viewportHeight; i++) {
-			container.addChild(new Text("", 1, 0));
-		}
-
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
-		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = container.render(width);
-		this.cachedWidth = width;
-		return this.cachedLines;
-	}
-}
-
-async function showFileViewer(ctx: ExtensionCommandContext, filePath: string): Promise<void> {
-	let content: string;
-	try {
-		const stat = await fs.stat(filePath);
-		if (!stat.isFile()) {
-			await showTextViewer(ctx, filePath, `[Docket: ${filePath} is not a file]`);
-			return;
-		}
-		content = await fs.readFile(filePath, "utf8");
-	} catch (err) {
-		await showTextViewer(ctx, filePath, `[Docket could not read ${filePath}: ${String(err)}]`);
-		return;
-	}
-	const language = getLanguageFromPath(filePath);
-	await ctx.ui.custom<void>(
-		(tui, theme, _kb, done) => new DocketFileViewer(tui, theme, filePath, language, content.split("\n"), done),
-		{ overlay: true, overlayOptions: { anchor: "center", width: "92%", minWidth: 84, maxHeight: "95%", margin: 1 } },
-	);
-}
-
-async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string, mode?: "diff"): Promise<void> {
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketTextViewer(tui, theme, title, text, done, mode), {
-		overlay: true,
-		overlayOptions: { anchor: "center", width: "90%", minWidth: 90, maxHeight: "95%", margin: 1 },
-	});
-}
-
-async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifact: Artifact): Promise<void> {
-	if (artifact.kind === "file" && !artifactHasDiff(artifact)) {
-		const filePath = artifactFilePath(artifact, ctx.cwd);
-		if (filePath) {
-			await showFileViewer(ctx, filePath);
-			return;
-		}
-	}
-	const inspected = await catalog.inspect(artifact);
-	await showTextViewer(ctx, inspected.title, inspected.text, artifactIsDiffLike(artifact) ? "diff" : undefined);
-}
-
 function relativeTime(timestamp?: number): string {
 	if (!timestamp) return "";
 	const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
@@ -338,61 +149,6 @@ function colorKind(theme: any, kind: ArtifactKind, text: string): string {
 	if (kind === "prompt") return theme.fg("customMessageLabel", text);
 	return theme.fg("muted", text);
 }
-
-type BorderOptions = {
-	fill?: (s: string) => string;
-	left?: string;
-	right?: string;
-};
-
-function fitBorder(left: string, right: string, width: number, border: (s: string) => string, options: BorderOptions = {}): string {
-	const cornerL = options.left ?? "─";
-	const cornerR = options.right ?? "─";
-	const fill = options.fill ?? border;
-	if (width <= 0) return "";
-	if (width === 1) return border(cornerL);
-	let leftText = left;
-	let rightText = right;
-	const fixedWidth = 2;
-	const minimumGap = leftText || rightText ? 3 : 0;
-	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(rightText) > 0) {
-		rightText = truncateToWidth(rightText, Math.max(0, visibleWidth(rightText) - 1), "");
-	}
-	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(leftText) > 0) {
-		leftText = truncateToWidth(leftText, Math.max(0, visibleWidth(leftText) - 1), "");
-	}
-	const gapWidth = Math.max(0, width - fixedWidth - visibleWidth(leftText) - visibleWidth(rightText));
-	return `${border(cornerL)}${leftText}${fill("─".repeat(gapWidth))}${rightText}${border(cornerR)}`;
-}
-
-function padAnsi(text: string, width: number): string {
-	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
-}
-
-function wrapPlainText(text: string, width: number, maxLines = Infinity): string[] {
-	const limit = Math.max(12, width);
-	const out: string[] = [];
-	for (const raw of text.split(/\r?\n/)) {
-		let line = raw.trim();
-		if (!line) {
-			out.push("");
-			continue;
-		}
-		while (visibleWidth(line) > limit && out.length < maxLines) {
-			let slice = truncateToWidth(line, limit, "");
-			const breakAt = slice.lastIndexOf(" ");
-			if (breakAt > limit * 0.45) slice = slice.slice(0, breakAt);
-			out.push(slice.trimEnd());
-			line = line.slice(slice.length).trimStart();
-		}
-		if (out.length < maxLines) out.push(line);
-	}
-	if (out.length > maxLines) return out.slice(0, maxLines);
-	return out;
-}
-
-const TOP_CORNERS: BorderOptions = { left: "╭", right: "╮" };
-const BOTTOM_CORNERS: BorderOptions = { left: "╰", right: "╯" };
 
 function docketCardBg(theme: any): (s: string) => string {
 	return (s: string) => theme.bg("customMessageBg", s);
@@ -2584,7 +2340,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 		notifyDocket(pi, ctx, message, "info");
 	};
 
-	pi.registerMessageRenderer("docket", docketMessageRenderer());
+	const registerMessageRendering = (): void => {
+		pi.registerMessageRenderer("docket", docketMessageRenderer());
+	};
 
 	const workerId = process.env[DOCKET_WORKER_ENV];
 
@@ -2893,7 +2651,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 		return updated;
 	};
 
-	if (workerId) {
+	const registerWorkerGuardrailsAndProtocol = (): void => {
+		if (!workerId) return;
 		void loadWorkerGuardrails(activeCtx?.cwd ?? process.cwd());
 		void ensureKindRegistryLoaded(activeCtx?.cwd ?? process.cwd());
 		pi.on("before_agent_start", async (event, ctx) => {
@@ -3118,9 +2877,57 @@ export default function docketExtension(pi: ExtensionAPI) {
 			await applyWorkerState(ctx, intent.state, intent.text);
 			event.input.command = `printf '%s\n' ${shellSingleQuote(workerProtocolResultText(intent.state))}`;
 		});
-	}
+	};
 
-	pi.on("session_start", (_event, ctx) => {
+	const workerRuntime = createWorkerRuntime({
+		workerId,
+		registerGuardrailsAndProtocol: registerWorkerGuardrailsAndProtocol,
+		startHeartbeat: () => {
+			const ctx = activeCtx;
+			if (!ctx) return;
+			void writeWorkerHeartbeat(ctx);
+			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
+			heartbeatTimer.unref?.();
+		},
+		stopHeartbeat: async () => {
+			if (heartbeatTimer) {
+				clearInterval(heartbeatTimer);
+				heartbeatTimer = undefined;
+			}
+			try { await createWorkerStore().patchStatus(workerId!, { state: "ended" }); } catch { /* best-effort */ }
+		},
+	});
+	const parentRuntime = createParentRuntime({
+		startWorkerWatchAndDock: () => {
+			const ctx = activeCtx;
+			if (!ctx?.hasUI) return;
+			const root = createWorkerStore().root();
+			workerDockCache = new WorkerSnapshotCache(root);
+			workerDockIdleHideMs = 0;
+			workerReadyEmbedEmitted.clear();
+			void loadConfig(ctx.cwd).then((config) => {
+				workerDockIdleHideMs = dockIdleHideMs(config.worker);
+				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
+				void refreshWorkerDockWidget();
+			}).catch(() => undefined);
+			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
+		},
+		stopWorkerWatchAndDock: () => {
+			if (workerDockUnwatch) {
+				workerDockUnwatch();
+				workerDockUnwatch = undefined;
+			}
+			stopDockAnimation();
+			dockTui = undefined;
+			workerDockCache = undefined;
+			workerDockPending = false;
+			workerDockRunning = false;
+			workerDockIdleHideMs = 0;
+		},
+	});
+
+	const registerSessionLifecycle = (): void => {
+		pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		sessionProjectKey = projectKey(ctx.cwd);
 		pinnedRefs = new Set();
@@ -3136,43 +2943,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
 		if (loadedCheckpoint) void mountLoadedCheckpoint(loadedCheckpoint.id);
 		void maybeSweep(ctx.cwd);
-		if (workerId) {
-			void writeWorkerHeartbeat(ctx);
-			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
-			heartbeatTimer.unref?.();
-		} else if (ctx.hasUI) {
-			const root = createWorkerStore().root();
-			workerDockCache = new WorkerSnapshotCache(root);
-			workerDockIdleHideMs = 0;
-			workerReadyEmbedEmitted.clear();
-			void loadConfig(ctx.cwd).then((config) => {
-				workerDockIdleHideMs = dockIdleHideMs(config.worker);
-				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
-				void refreshWorkerDockWidget();
-			}).catch(() => undefined);
-			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
-		}
-	});
+		if (workerRuntime.isWorker) workerRuntime.onSessionStart();
+		else parentRuntime.onSessionStart();
+		});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
-		if (heartbeatTimer) {
-			clearInterval(heartbeatTimer);
-			heartbeatTimer = undefined;
-		}
-		if (workerDockUnwatch) {
-			workerDockUnwatch();
-			workerDockUnwatch = undefined;
-		}
-		stopDockAnimation();
-		dockTui = undefined;
-		workerDockCache = undefined;
-		workerDockPending = false;
-		workerDockRunning = false;
-		workerDockIdleHideMs = 0;
+		pi.on("session_shutdown", async (_event, ctx) => {
+		if (workerRuntime.isWorker) await workerRuntime.onSessionShutdown();
+		else parentRuntime.onSessionShutdown();
 		sessionProjectKey = undefined;
-		if (workerId) {
-			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
-		}
 		await drainShutdownConsume();
 		activeCtx = undefined;
 		pinnedRefs = new Set();
@@ -3186,9 +2964,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 			ctx.ui.setWidget("docket-worker-result", undefined);
 			ctx.ui.setWidget("docket-workers", undefined);
 		}
-	});
+		});
+	};
 
-	pi.on("input", async (event, ctx) => {
+	const registerContextExpansion = (): void => {
+		pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
 		if (loadedCheckpoint) {
 			loadedCheckpoint = undefined;
@@ -3206,9 +2986,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 		refreshWorkerResultWidget();
 		if (result.expanded === 0) return { action: "continue" };
 		return { action: "transform", text: result.text };
-	});
+		});
+	};
 
-	pi.registerCommand("docket", {
+	const registerCommandRouting = (): void => {
+		pi.registerCommand("docket", {
 		description: "Review Pi agent work, worker output, and saved evidence",
 		getArgumentCompletions: async (prefix: string) => {
 			const trimmed = prefix.replace(/^\s+/, "");
@@ -3231,14 +3013,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 			return null;
 		},
 		handler: (args, ctx) => runDocketCommand(args, ctx),
-	});
+		});
 
 	// One-key path to the worker progress lens. It stays zero-context until the user
 	// explicitly loads evidence or replies to a worker.
-	pi.registerShortcut?.("f8", {
+		pi.registerShortcut?.("f8", {
 		description: "Docket: open worker progress lens",
 		handler: (ctx) => runDocketCommand("workers", ctx as ExtensionCommandContext),
-	});
+		});
+	};
 
 	async function runDocketCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
 			const parsed = parseDocketCommand(args);
@@ -3379,4 +3162,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				readDecisionEvents: () => createDecisionLog().read(),
 			}).handle(intent);
 	}
+
+	createSharedSessionRuntime({
+		registerMessageRendering,
+		registerCommandRouting,
+		registerSessionLifecycle,
+		registerContextExpansion,
+	}).register();
+	workerRuntime.register();
 }
