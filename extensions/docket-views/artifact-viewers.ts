@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import { getLanguageFromPath, highlightCode } from "@mariozechner/pi-coding-agent";
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { Box, Container, Key, Text, matchesKey, truncateToWidth, type Component, type TUI } from "@mariozechner/pi-tui";
+import { Box, Container, Text, truncateToWidth, type Component, type TUI } from "@mariozechner/pi-tui";
 import { artifactFilePath, type ArtifactCatalog } from "../artifact-catalog.js";
+import { createScrollingKeymap, formatKeyHints } from "../docket-keymap.js";
 import { renderGitDiffLine } from "../diff-render.js";
 import type { Artifact } from "../types.js";
 import { BOTTOM_CORNERS, fitBorder, TOP_CORNERS } from "./primitives.js";
@@ -39,25 +40,24 @@ export class DocketTextViewer implements Component {
 		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
 		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
 		const page = Math.max(1, this.viewportHeight - 2);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const action = createScrollingKeymap().resolve(data);
+		if (action === "close") {
 			this.done();
 			return;
 		}
 		const before = this.offset;
 		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
+		if (action === "down") this.offset = Math.min(maxOffset, this.offset + 1);
+		else if (action === "up") this.offset = Math.max(0, this.offset - 1);
+		else if (action === "downFast") this.offset = Math.min(maxOffset, this.offset + 5);
+		else if (action === "upFast") this.offset = Math.max(0, this.offset - 5);
+		else if (action === "pageDown") this.offset = Math.min(maxOffset, this.offset + page);
+		else if (action === "pageUp") this.offset = Math.max(0, this.offset - page);
+		else if (action === "top") this.offset = 0;
+		else if (action === "bottom") this.offset = maxOffset;
+		else if (action === "left") this.column = Math.max(0, this.column - 8);
+		else if (action === "right") this.column += 8;
+		else if (action === "leftmost") this.column = 0;
 		if (this.offset === before && this.column === beforeColumn) return;
 		this.invalidate();
 		this.tui.requestRender();
@@ -82,7 +82,7 @@ export class DocketTextViewer implements Component {
 			const visible = this.column > 0 ? [...line].slice(this.column).join("") : line;
 			container.addChild(new Text(truncateToWidth(visible, innerWidth - 2), 1, 0));
 		}
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
+		container.addChild(new Text(dim(formatKeyHints(createScrollingKeymap(), "footer")), 1, 0));
 		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;
@@ -108,7 +108,8 @@ export class DocketFileViewer implements Component {
 
 	handleInput(data: string): void {
 		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const action = createScrollingKeymap().resolve(data);
+		if (action === "close") {
 			this.done();
 			return;
 		}
@@ -116,19 +117,17 @@ export class DocketFileViewer implements Component {
 		const page = Math.max(1, this.viewportHeight - 2);
 		const before = this.offset;
 		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
+		if (action === "down") this.offset = Math.min(maxOffset, this.offset + 1);
+		else if (action === "up") this.offset = Math.max(0, this.offset - 1);
+		else if (action === "downFast") this.offset = Math.min(maxOffset, this.offset + 5);
+		else if (action === "upFast") this.offset = Math.max(0, this.offset - 5);
+		else if (action === "pageDown") this.offset = Math.min(maxOffset, this.offset + page);
+		else if (action === "pageUp") this.offset = Math.max(0, this.offset - page);
+		else if (action === "top") this.offset = 0;
+		else if (action === "bottom") this.offset = maxOffset;
+		else if (action === "left") this.column = Math.max(0, this.column - 8);
+		else if (action === "right") this.column += 8;
+		else if (action === "leftmost") this.column = 0;
 		if (this.offset === before && this.column === beforeColumn) return;
 		this.invalidate();
 		this.tui.requestRender();
@@ -160,7 +159,7 @@ export class DocketFileViewer implements Component {
 			container.addChild(new Text(truncateToWidth(`${numStr}  ${highlighted[i] ?? ""}`, innerWidth - 2), 1, 0));
 		}
 		for (let i = visible.length; i < this.viewportHeight; i++) container.addChild(new Text("", 1, 0));
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
+		container.addChild(new Text(dim(formatKeyHints(createScrollingKeymap(), "footer")), 1, 0));
 		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;

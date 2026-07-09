@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { Box, Key, Text, matchesKey, truncateToWidth, type Component, type TUI } from "@mariozechner/pi-tui";
+import { Box, Text, truncateToWidth, type Component, type TUI } from "@mariozechner/pi-tui";
+import { createEvidenceBundleKeymap, formatKeyHints } from "./docket-keymap.js";
 import type { Artifact, ArtifactKind, CheckpointMode } from "./types.js";
 
 export type CheckpointSelectionState = {
@@ -86,18 +87,19 @@ class CheckpointSelectorView implements Component {
 		const selected = clampSelected(this.state.selected, this.artifacts);
 		this.state = selected === this.state.selected ? this.state : { ...this.state, selected };
 
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const action = createEvidenceBundleKeymap().resolve(data);
+		if (action === "close") {
 			this.done(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.state = { ...this.state, selected: clampSelected(selected + 1, this.artifacts) };
-		else if (data === "k" || matchesKey(data, Key.up)) this.state = { ...this.state, selected: Math.max(0, selected - 1) };
-		else if (data === "g") this.state = { ...this.state, selected: 0 };
-		else if (data === "G") this.state = { ...this.state, selected: Math.max(0, this.artifacts.length - 1) };
-		else if (data === " ") this.state = toggleCheckpointSelection(this.state);
-		else if (data === "a") this.state = selectAllCheckpointArtifacts(this.state);
-		else if (data === "n") this.state = selectNoCheckpointArtifacts(this.state);
-		else if (matchesKey(data, Key.enter)) {
+		if (action === "down") this.state = { ...this.state, selected: clampSelected(selected + 1, this.artifacts) };
+		else if (action === "up") this.state = { ...this.state, selected: Math.max(0, selected - 1) };
+		else if (action === "top") this.state = { ...this.state, selected: 0 };
+		else if (action === "bottom") this.state = { ...this.state, selected: Math.max(0, this.artifacts.length - 1) };
+		else if (action === "toggle") this.state = toggleCheckpointSelection(this.state);
+		else if (action === "all") this.state = selectAllCheckpointArtifacts(this.state);
+		else if (action === "none") this.state = selectNoCheckpointArtifacts(this.state);
+		else if (action === "save") {
 			const selectedArtifacts = selectedCheckpointArtifacts(this.artifacts, this.state);
 			if (selectedArtifacts.length === 0) this.message = "select at least one artifact or q cancel";
 			else this.done(selectedArtifacts);
@@ -124,7 +126,7 @@ class CheckpointSelectorView implements Component {
 		const muted = (s: string) => this.theme.fg("muted", s);
 		const warning = (s: string) => this.theme.fg("warning", s);
 		const stats = checkpointSelectionStats(this.artifacts, this.state);
-		const header = `${accent(this.theme.bold("docket · checkpoint"))} ${dim(this.mode)} ${dim("·")} ${stats.selected}/${stats.total} selected ${dim("·")} ~${stats.estimatedTokens} tok`;
+		const header = `${accent(this.theme.bold("docket · evidence bundle"))} ${dim(this.mode)} ${dim("·")} ${stats.selected}/${stats.total} selected ${dim("·")} ~${stats.estimatedTokens} tok`;
 		container.addChild(new Text(truncateToWidth(header, innerWidth - 2), 1, 0));
 
 		const windowSize = 14;
@@ -146,7 +148,7 @@ class CheckpointSelectorView implements Component {
 		for (let i = visible.length; i < windowSize; i++) container.addChild(new Text("", 1, 0));
 
 		if (this.message) container.addChild(new Text(warning(this.message), 1, 0));
-		else container.addChild(new Text(dim("space toggle · a all · n none · enter create · q cancel"), 1, 0));
+		else container.addChild(new Text(dim(formatKeyHints(createEvidenceBundleKeymap(), "footer")), 1, 0));
 
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;

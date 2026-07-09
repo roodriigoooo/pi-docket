@@ -37,6 +37,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Parent Runtime | `extensions/parent-runtime.ts` | Parent-only worker watch/dock startup and teardown. The parent owns cache refresh, reconciliation, harvest, tmux status, and dock animation. |
 | Worker Runtime | `extensions/worker-runtime.ts` | Worker-only guardrail/protocol registration plus heartbeat lifecycle. The worker owns protocol tools, nudges, shell fallback, event capture, and allowed child spawning. |
 | Docket Views | `extensions/docket-views/` | Artifact/file viewers, shared layout primitives, and router/verdict action type boundaries. Runtime state is not imported into views. |
+| Docket Keymap | `extensions/docket-keymap.ts` | Normalized physical-key bindings, conflict checking, and shared card/footer/help hint rendering for interactive views. |
 
 ## Worker lifecycle
 

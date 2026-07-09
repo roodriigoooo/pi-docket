@@ -446,7 +446,7 @@ function previewNextActions(row: WorkerActivityRow): string {
 			? "Enter details"
 			: "Enter verdict";
 	const load = row.loaded ? "l loaded" : "l load";
-	return [primary, "p peek", load, "c continue", "a attach", "x dismiss"].join(" · ");
+	return [primary, "p peek", load, "r Reply", "a attach", "x stop"].join(" · ");
 }
 
 function previewProgressBody(row: WorkerActivityRow, options: WorkerActivityPreviewOptions): string | undefined {

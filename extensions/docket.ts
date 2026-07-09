@@ -72,6 +72,7 @@ import { createParentRuntime } from "./parent-runtime.js";
 import { createWorkerRuntime } from "./worker-runtime.js";
 import { BOTTOM_CORNERS, fitBorder, padAnsi, TOP_CORNERS, wrapPlainText } from "./docket-views/primitives.js";
 import { showArtifactViewer, showFileViewer, showTextViewer } from "./docket-views/artifact-viewers.js";
+import { createPickerKeymap, createVerdictKeymap, createWorkerDashboardKeymap, defineKeymap, formatKeyHints } from "./docket-keymap.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -368,26 +369,19 @@ function workerChangeSetLines(artifact: Artifact): string[] {
 	}).filter((line): line is string => line !== undefined);
 }
 
-function inboxButtons(item: ReviewItem, done: boolean): InboxButton[] {
+export function browserCardButtons(item: ReviewItem, done: boolean): InboxButton[] {
 	const primaryLabel = reviewActionLabel(item.primaryAction, item);
-	const buttons: InboxButton[] = [{ key: "Enter", label: primaryLabel }];
-	const seen = new Set<ReviewActionId>([item.primaryAction]);
-	const order: Array<{ id: ReviewActionId; key: string; label: string }> = [
-		{ id: "openVerdict", key: "Enter", label: "Verdict" },
-		{ id: "promoteWorker", key: "P", label: "Promote" },
-		{ id: "inspect", key: "d", label: "Diff" },
-		{ id: "tellWorker", key: "r", label: "Reply" },
-		{ id: "attachReference", key: "a", label: "Attach" },
-		{ id: "copyArtifact", key: "y", label: "Copy" },
-		{ id: "markDone", key: "Space", label: done ? "Restore" : "Done" },
-	];
-	for (const entry of order) {
-		if (seen.has(entry.id)) continue;
-		if (!item.actions.includes(entry.id)) continue;
-		buttons.push({ key: entry.key, label: entry.label });
-		seen.add(entry.id);
-	}
-	return buttons;
+	const actions = new Set<ReviewActionId>(item.actions);
+	const map = defineKeymap("browser card", [
+		{ keys: "enter", action: "primary", label: primaryLabel, slots: ["card"] },
+		...(actions.has("promoteWorker") && item.primaryAction !== "promoteWorker" ? [{ keys: "P", action: "promote", label: "Promote", slots: ["card"] as const }] : []),
+		...(actions.has("inspect") && item.primaryAction !== "inspect" ? [{ keys: "d", action: "inspect", label: artifactIsDiffLike(item.artifact) ? "Review diff" : "Inspect", slots: ["card"] as const }] : []),
+		...(actions.has("tellWorker") && item.primaryAction !== "tellWorker" ? [{ keys: "r", action: "reply", label: "Reply", slots: ["card"] as const }] : []),
+		...(actions.has("attachReference") ? [{ keys: "a", action: "attach", label: "Attach", slots: ["card"] as const }] : []),
+		...(actions.has("copyArtifact") ? [{ keys: "y", action: "copy", label: "Copy", slots: ["card"] as const }] : []),
+		...(actions.has("markDone") ? [{ keys: "space", action: "done", label: done ? "Restore" : "Done", slots: ["card"] as const }] : []),
+	]);
+	return map.hints("card").map((hint) => ({ key: hint.keys[0]!, label: hint.label }));
 }
 
 function navigatorModeLabel(mode: NavigatorMode): string {
@@ -594,7 +588,7 @@ export class DocketView implements Component {
 			}
 		}
 		const done = this.completedRefs.has(artifact.ref);
-		const buttons = inboxButtons(item, done);
+		const buttons = browserCardButtons(item, done);
 		const buttonLine = buttons.map((button, index) => index === 0 ? accent(`[${button.key} ${button.label}]`) : muted(`[${button.key} ${button.label}]`)).join(" ");
 		lines.push(truncateToWidth(buttonLine, width));
 		const time = relativeTime(artifact.timestamp);
@@ -954,28 +948,30 @@ export class DocketVerdictView implements Component {
 		const state = deriveWorkerState(this.worker);
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
 		const max = Math.max(0, verbs.length - 1);
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length });
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.finish(null);
 			return;
 		}
-		const digitOption = verdictOptionForDigit(verbs, data);
+		const digitOption = action?.startsWith("option") ? verdictOptionForDigit(verbs, data) : undefined;
 		if (digitOption) {
 			this.finish({ verb: digitOption.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), text: digitOption.send });
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = max;
-		else if (data === "d" && this.changeSet) {
+		if (action === "down") this.selected = Math.min(max, this.selected + 1);
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = max;
+		else if (action === "diff" && this.changeSet) {
 			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
-		else if (data === "h" && this.changeSet) {
+		else if (action === "hunk" && this.changeSet) {
 			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
-		else if (matchesKey(data, Key.enter)) {
+		else if (action === "select") {
 			const verb = verbs[this.selected];
 			if (verb) this.finish({ verb: verb.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(verb.send !== undefined ? { text: verb.send } : {}) });
 			return;
@@ -1077,10 +1073,9 @@ export class DocketVerdictView implements Component {
 			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
-		const diffHint = this.changeSet ? "d full diff · h Hunk review · " : "";
-		const pickHint = optionCount > 0 ? `1-${optionCount} pick · ` : "";
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		this.container.addChild(new Text(dim(`${diffHint}${pickHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount }), "footer");
+		this.container.addChild(new Text(dim(`${hints} · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1196,21 +1191,23 @@ class DocketResumeView implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const keymap = createPickerKeymap({ mode: this.mode, canPreview: true });
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.done(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = Math.max(0, this.summaries.length - 1);
-		else if (matchesKey(data, Key.enter)) {
+		if (action === "down") this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = Math.max(0, this.summaries.length - 1);
+		else if (action === "select") {
 			const action: ResumeAction = this.mode === "delete" ? "delete" : this.mode === "load" ? "load" : "continue";
 			this.finish(action);
 		}
-		else if (data === "p") this.finish("preview");
-		else if (data === "e" && this.mode === "resume") this.finish("edit");
-		else if (data === "d" && this.mode !== "load") this.finish("delete");
+		else if (action === "preview") this.finish("preview");
+		else if (action === "edit" && this.mode === "resume") this.finish("edit");
+		else if (action === "delete" && this.mode !== "load") this.finish("delete");
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -1257,12 +1254,7 @@ class DocketResumeView implements Component {
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const help = this.mode === "delete"
-			? "j/k move · enter delete · p preview · q close"
-			: this.mode === "load"
-				? "j/k move · enter load · p preview · q close"
-				: "j/k move · enter continue · p preview · e edit · d delete · q close";
-		this.container.addChild(new Text(dim(help), 1, 0));
+		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({ mode: this.mode, canPreview: true }), "footer")), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1588,7 +1580,8 @@ export class DocketParallelWorkView implements Component {
 	handleInput(data: string): void {
 		const rows = this.activityRows();
 		const max = Math.max(0, rows.length - 1);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const action = createWorkerDashboardKeymap().resolve(data);
+		if (action === "close") {
 			if (this.peek) {
 				this.setPeek(false);
 				this.invalidate();
@@ -1598,35 +1591,35 @@ export class DocketParallelWorkView implements Component {
 			this.finish(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = max;
-		else if (matchesKey(data, Key.tab)) this.selectNext();
-		else if (data === "?") this.showHelp = !this.showHelp;
-		else if (data === "t") this.showProgressDetail = !this.showProgressDetail;
-		else if (data === "p") this.setPeek(!this.peek);
-		else if (matchesKey(data, Key.enter)) {
+		if (action === "down") this.selected = Math.min(max, this.selected + 1);
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = max;
+		else if (action === "next") this.selectNext();
+		else if (action === "help") this.showHelp = !this.showHelp;
+		else if (action === "progress") this.showProgressDetail = !this.showProgressDetail;
+		else if (action === "peek") this.setPeek(!this.peek);
+		else if (action === "open") {
 			const row = this.selectedRow();
 			if (row) this.finish(this.enterAction(row));
 			return;
 		}
-		else if (data === "l") {
+		else if (action === "load") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "load", worker });
 			return;
 		}
-		else if (data === "c" || data === "t") {
+		else if (action === "reply") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "tell", worker });
 			return;
 		}
-		else if (data === "a") {
+		else if (action === "attach") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "copyAttach", worker });
 			return;
 		}
-		else if (data === "x") {
+		else if (action === "stop") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "stop", worker });
 			return;
@@ -1720,12 +1713,12 @@ export class DocketParallelWorkView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("Enter verdict/details · p peek · l load · c continue · a attach · x dismiss · ? more · Esc"), 1, 0));
+		const keymap = createWorkerDashboardKeymap();
+		this.container.addChild(new Text(dim(formatKeyHints(keymap, "footer")), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Progress")} ${dim("t toggles full todo board; completion comes only from docket_done")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("↑↓ move · t todos · Tab switch worker · x stop worker (destructive)")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Keys")} ${dim(formatKeyHints(keymap, "help"))}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Peek")} ${dim("read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1792,19 +1785,25 @@ class DocketLoadPicker implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const keymap = createPickerKeymap({
+			mode: "load",
+			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
+			canPreview: this.mode === "checkpoint",
+		});
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.done(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.setIndex(this.currentIndex() + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.setIndex(this.currentIndex() - 1);
-		else if (data === "g") this.setIndex(0);
-		else if (data === "G") this.setIndex(this.currentMax());
-		else if (matchesKey(data, Key.tab)) this.toggleMode();
-		else if (data === "1") this.toggleMode("checkpoint");
-		else if (data === "2") this.toggleMode("worker");
-		else if (matchesKey(data, Key.enter)) this.finishLoad();
-		else if (data === "p" && this.mode === "checkpoint") this.finishPreview();
+		if (action === "down") this.setIndex(this.currentIndex() + 1);
+		else if (action === "up") this.setIndex(this.currentIndex() - 1);
+		else if (action === "top") this.setIndex(0);
+		else if (action === "bottom") this.setIndex(this.currentMax());
+		else if (action === "switch") this.toggleMode();
+		else if (action === "switchCheckpoint") this.toggleMode("checkpoint");
+		else if (action === "switchWorker") this.toggleMode("worker");
+		else if (action === "select") this.finishLoad();
+		else if (action === "preview" && this.mode === "checkpoint") this.finishPreview();
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -1854,10 +1853,11 @@ class DocketLoadPicker implements Component {
 		else this.renderWorkers(listWidth, accent, dim, muted);
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const help = this.mode === "checkpoint"
-			? "j/k move · tab/1/2 switch · enter load · p preview · q close"
-			: "j/k move · tab/1/2 switch · enter load · q close";
-		this.container.addChild(new Text(dim(help), 1, 0));
+		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({
+			mode: "load",
+			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
+			canPreview: this.mode === "checkpoint",
+		}), "footer")), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
