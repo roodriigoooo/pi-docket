@@ -28,7 +28,15 @@ function depsFor(w: WorkerStatus, overrides: Partial<WorkerVerdictDeps> = {}): {
 	const decisions: DecisionRecord[] = [];
 	const deps: WorkerVerdictDeps = {
 		hasUI: true,
-		workerStore: { find: async () => w, list: async () => [w], patchStatus: async (id, patch) => { calls.push(`patch:${id}:${JSON.stringify(patch)}`); return { ...w, ...patch }; } },
+		workerStore: {
+			find: async () => w,
+			list: async () => [w],
+			updateStatus: async (id, transition) => {
+				const patch = transition(w);
+				calls.push(`update:${id}:${JSON.stringify(patch)}`);
+				return { before: w, after: patch ? { ...w, ...patch } : w, changed: Boolean(patch) };
+			},
+		},
 		workerCommands: {
 			tell: async (ref: string, text: string) => { calls.push(`tell:${ref}:${text}`); },
 			delete: async (ref: string) => { calls.push(`delete:${ref}`); },
@@ -155,7 +163,7 @@ test("runWorkerVerdict marks ready worker reviewed on accept without changeset",
 	const outcome = await runWorkerVerdict(deps, w);
 
 	assert.equal(outcome, "advance");
-	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), `expected reviewedAt patch, got: ${JSON.stringify(calls)}`);
+	assert.ok(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)), `expected reviewedAt update, got: ${JSON.stringify(calls)}`);
 	assert.equal(decisions[0]?.verb, "accept");
 });
 
@@ -167,7 +175,7 @@ test("runWorkerVerdict marks ready worker reviewed on reject (dismiss)", async (
 
 	await runWorkerVerdict(deps, w);
 
-	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)));
+	assert.ok(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)));
 	assert.equal(decisions[0]?.verb, "reject");
 });
 
@@ -179,7 +187,7 @@ test("runWorkerVerdict does NOT mark reviewed on needs_input send (worker still 
 
 	await runWorkerVerdict(deps, w);
 
-	assert.equal(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), false);
+	assert.equal(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)), false);
 });
 
 test("runWorkerVerdict does NOT mark reviewed on failed accept (retry respawn)", async () => {
@@ -190,7 +198,7 @@ test("runWorkerVerdict does NOT mark reviewed on failed accept (retry respawn)",
 
 	await runWorkerVerdict(deps, w);
 
-	assert.equal(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)), false);
+	assert.equal(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)), false);
 	assert.ok(calls.some((c) => c.startsWith("respawn:")));
 });
 
@@ -202,7 +210,7 @@ test("runWorkerVerdict marks failed worker reviewed on reject (dismiss)", async 
 
 	await runWorkerVerdict(deps, w);
 
-	assert.ok(calls.some((c) => /^patch:worker-1:.*reviewedAt/.test(c)));
+	assert.ok(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)));
 });
 
 test("runWorkerVerdict stops without UI", async () => {

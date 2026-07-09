@@ -6,6 +6,7 @@ import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerInProject } from "./worker-store.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
+import { verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
 	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send";
@@ -19,7 +20,7 @@ type NotifyLevel = "info" | "warning" | "error";
 export type WorkerVerdictDeps = {
 	hasUI: boolean;
 	projectRoot?: string;
-	workerStore: Pick<WorkerStore, "find" | "list" | "patchStatus">;
+	workerStore: Pick<WorkerStore, "find" | "list" | "updateStatus">;
 	workerCommands: Pick<WorkerCommands, "tell" | "delete" | "respawn">;
 	notify(text: string, level: NotifyLevel): void;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
@@ -102,7 +103,7 @@ async function recordDecision(deps: WorkerVerdictDeps, worker: WorkerStatus, ver
  */
 async function markReviewed(deps: WorkerVerdictDeps, worker: WorkerStatus): Promise<void> {
 	try {
-		await deps.workerStore.patchStatus(worker.id, { reviewedAt: new Date().toISOString() });
+		await deps.workerStore.updateStatus(worker.id, verdictResolvedTransition(new Date().toISOString()));
 	} catch {
 		// best-effort: the decision ledger is the source of truth; never block on this.
 	}
@@ -160,11 +161,20 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
 			else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
-				if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
-				await markReviewed(deps, latest);
+				if (await deps.promoteWorkerChangeSet(changeSet)) {
+					deps.markArtifactDone(changeSet);
+					await recordDecision(deps, latest, "accept", undefined, changeSet);
+					await markReviewed(deps, latest);
+					await deps.refreshWorkerDockWidget();
+					return "advance";
+				}
+				continue;
 			} else if (statusArtifact) {
 				deps.markArtifactDone(statusArtifact);
+				await recordDecision(deps, latest, "accept", undefined, changeSet);
 				await markReviewed(deps, latest);
+				await deps.refreshWorkerDockWidget();
+				return "advance";
 			}
 			await recordDecision(deps, latest, "accept", undefined, changeSet);
 			await deps.refreshWorkerDockWidget();
@@ -179,8 +189,8 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			} else {
 				if (changeSet) deps.markArtifactDone(changeSet);
 				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
-				await markReviewed(deps, latest);
 				await recordDecision(deps, latest, "reject", undefined, changeSet);
+				await markReviewed(deps, latest);
 			}
 			await deps.refreshWorkerDockWidget();
 			return "advance";

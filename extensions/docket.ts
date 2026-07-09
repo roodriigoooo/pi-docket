@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -61,6 +61,7 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition } from "./worker-lifecycle.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
@@ -2214,13 +2215,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 			// before the record is gone so /docket log decisions can surface the count.
 			const decisionLog = createDecisionLog();
 			let reviewed: Set<string>;
-			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { reviewed = new Set(); }
+			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { return; }
 			for (const worker of targets) {
-				try {
-					if (!reviewed.has(worker.id)) {
+				if (!reviewed.has(worker.id)) {
+					try {
 						await decisionLog.recordEviction({ workerId: worker.id, workerLabel: workerShortLabel(worker.index), state: worker.state, ...(worker.task ? { task: worker.task } : {}) });
+					} catch {
+						continue;
 					}
-				} catch { /* best-effort: never block the prune on the ledger */ }
+				}
 				try { await store.purge(worker.id); } catch { /* best-effort */ }
 			}
 		} catch { /* best-effort */ }
@@ -2415,7 +2418,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		if (sharedSessionExists()) return;
 		const store = createWorkerStore();
 		for (const worker of sharedTargets) {
-			await store.patchStatus(worker.id, { state: "error", lastError: "tmux session ended; worker terminated" });
+			await store.updateStatus(worker.id, orphanDetectedTransition());
 		}
 	};
 
@@ -2592,15 +2595,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				await workerStore.writeArtifacts(workerId, capped);
 				lastHeartbeatSignature = signature;
 			}
-			const current = await workerStore.find(workerId);
-			await workerStore.patchStatus(workerId, {
-				...workerHeartbeatPatch(current, {
-					pid: process.pid,
-					sessionFile: ctx.sessionManager.getSessionFile?.(),
-					artifactCount: fullArtifacts.length,
-				}),
+			await workerStore.updateStatus(workerId, heartbeatTransition({
+				pid: process.pid,
+				sessionFile: ctx.sessionManager.getSessionFile?.(),
+				artifactCount: fullArtifacts.length,
 				...(ctx.model?.id ? { model: ctx.model.id } : {}),
-			});
+			}));
 		} catch {
 			// best-effort heartbeat; never crash the worker
 		}
@@ -2624,15 +2624,21 @@ export default function docketExtension(pi: ExtensionAPI) {
 				nextDoneInput = undefined;
 			}
 		}
-		const patch = workerProtocolPatch(current, nextState, nextText, {
+		const question = {
 			id: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`,
 			text: nextText ?? "",
 			createdAt: new Date().toISOString(),
 			...(nextState === "needs_input" && questionMeta ? questionMeta : {}),
-		}, nextDoneInput);
-		const updated = patch ? await store.patchStatus(workerId, patch) : current;
-		emitWorkerStateArtifact(ctx, nextState, nextText);
-		appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
+		};
+		const transition = nextState === "needs_input"
+			? waitTransition(nextText ?? "", question)
+			: protocolTransition(nextState, nextText, nextDoneInput);
+		const update = await store.updateStatus(workerId, transition);
+		const updated = update.after;
+		if (update.changed) {
+			emitWorkerStateArtifact(ctx, nextState, nextText);
+			appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
+		}
 		await writeWorkerHeartbeat(ctx);
 		return updated;
 	};
@@ -2640,9 +2646,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 	const applyWorkerTodos = async (ctx: ExtensionContext, items: WorkerTodoInput[]): Promise<WorkerStatus | undefined> => {
 		if (!workerId) return undefined;
 		const store = createWorkerStore();
-		const current = await store.find(workerId);
-		if (!current) return undefined;
-		const updated = await store.patchStatus(workerId, workerTodosPatch(items));
+		const update = await store.updateStatus(workerId, todosTransition(items));
+		const updated = update.after;
 		if (updated?.todos) {
 			const progress = workerTodoProgress(updated);
 			appendWorkerEventSync(store.root(), workerId, { kind: "todo", payload: { total: progress.total, completed: progress.completed, inProgress: progress.inProgress } });
@@ -2676,7 +2681,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 			try {
 				const store = createWorkerStore();
 				const current = await store.find(workerId);
-				if (current?.state === "idle") await store.patchStatus(workerId, { state: "active" });
+				if (current?.state === "idle") await store.updateStatus(workerId, turnStartedTransition());
 			} catch { /* best-effort */ }
 		});
 
@@ -2686,7 +2691,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				const store = createWorkerStore();
 				const current = await store.find(workerId);
 				if (!current || current.state !== "active") return;
-				await store.patchStatus(workerId, { state: "idle" });
+				await store.updateStatus(workerId, turnEndedTransition());
 				if (workerNudgesThisSession >= MAX_WORKER_NUDGES) return;
 				workerNudgesThisSession++;
 				pi.sendUserMessage("Docket: this turn ended without calling a protocol tool. If the task is complete with useful output, call `docket_done` with a summary (include a `Recommended:` bullet list if you have recommendations). If you are blocked or any non-trivial assumption is needed, call `docket_wait` with a concise question. If you cannot continue and have no useful partial output, call `docket_fail` with a one-sentence reason. Otherwise continue working.");

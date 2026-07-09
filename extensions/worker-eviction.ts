@@ -1,26 +1,11 @@
 import type { WorkerStatus } from "./background-work.js";
+import { dockTerminalAgeMs, isDockTerminal, pruneDisposition } from "./worker-lifecycle.js";
 
 /**
  * States that count as "the worker is done". Auto-hide and auto-prune only
  * apply to these; in-progress, waiting, ready, and failed workers stay
  * visible so the user can still act on them.
  */
-const TERMINAL_DOCK_STATES = new Set<WorkerStatus["state"]>(["ended"]);
-
-/** A worker is dock-terminal once it is ended OR once the parent recorded a verdict (reviewedAt).
- * Reviewed ready/failed workers stay dim in the dock but become eligible for idle-hide and prune. */
-function isDockTerminal(worker: WorkerStatus): boolean {
-	return TERMINAL_DOCK_STATES.has(worker.state) || Boolean(worker.reviewedAt);
-}
-
-function workerAgeMs(worker: WorkerStatus, now: number): number {
-	// For reviewed workers, age from reviewedAt so heartbeats (which bump updatedAt)
-	// do not keep a done worker forever in the dock.
-	const ts = Date.parse(worker.reviewedAt ?? worker.updatedAt);
-	if (!Number.isFinite(ts)) return 0;
-	return Math.max(0, now - ts);
-}
-
 export type EvictionConfig = {
 	dockIdleHideMinutes?: number;
 	pruneAfterHours?: number;
@@ -41,13 +26,11 @@ export function pruneAfterMs(config: EvictionConfig | undefined): number {
 export function isDockIdleEvictable(worker: WorkerStatus, now: number, idleHideMs: number): boolean {
 	if (idleHideMs <= 0) return false;
 	if (!isDockTerminal(worker)) return false;
-	return workerAgeMs(worker, now) >= idleHideMs;
+	return dockTerminalAgeMs(worker, now) >= idleHideMs;
 }
 
 export function shouldPruneWorker(worker: WorkerStatus, now: number, pruneMs: number): boolean {
-	if (pruneMs <= 0) return false;
-	if (!isDockTerminal(worker)) return false;
-	return workerAgeMs(worker, now) >= pruneMs;
+	return pruneDisposition(worker, now, pruneMs, true) !== "keep";
 }
 
 export function selectEvictableWorkerIds(workers: WorkerStatus[], now: number, idleHideMs: number): Set<string> {

@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, buildWorkerTaskDocument, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
+import { paneHarvestedTransition, parentReplyAcceptedTransition, respawnFailedTransition, respawnStartedTransition, type WorkerTransition } from "./worker-lifecycle.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
@@ -34,6 +35,7 @@ export type WorkerStore = {
 	readArtifacts(id: string): Promise<Artifact[]>;
 	writeStatus(snapshot: WorkerStatus): Promise<void>;
 	patchStatus(id: string, patch: Partial<WorkerStatus>): Promise<WorkerStatus | undefined>;
+	updateStatus(id: string, transition: WorkerTransition): Promise<{ before: WorkerStatus | undefined; after: WorkerStatus | undefined; changed: boolean }>;
 	writeArtifacts(id: string, artifacts: Artifact[]): Promise<void>;
 	addQuestion(id: string, text: string): Promise<WorkerStatus | undefined>;
 	sendInput(id: string, text: string): Promise<boolean>;
@@ -108,14 +110,12 @@ const WORKER_EXIT_PATCH_SCRIPT = [
 	`const fs = require("fs");`,
 	`const file = process.argv[1];`,
 	`const rawCode = process.argv[2] ?? "";`,
+	`const lock = file + ".lock";`,
+	`const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);`,
+	`const until = Date.now() + 5000;`,
+	`for (;;) { try { fs.mkdirSync(lock); break; } catch (err) { if (err.code !== "EEXIST") process.exit(0); try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) { fs.rmSync(lock,{recursive:true,force:true}); continue; } } catch {} if (Date.now() >= until) process.exit(0); sleep(20); } }`,
 	`let status;`,
-	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(0); }`,
-	`if (!status || ["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) process.exit(0);`,
-	`const code = Number(rawCode);`,
-	`status.updatedAt = new Date().toISOString();`,
-	`if (code === 0) status.state = "ended";`,
-	`else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; }`,
-	`fs.writeFileSync(file, JSON.stringify(status, null, 2) + "\\n", "utf8");`,
+	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); if (status && !["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) { const code = Number(rawCode); if (code === 0) status.state = "ended"; else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; } status.updatedAt = new Date().toISOString(); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(status, null, 2) + "\\n", "utf8"); fs.renameSync(tmp,file); } } catch {} finally { try { fs.rmSync(lock,{recursive:true,force:true}); } catch {} }`,
 ].join("");
 
 export function currentPiCommandParts(argv: string[] = process.argv, execPath = process.execPath): string[] {
@@ -329,6 +329,40 @@ async function writeJsonAtomic(file: string, payload: unknown): Promise<void> {
 	}
 }
 
+const STATUS_LOCK_TIMEOUT_MS = 5_000;
+const STATUS_LOCK_STALE_MS = 30_000;
+
+async function withStatusLock<T>(file: string, run: () => Promise<T>): Promise<T> {
+	const lock = `${file}.lock`;
+	const deadline = Date.now() + STATUS_LOCK_TIMEOUT_MS;
+	await fs.mkdir(path.dirname(file), { recursive: true });
+	while (true) {
+		try {
+			await fs.mkdir(lock);
+			break;
+		} catch (err: any) {
+			if (err?.code !== "EEXIST") throw err;
+			try {
+				const stat = await fs.stat(lock);
+				if (Date.now() - stat.mtimeMs > STATUS_LOCK_STALE_MS) {
+					await fs.rm(lock, { recursive: true, force: true });
+					continue;
+				}
+			} catch (statErr: any) {
+				if (statErr?.code !== "ENOENT") throw statErr;
+				continue;
+			}
+			if (Date.now() >= deadline) throw new Error(`Timed out acquiring worker status lock for ${path.basename(file)}`);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	}
+	try {
+		return await run();
+	} finally {
+		await fs.rm(lock, { recursive: true, force: true });
+	}
+}
+
 export function readWorkerStatusSync(id: string): WorkerStatus | undefined {
 	if (!/^[a-z0-9_-]+$/i.test(id)) return undefined;
 	try {
@@ -446,15 +480,29 @@ export function createWorkerStore(): WorkerStore {
 		},
 
 		async writeStatus(snapshot: WorkerStatus): Promise<void> {
-			await writeJsonAtomic(this.statusFile(snapshot.id), { ...snapshot, updatedAt: new Date().toISOString() });
+			const file = this.statusFile(snapshot.id);
+			await withStatusLock(file, () => writeJsonAtomic(file, { ...snapshot, updatedAt: new Date().toISOString() }));
 		},
 
 		async patchStatus(id: string, patch: Partial<WorkerStatus>): Promise<WorkerStatus | undefined> {
-			const current = await readJson<WorkerStatus | undefined>(this.statusFile(id), undefined);
-			if (!current) return undefined;
-			const next: WorkerStatus = { ...current, ...patch, id: current.id, updatedAt: new Date().toISOString() };
-			await writeJsonAtomic(this.statusFile(id), next);
-			return next;
+			const result = await this.updateStatus(id, () => patch);
+			return result.after;
+		},
+
+		async updateStatus(id: string, transition: WorkerTransition): Promise<{ before: WorkerStatus | undefined; after: WorkerStatus | undefined; changed: boolean }> {
+			const file = this.statusFile(id);
+			return withStatusLock(file, async () => {
+				const before = await readJson<WorkerStatus | undefined>(file, undefined);
+				if (!before) return { before, after: before, changed: false };
+				const patch = transition(before);
+				if (!patch) return { before, after: before, changed: false };
+				const candidate = { ...before, ...patch, id: before.id };
+				const changed = JSON.stringify({ ...before, updatedAt: undefined }) !== JSON.stringify({ ...candidate, updatedAt: undefined });
+				if (!changed) return { before, after: before, changed: false };
+				const after: WorkerStatus = { ...candidate, updatedAt: new Date().toISOString() };
+				await writeJsonAtomic(file, after);
+				return { before, after, changed: true };
+			});
 		},
 
 		async writeArtifacts(id: string, artifacts: Artifact[]): Promise<void> {
@@ -477,7 +525,7 @@ export function createWorkerStore(): WorkerStore {
 			if (!payload) return false;
 			const ok = sendKeysToWindow(status.tmuxSession, payload, status.tmuxWindowId, multiline);
 			if (!ok) return false;
-			await this.patchStatus(status.id, workerInputAcceptedPatch());
+			await this.updateStatus(status.id, parentReplyAcceptedTransition(status));
 			return true;
 		},
 
@@ -595,7 +643,7 @@ export function createWorkerStore(): WorkerStore {
 				}
 				killTmux(status.tmuxSession, status.tmuxWindowId);
 			}
-			await this.patchStatus(status.id, { paneCapturedAt: new Date().toISOString() });
+			await this.updateStatus(status.id, paneHarvestedTransition(new Date().toISOString()));
 			return probe.kind === "dead" ? "captured" : "window_gone";
 		},
 
@@ -619,17 +667,23 @@ export function createWorkerStore(): WorkerStore {
 			const sessionDir = path.join(dir, "session");
 			const target = workerWindowTarget(status.index);
 			const windowName = `w${status.index}`;
+			const starting = await this.updateStatus(status.id, respawnStartedTransition({ tmuxSession: target }));
+			if (!starting.after) return undefined;
 			const seeded = fsSync.existsSync(sessionDir) && fsSync.readdirSync(sessionDir).length > 0;
 			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
 			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
 			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
 			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded });
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
-			if (!launch.ok) throw new Error(launch.error);
+			if (!launch.ok) {
+				await this.updateStatus(status.id, respawnFailedTransition(launch.error));
+				throw new Error(launch.error);
+			}
 			const windowId = readWindowId(target);
-			// Fresh launch invalidates any previous post-mortem; let the sweep harvest this run too.
-			const patch: Partial<WorkerStatus> = { state: "starting", tmuxSession: target, paneCapturedAt: undefined, reviewedAt: undefined, ...(windowId ? { tmuxWindowId: windowId } : {}) };
-			return await this.patchStatus(status.id, patch);
+			const launched = await this.updateStatus(status.id, (current) => current.state === "starting"
+				? { ...(windowId ? { tmuxWindowId: windowId } : {}) }
+				: undefined);
+			return launched.after;
 		},
 
 		async purge(id: string, options: { cascade?: boolean } = {}): Promise<string[]> {

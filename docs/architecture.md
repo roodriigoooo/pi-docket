@@ -17,14 +17,15 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Bundle Commands | `extensions/checkpoint-commands.ts` | `list` / `delete` support for saved bundles. |
 | Bundle Selector | `extensions/checkpoint-selector.ts` | Interactive accept/exclude before optional summarization. |
 | Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
-| Background Work | `extensions/background-work.ts` | Worker state transitions, protocol semantics, pre-flight task docs, synthetic status artifacts, heartbeat dedup. |
+| Worker Lifecycle | `extensions/worker-lifecycle.ts` | Pure status transitions and lifecycle selectors: review/respawn/harvest eligibility, dock-terminal age, and prune disposition. |
+| Background Work | `extensions/background-work.ts` | Protocol payload shaping, pre-flight task docs, synthetic status artifacts, and heartbeat artifact dedup. |
 | Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
 | Worker Conflicts | `extensions/worker-conflicts.ts` | Edited-file overlap detection across workers; warning text for dock, dashboard, and promote confirmation. |
 | Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
 | Worker Change Review | `extensions/worker-change-review.ts` | One review operation over a deterministic change set: built-in diff, Hunk fallback, comment disposition, and worker-only comment delivery. It cannot promote or mount artifacts. |
 | Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
-| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
+| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, status-file locking/atomic transition persistence, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |

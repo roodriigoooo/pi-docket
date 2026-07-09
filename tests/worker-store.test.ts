@@ -328,6 +328,29 @@ test("worker store appends active questions", async () => {
 	});
 });
 
+test("worker store serializes concurrent status transitions without lost fields", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		await mkdir(store.root(), { recursive: true });
+		await seedWorker(store.root(), { id: "serialized", index: 1, state: "active" });
+
+		const [heartbeat, review] = await Promise.all([
+			store.updateStatus("serialized", () => ({ pid: 42, artifactCount: 3 })),
+			store.updateStatus("serialized", () => ({ reviewedAt: "2026-05-02T00:00:00.000Z" })),
+		]);
+		const final = await store.find("serialized");
+
+		assert.equal(heartbeat.changed, true);
+		assert.equal(review.changed, true);
+		assert.equal(final?.pid, 42);
+		assert.equal(final?.artifactCount, 3);
+		assert.equal(final?.reviewedAt, "2026-05-02T00:00:00.000Z");
+		const noOp = await store.updateStatus("serialized", () => undefined);
+		assert.equal(noOp.changed, false);
+		assert.equal(noOp.after?.updatedAt, final?.updatedAt);
+	});
+});
+
 test("purge cascades to child workers when requested", async () => {
 	await withTempHome(async () => {
 		const store = createWorkerStore();

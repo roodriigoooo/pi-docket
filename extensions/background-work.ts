@@ -1,5 +1,6 @@
 import { gitSnapshotLabel } from "./git-context.js";
 import type { Artifact, GitSnapshot } from "./types.js";
+import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-lifecycle.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
@@ -423,22 +424,7 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 }
 
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
-	if (worker.state === "needs_input") return "needs_input";
-	// Reviewed workers stay dim until new protocol activity or parent input clears reviewedAt.
-	// Heartbeats do NOT clear it (a done worker still ticks updatedAt but should stay reviewed).
-	if (worker.reviewedAt && (worker.state === "ready" || worker.state === "ended" || worker.state === "failed" || worker.state === "error")) return "reviewed";
-	if (worker.state === "failed" || worker.state === "error") return "failed";
-	if (worker.state === "ready") return "ready";
-	if (worker.state === "ended") {
-		if ((worker.artifactCount ?? 0) === 0) return "empty";
-		return "ready";
-	}
-	const ageMs = now - Date.parse(worker.updatedAt);
-	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
-	if (worker.state === "active") return "thinking";
-	if (worker.state === "starting") return "starting";
-	if (worker.state === "idle") return "idle";
-	return "idle";
+	return deriveWorkerLifecycleState(worker, now);
 }
 
 export function workerStateRank(worker: WorkerStatus, now = Date.now()): number {
@@ -578,11 +564,9 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 	};
 }
 
-const PANE_HARVEST_STATES: ReadonlySet<WorkerState> = new Set(["failed", "error", "ended"]);
-
 /** True when the parent's dock sweep should probe this worker's tmux pane for a post-mortem capture. */
 export function isPaneHarvestCandidate(worker: WorkerStatus): boolean {
-	return PANE_HARVEST_STATES.has(worker.state) && !worker.paneCapturedAt;
+	return isPaneHarvestEligible(worker);
 }
 
 export const PANE_TAIL_MAX_LINES = 200;
