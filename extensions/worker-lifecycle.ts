@@ -126,8 +126,8 @@ export function verdictResolvedTransition(at: string): WorkerTransition {
 	return (current) => TERMINAL_STATES.has(current.state) ? { reviewedAt: at } : undefined;
 }
 
-export function respawnStartedTransition(input: { tmuxSession: string; tmuxWindowId?: string }): WorkerTransition {
-	return () => ({ state: "starting", tmuxSession: input.tmuxSession, paneCapturedAt: undefined, reviewedAt: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
+export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string }): WorkerTransition {
+	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
 }
 
 export function respawnFailedTransition(message: string): WorkerTransition {

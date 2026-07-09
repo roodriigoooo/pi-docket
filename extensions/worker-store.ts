@@ -110,12 +110,13 @@ const WORKER_EXIT_PATCH_SCRIPT = [
 	`const fs = require("fs");`,
 	`const file = process.argv[1];`,
 	`const rawCode = process.argv[2] ?? "";`,
+	`const runToken = process.argv[3] ?? "";`,
 	`const lock = file + ".lock";`,
 	`const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);`,
 	`const until = Date.now() + 5000;`,
 	`for (;;) { try { fs.mkdirSync(lock); break; } catch (err) { if (err.code !== "EEXIST") process.exit(0); try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) { fs.rmSync(lock,{recursive:true,force:true}); continue; } } catch {} if (Date.now() >= until) process.exit(0); sleep(20); } }`,
 	`let status;`,
-	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); if (status && !["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) { const code = Number(rawCode); if (code === 0) status.state = "ended"; else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; } status.updatedAt = new Date().toISOString(); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(status, null, 2) + "\\n", "utf8"); fs.renameSync(tmp,file); } } catch {} finally { try { fs.rmSync(lock,{recursive:true,force:true}); } catch {} }`,
+	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); if (status && (!runToken || status.runToken === runToken) && !["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) { const code = Number(rawCode); if (code === 0) status.state = "ended"; else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; } status.updatedAt = new Date().toISOString(); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(status, null, 2) + "\\n", "utf8"); fs.renameSync(tmp,file); } } catch {} finally { try { fs.rmSync(lock,{recursive:true,force:true}); } catch {} }`,
 ].join("");
 
 export function currentPiCommandParts(argv: string[] = process.argv, execPath = process.execPath): string[] {
@@ -124,16 +125,16 @@ export function currentPiCommandParts(argv: string[] = process.argv, execPath = 
 	return ["pi"];
 }
 
-function workerExitPatchCommand(statusFile: string): string {
-	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code"`;
+function workerExitPatchCommand(statusFile: string, runToken?: string): string {
+	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code" ${shellQuote(runToken ?? "")}`;
 }
 
-export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean }): string {
+export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean; runToken?: string }): string {
 	const piParts = [`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
 	if (input.resumeSeeded) piParts.push("--continue");
 	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
 	piParts.push(shellQuote(input.initialPrompt));
-	return `${piParts.join(" ")}; code=$?; ${workerExitPatchCommand(input.statusFile)}`;
+	return `${piParts.join(" ")}; code=$?; ${workerExitPatchCommand(input.statusFile, input.runToken)}`;
 }
 
 function ensureTmux(): void {
@@ -574,6 +575,7 @@ export function createWorkerStore(): WorkerStore {
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
 
 			const now = new Date().toISOString();
+			const runToken = randomBytes(8).toString("hex");
 			const status: WorkerStatus = {
 				id,
 				index,
@@ -586,6 +588,7 @@ export function createWorkerStore(): WorkerStore {
 				createdAt: now,
 				updatedAt: now,
 				state: "starting",
+				runToken,
 				...(input.kind ? { kind: input.kind } : {}),
 				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
 				...(parentTmuxTarget ? { parentTmuxTarget } : {}),
@@ -594,7 +597,7 @@ export function createWorkerStore(): WorkerStore {
 			};
 			await this.writeStatus(status);
 
-			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded });
+			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded, runToken });
 			const result = launchSharedWindow({ windowName, cwd: workerCwd, command });
 			if (!result.ok) {
 				if (worktree) removeWorkerWorkspace(worktree);
@@ -667,13 +670,14 @@ export function createWorkerStore(): WorkerStore {
 			const sessionDir = path.join(dir, "session");
 			const target = workerWindowTarget(status.index);
 			const windowName = `w${status.index}`;
-			const starting = await this.updateStatus(status.id, respawnStartedTransition({ tmuxSession: target }));
+			const runToken = randomBytes(8).toString("hex");
+			const starting = await this.updateStatus(status.id, respawnStartedTransition({ tmuxSession: target, runToken }));
 			if (!starting.after) return undefined;
 			const seeded = fsSync.existsSync(sessionDir) && fsSync.readdirSync(sessionDir).length > 0;
 			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
 			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
 			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
-			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded });
+			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded, runToken });
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
 			if (!launch.ok) {
 				await this.updateStatus(status.id, respawnFailedTransition(launch.error));

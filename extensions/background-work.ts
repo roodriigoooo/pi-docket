@@ -89,6 +89,8 @@ export type WorkerStatus = {
 	createdAt: string;
 	updatedAt: string;
 	state: WorkerState;
+	/** Unique launch generation; prevents an old process-exit hook from changing a respawned worker. */
+	runToken?: string;
 	pid?: number;
 	sessionFile?: string;
 	model?: string;
