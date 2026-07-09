@@ -17,12 +17,15 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Bundle Commands | `extensions/checkpoint-commands.ts` | `list` / `delete` support for saved bundles. |
 | Bundle Selector | `extensions/checkpoint-selector.ts` | Interactive accept/exclude before optional summarization. |
 | Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
-| Background Work | `extensions/background-work.ts` | Worker state transitions, protocol semantics, pre-flight task docs, synthetic status artifacts, heartbeat dedup. |
+| Worker Lifecycle | `extensions/worker-lifecycle.ts` | Pure status transitions and lifecycle selectors: review/respawn/harvest eligibility, dock-terminal age, and prune disposition. |
+| Background Work | `extensions/background-work.ts` | Protocol payload shaping, pre-flight task docs, synthetic status artifacts, and heartbeat artifact dedup. |
 | Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
 | Worker Conflicts | `extensions/worker-conflicts.ts` | Edited-file overlap detection across workers; warning text for dock, dashboard, and promote confirmation. |
 | Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
+| Worker Change Review | `extensions/worker-change-review.ts` | One review operation over a deterministic change set: built-in diff, Hunk fallback, comment disposition, and worker-only comment delivery. It cannot promote or mount artifacts. |
+| Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
-| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
+| Worker Store | `extensions/worker-store.ts` | Shared tmux session topology, status-file locking/atomic transition persistence, `send-keys -l` stdin (single line) and `paste-buffer` (multiline), task doc write, session seeding. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
@@ -31,6 +34,11 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Extension Surface | `extensions/docket.ts` (via `globalThis.__docket`) | `registerWorkerKind`, `listWorkerKinds`, `onWorkerEvent`. |
 | Navigator | `extensions/docket-navigator.ts` | View model, ranking, selection state, mode/source transitions. |
 | Command Router | `extensions/docket-command-router.ts` | Routes parsed intents to the modules above. |
+| Shared Session Runtime | `extensions/shared-session-runtime.ts` | Parent/worker-neutral registration: `/docket` routing, message rendering, mounted artifact expansion, checkpoint lifecycle, and session cleanup. |
+| Parent Runtime | `extensions/parent-runtime.ts` | Parent-only worker watch/dock startup and teardown. The parent owns cache refresh, reconciliation, harvest, tmux status, and dock animation. |
+| Worker Runtime | `extensions/worker-runtime.ts` | Worker-only guardrail/protocol registration plus heartbeat lifecycle. The worker owns protocol tools, nudges, shell fallback, event capture, and allowed child spawning. |
+| Docket Views | `extensions/docket-views/` | Artifact/file viewers, shared layout primitives, and router/verdict action type boundaries. Runtime state is not imported into views. |
+| Docket Keymap | `extensions/docket-keymap.ts` | Normalized physical-key bindings, conflict checking, and shared card/footer/help hint rendering for interactive views. |
 
 ## Worker lifecycle
 
@@ -41,6 +49,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 5. `Background Work` projects the snapshot into a synthetic status artifact. Navigator ranks it alongside file edits and errors. The dock renders one row per worker plus an event sub-line when thinking. Passive warnings use the same data: `silent Nm` for no recent tool/todo events, `waiting Nm` for an old parent question.
 6. Worker calls `docket_done` / `docket_fail` → state goes terminal → row enters `ready` / `failed` until evicted (`worker.dockIdleHideMinutes`) or pruned (`worker.pruneAfterHours`). When the prune sweep removes a terminal worker that never got a verdict (its id is absent from the decision ledger), it records a `worker_evicted_unreviewed` event first so the debt is counted before the record is gone.
 7. If the worker *process* dies, `remain-on-exit` keeps the dead pane. The dock's harvest sweep (`isPaneHarvestCandidate` → `WorkerStore.harvestPaneTail`) captures the last 200 lines to `pane-tail.txt`, kills the window, and stamps `paneCapturedAt` on the status so the probe never repeats. The tail surfaces as a `terminal tail` artifact in review and as the last lines on the failed verdict card. Workers in a terminal state whose pane is still alive (a protocol `docket_fail` with pi still running) are left untouched so you can keep chatting with them.
+
+For a ready worker, the verdict card can open the deterministic change-set artifact directly or ask Hunk to annotate its exact patch. `Worker Change Review` owns the fallback to the built-in diff and comment send/copy/ignore handling. Only a successful send returns `comments-sent`; `Worker Verdict` then records the chat decision and advances the queue.
 
 ## Worker protocol
 

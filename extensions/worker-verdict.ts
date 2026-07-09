@@ -5,7 +5,8 @@ import { workerChangeSetArtifact } from "./worker-changes.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerInProject } from "./worker-store.js";
-import { formatHunkReviewComments, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
+import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
+import { verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
 	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send";
@@ -19,7 +20,7 @@ type NotifyLevel = "info" | "warning" | "error";
 export type WorkerVerdictDeps = {
 	hasUI: boolean;
 	projectRoot?: string;
-	workerStore: Pick<WorkerStore, "find" | "list" | "patchStatus">;
+	workerStore: Pick<WorkerStore, "find" | "list" | "updateStatus">;
 	workerCommands: Pick<WorkerCommands, "tell" | "delete" | "respawn">;
 	notify(text: string, level: NotifyLevel): void;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
@@ -29,9 +30,7 @@ export type WorkerVerdictDeps = {
 	input(title: string, placeholder: string): Promise<string | undefined>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	markArtifactDone(artifact: Artifact): void;
-	reviewWorkerChangeSetInHunk(worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult>;
-	chooseHunkReviewAction(worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction>;
-	copyText(text: string): Promise<boolean>;
+	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference }): Promise<WorkerChangeReviewOutcome>;
 	refreshWorkerDockWidget(): Promise<void>;
 	recordDecision(record: DecisionRecord): Promise<void>;
 };
@@ -104,7 +103,7 @@ async function recordDecision(deps: WorkerVerdictDeps, worker: WorkerStatus, ver
  */
 async function markReviewed(deps: WorkerVerdictDeps, worker: WorkerStatus): Promise<void> {
 	try {
-		await deps.workerStore.patchStatus(worker.id, { reviewedAt: new Date().toISOString() });
+		await deps.workerStore.updateStatus(worker.id, verdictResolvedTransition(new Date().toISOString()));
 	} catch {
 		// best-effort: the decision ledger is the source of truth; never block on this.
 	}
@@ -124,37 +123,16 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest);
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
-			if (changeSet) await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet), { diff: true });
+			if (changeSet) await deps.reviewWorkerChangeSet(latest, changeSet, { preferred: "builtin" });
 			continue;
 		}
 		if (result.verb === "hunk") {
 			if (!changeSet) continue;
-			const review = await deps.reviewWorkerChangeSetInHunk(latest, changeSet);
-			if (!review.available) {
-				deps.notify(review.message, "warning");
-				await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet), { diff: true });
-				continue;
-			}
-			if (review.message) {
-				deps.notify(review.message, "warning");
-				await deps.showText(`${label} · full diff`, deps.formatArtifact(changeSet), { diff: true });
-				continue;
-			}
-			if (review.comments.length === 0) {
-				deps.notify("Hunk review completed with no comments.", "info");
-				continue;
-			}
-			const reply = formatHunkReviewComments(review.comments);
-			const action = await deps.chooseHunkReviewAction(latest, review.comments);
-			if (action === "send") {
-				await deps.workerCommands.tell(label, reply);
-				await recordDecision(deps, latest, "chat", `Hunk review comments (${review.comments.length})`, changeSet);
+			const outcome = await deps.reviewWorkerChangeSet(latest, changeSet, { preferred: "hunk" });
+			if (outcome.kind === "comments-sent") {
+				await recordDecision(deps, latest, "chat", `Hunk review comments (${outcome.commentCount})`, changeSet);
 				await deps.refreshWorkerDockWidget();
 				return "advance";
-			}
-			if (action === "copy") {
-				const ok = await deps.copyText(reply);
-				deps.notify(ok ? "Copied Hunk review comments" : "No clipboard command found", ok ? "info" : "warning");
 			}
 			continue;
 		}
@@ -183,11 +161,20 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
 			else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
-				if (await deps.promoteWorkerChangeSet(changeSet)) deps.markArtifactDone(changeSet);
-				await markReviewed(deps, latest);
+				if (await deps.promoteWorkerChangeSet(changeSet)) {
+					deps.markArtifactDone(changeSet);
+					await recordDecision(deps, latest, "accept", undefined, changeSet);
+					await markReviewed(deps, latest);
+					await deps.refreshWorkerDockWidget();
+					return "advance";
+				}
+				continue;
 			} else if (statusArtifact) {
 				deps.markArtifactDone(statusArtifact);
+				await recordDecision(deps, latest, "accept", undefined, changeSet);
 				await markReviewed(deps, latest);
+				await deps.refreshWorkerDockWidget();
+				return "advance";
 			}
 			await recordDecision(deps, latest, "accept", undefined, changeSet);
 			await deps.refreshWorkerDockWidget();
@@ -202,8 +189,8 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			} else {
 				if (changeSet) deps.markArtifactDone(changeSet);
 				else if (statusArtifact) deps.markArtifactDone(statusArtifact);
-				await markReviewed(deps, latest);
 				await recordDecision(deps, latest, "reject", undefined, changeSet);
+				await markReviewed(deps, latest);
 			}
 			await deps.refreshWorkerDockWidget();
 			return "advance";

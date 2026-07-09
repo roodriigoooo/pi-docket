@@ -3,7 +3,8 @@ import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
 import type { WorkerKindRegistry, WorkerKind } from "./worker-kinds.js";
-import { workerProjectKey, type WorkerStore } from "./worker-store.js";
+import { resolveWorkerSpawnPolicy } from "./worker-spawn-policy.js";
+import { explicitExtensionArgs, workerProjectKey, type WorkerStore } from "./worker-store.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
@@ -16,9 +17,12 @@ type WorkerCommandsDeps = {
 	cwd: string;
 	projectRoot?: string;
 	parentSession?: string;
+	parentModel?(): string | undefined;
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
 	captureTerminal(): boolean;
+	/** Project-default kind picked when /docket spawn is invoked without --as. */
+	defaultKind?(): string | undefined;
 	/** Default parent-seed policy when neither the spawn flags nor the kind set one. */
 	parentSeedPolicy?(): "full" | "none";
 	notify(text: string, level: NotifyLevel): void;
@@ -113,14 +117,18 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	return {
 		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean } = {}): Promise<WorkerStatus | undefined> {
 			try {
-				const requestedName = options.as?.trim();
-				if (requestedName) {
-					const known = deps.kinds.names();
-					if (!known.includes(requestedName)) {
-						deps.notify(`Docket: unknown worker kind "${requestedName}". Try /docket kinds. Falling back to default.`, "warning");
-					}
-				}
-				const kind = deps.kinds.get(requestedName);
+				const policy = resolveWorkerSpawnPolicy({
+					kinds: deps.kinds,
+					options,
+					configuredDefaultKind: deps.defaultKind?.(),
+					configuredParentSeedPolicy: deps.parentSeedPolicy?.(),
+					parentSession: deps.parentSession,
+					parentModel: deps.parentModel?.(),
+					captureTerminalDefault: deps.captureTerminal(),
+				});
+				if (policy.unknownRequestedKind) deps.notify(`Docket: unknown worker kind "${policy.unknownRequestedKind}". Try /docket kinds. Falling back to default.`, "warning");
+				if (policy.unknownDefaultKind) deps.notify(`Docket: configured default worker kind "${policy.unknownDefaultKind}" not found. Falling back to default.`, "warning");
+				const kind = policy.kind;
 				const max = deps.maxActive();
 				if (max > 0) {
 					const active = await deps.store.countActive();
@@ -130,21 +138,15 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					}
 				}
 				const git = readGitSnapshot(deps.cwd);
-				// Precedence: --fresh forces a blank session; --seed forces parent seeding;
-			// otherwise the kind's parentSeedPolicy decides (default kind = none).
-			const wantSeed = options.fresh !== true && (options.seed === true || kind.parentSeedPolicy === "full" || deps.parentSeedPolicy?.() === "full");
-			const seedSource = wantSeed ? deps.parentSession : undefined;
-			// When seeding is wanted but no parent session is available (e.g. worker-side
-			// spawns with no parent JSONL), degrade to an explicit fresh launch rather
-			// than silently passing an undefined parentSession.
-			const freshLaunch = !wantSeed || !seedSource;
-				const useWorktree = options.worktree === true || kind.defaultWorktree;
+				// When seeding is wanted but no parent session is available (e.g. worker-side
+				// spawns with no parent JSONL), degrade to an explicit fresh launch rather
+				// than silently passing an undefined parentSession.
 				const worker = await deps.store.spawn({
 					task,
 					cwd: deps.cwd,
-					...(seedSource ? { parentSession: seedSource } : {}),
-					worktree: useWorktree,
-					...(freshLaunch ? { fresh: true } : {}),
+					...(policy.seedSource ? { parentSession: policy.seedSource } : {}),
+					worktree: policy.useWorktree,
+					...(policy.freshLaunch ? { fresh: true } : {}),
 					...(git ? { git } : {}),
 					kind: kind.name,
 					readOnly: kind.readOnly,
@@ -153,8 +155,9 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					...(kind.canSpawn.length > 0 ? { canSpawn: kind.canSpawn } : {}),
 					...(options.parentWorkerId ? { parentWorkerId: options.parentWorkerId } : {}),
 					...(typeof options.depth === "number" ? { depth: options.depth } : {}),
-					layout: options.layout ?? kind.layout,
-					...(options.captureTerminal || deps.captureTerminal() ? { captureTerminal: true } : {}),
+					layout: policy.layout,
+					...(policy.captureTerminal ? { captureTerminal: true } : {}),
+					...(policy.launchArgs.length ? { extensionArgs: [...explicitExtensionArgs(), ...policy.launchArgs] } : {}),
 				});
 				const now = Date.parse(worker.createdAt);
 				deps.announce(

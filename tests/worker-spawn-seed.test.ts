@@ -41,6 +41,7 @@ function fakeStore(): { store: WorkerStore; spawned: SpawnInput[] } {
 		readArtifacts: async () => [] as Artifact[],
 		writeStatus: async () => {},
 		patchStatus: async () => undefined,
+		updateStatus: async () => ({ before: undefined, after: undefined, changed: false }),
 		writeArtifacts: async () => {},
 		addQuestion: async () => undefined,
 		sendInput: async () => true,

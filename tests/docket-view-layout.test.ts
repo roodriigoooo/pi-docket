@@ -79,7 +79,7 @@ test("Docket worker progress lens renders compact and expanded todo boards", () 
 	assert.match(compact, /work\s+status\s+task\s+result/);
 	assert.doesNotMatch(compact, /result\s+action/);
 	assert.match(compact, /▌ w1\s+\[active\]/);
-	assert.match(compact, /Enter verdict\/details · p peek · l load · c continue · a attach · x dismiss · \? more · Esc/);
+	assert.match(compact, /Esc\/q\/Ctrl\+C close[\s\S]*r Reply[\s\S]*x stop/);
 	assert.match(compact, /progress 2\/5/);
 	assert.match(compact, /Progress/);
 	assert.match(compact, /▰▰▱▱▱ · 1 active · 2 pending/);

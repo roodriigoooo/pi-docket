@@ -201,6 +201,21 @@ test("worker launch command marks early process exits", async () => {
 	}
 });
 
+test("stale worker exit hook cannot overwrite a newer launch", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "docket-worker-stale-exit-test-"));
+	try {
+		const statusFile = path.join(tmp, "status.json");
+		await writeFile(statusFile, `${JSON.stringify({ id: "worker-1", index: 1, tmuxSession: "docket-worker-1", task: "test", cwd: tmp, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "active", runToken: "new-run" })}\n`, "utf8");
+		const command = buildWorkerLaunchCommand({ id: "worker-1", sessionDir: path.join(tmp, "session"), statusFile, initialPrompt: "prompt", piCommandParts: ["sh", "-c", "exit 7"], runToken: "old-run" });
+		assert.equal(spawnSync("sh", ["-c", command], { encoding: "utf8" }).status, 0);
+		const status = JSON.parse(await readFile(statusFile, "utf8")) as WorkerStatus;
+		assert.equal(status.state, "active");
+		assert.equal(status.runToken, "new-run");
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+	}
+});
+
 test("worker store find resolves by short label, bare digits, and partial id", async () => {
 	await withTempHome(async () => {
 		const store = createWorkerStore();
@@ -325,6 +340,29 @@ test("worker store appends active questions", async () => {
 		assert.equal(updated?.state, "needs_input");
 		assert.equal(updated?.question, "2 questions");
 		assert.deepEqual(updated?.questions?.map((q) => q.text), ["Include checkpoint flow?", "Inspect prompt chips too?"]);
+	});
+});
+
+test("worker store serializes concurrent status transitions without lost fields", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		await mkdir(store.root(), { recursive: true });
+		await seedWorker(store.root(), { id: "serialized", index: 1, state: "active" });
+
+		const [heartbeat, review] = await Promise.all([
+			store.updateStatus("serialized", () => ({ pid: 42, artifactCount: 3 })),
+			store.updateStatus("serialized", () => ({ reviewedAt: "2026-05-02T00:00:00.000Z" })),
+		]);
+		const final = await store.find("serialized");
+
+		assert.equal(heartbeat.changed, true);
+		assert.equal(review.changed, true);
+		assert.equal(final?.pid, 42);
+		assert.equal(final?.artifactCount, 3);
+		assert.equal(final?.reviewedAt, "2026-05-02T00:00:00.000Z");
+		const noOp = await store.updateStatus("serialized", () => undefined);
+		assert.equal(noOp.changed, false);
+		assert.equal(noOp.after?.updatedAt, final?.updatedAt);
 	});
 });
 

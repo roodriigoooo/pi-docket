@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringEnum, Type } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder, getLanguageFromPath, highlightCode, isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import {
 	Box,
@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerHeartbeatPatch, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, workerTodosPatch, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -56,15 +56,24 @@ import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-change
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
+import { captureWorkerPane, createWorkerStore, explicitExtensionArgs, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
+import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition } from "./worker-lifecycle.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
+import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
+import { workerKindLaunchArgs } from "./worker-spawn-policy.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
+import { createSharedSessionRuntime } from "./shared-session-runtime.js";
+import { createParentRuntime } from "./parent-runtime.js";
+import { createWorkerRuntime } from "./worker-runtime.js";
+import { BOTTOM_CORNERS, fitBorder, padAnsi, TOP_CORNERS, wrapPlainText } from "./docket-views/primitives.js";
+import { showArtifactViewer, showFileViewer, showTextViewer } from "./docket-views/artifact-viewers.js";
+import { createPickerKeymap, createVerdictKeymap, createWorkerDashboardKeymap, defineKeymap, formatKeyHints } from "./docket-keymap.js";
 
 async function runCommand(command: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -115,200 +124,6 @@ function toolEventTarget(event: { toolName?: string; input?: Record<string, unkn
 	return undefined;
 }
 
-class DocketTextViewer implements Component {
-	private offset = 0;
-	private column = 0;
-	private lines: string[];
-	private rendered: string[];
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-	private viewportHeight = 34;
-
-	constructor(private tui: TUI, private theme: any, private title: string, text: string, private done: () => void, private mode?: "diff") {
-		const rawLines = text.split("\n");
-		this.lines = rawLines;
-		this.rendered = this.mode === "diff" ? rawLines.map((line) => renderGitDiffLine(line, this.theme)) : rawLines;
-	}
-
-	handleInput(data: string): void {
-		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
-		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
-		const page = Math.max(1, this.viewportHeight - 2);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done();
-			return;
-		}
-		const before = this.offset;
-		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
-		if (this.offset === before && this.column === beforeColumn) return;
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const container = new Box(2, 1, docketCardBg(this.theme));
-		const innerWidth = Math.max(20, width - 4);
-		const accent = (s: string) => this.theme.fg("accent", s);
-		const dim = (s: string) => this.theme.fg("dim", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
-		const headerLeft = ` ${accent(this.theme.bold("docket · inspect"))} ${dim(this.title)} `;
-		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${Math.min(this.offset + 34, this.lines.length)}/${this.lines.length} · col ${this.column}`)} `;
-		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		for (const line of this.rendered.slice(this.offset, this.offset + 34)) {
-			const visible = this.column > 0 ? [...line].slice(this.column).join("") : line;
-			container.addChild(new Text(truncateToWidth(visible, innerWidth - 2), 1, 0));
-		}
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
-		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = container.render(width);
-		this.cachedWidth = width;
-		return this.cachedLines;
-	}
-}
-
-class DocketFileViewer implements Component {
-	private offset = 0;
-	private column = 0;
-	private viewportHeight = 30;
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	constructor(
-		private tui: TUI,
-		private theme: any,
-		private filePath: string,
-		private language: string | undefined,
-		private lines: string[],
-		private done: () => void,
-	) {}
-
-	handleInput(data: string): void {
-		const maxOffset = Math.max(0, this.lines.length - this.viewportHeight);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
-			this.done();
-			return;
-		}
-		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
-		const page = Math.max(1, this.viewportHeight - 2);
-		const before = this.offset;
-		const beforeColumn = this.column;
-		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
-		else if (data === "J") this.offset = Math.min(maxOffset, this.offset + 5);
-		else if (data === "K") this.offset = Math.max(0, this.offset - 5);
-		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
-		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
-		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
-		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
-		else if (data === "g") this.offset = 0;
-		else if (data === "G") this.offset = maxOffset;
-		else if (data === "h" || matchesKey(data, Key.left)) this.column = Math.max(0, this.column - 8);
-		else if (data === "l" || matchesKey(data, Key.right)) this.column += 8;
-		else if (data === "0") this.column = 0;
-		if (this.offset === before && this.column === beforeColumn) return;
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	invalidate(): void {
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		const container = new Box(2, 1, docketCardBg(this.theme));
-		const innerWidth = Math.max(20, width - 4);
-		const accent = (s: string) => this.theme.fg("accent", s);
-		const dim = (s: string) => this.theme.fg("dim", s);
-		const muted = (s: string) => this.theme.fg("muted", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
-
-		const lineNumWidth = Math.max(3, String(this.lines.length).length);
-		const last = Math.min(this.offset + this.viewportHeight, this.lines.length);
-		const visible = this.lines.slice(this.offset, this.offset + this.viewportHeight).map((line) => this.column > 0 ? [...line].slice(this.column).join("") : line);
-		const highlighted = highlightCode(visible.join("\n"), this.language);
-		const langTag = this.language ?? "text";
-		const headerLeft = ` ${accent(this.theme.bold(this.filePath))} ${dim(langTag)} `;
-		const headerRight = ` ${dim(`${Math.min(this.offset + 1, this.lines.length)}-${last}/${this.lines.length} · col ${this.column}`)} `;
-		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-
-		for (let i = 0; i < visible.length; i++) {
-			const lineNo = this.offset + i + 1;
-			const numStr = muted(String(lineNo).padStart(lineNumWidth));
-			const code = highlighted[i] ?? "";
-			container.addChild(new Text(truncateToWidth(`${numStr}  ${code}`, innerWidth - 2), 1, 0));
-		}
-		for (let i = visible.length; i < this.viewportHeight; i++) {
-			container.addChild(new Text("", 1, 0));
-		}
-
-		container.addChild(new Text(dim("j/k line · h/l horizontal · 0 left · Space/b page · g/G top/bottom · q close"), 1, 0));
-		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = container.render(width);
-		this.cachedWidth = width;
-		return this.cachedLines;
-	}
-}
-
-async function showFileViewer(ctx: ExtensionCommandContext, filePath: string): Promise<void> {
-	let content: string;
-	try {
-		const stat = await fs.stat(filePath);
-		if (!stat.isFile()) {
-			await showTextViewer(ctx, filePath, `[Docket: ${filePath} is not a file]`);
-			return;
-		}
-		content = await fs.readFile(filePath, "utf8");
-	} catch (err) {
-		await showTextViewer(ctx, filePath, `[Docket could not read ${filePath}: ${String(err)}]`);
-		return;
-	}
-	const language = getLanguageFromPath(filePath);
-	await ctx.ui.custom<void>(
-		(tui, theme, _kb, done) => new DocketFileViewer(tui, theme, filePath, language, content.split("\n"), done),
-		{ overlay: true, overlayOptions: { anchor: "center", width: "92%", minWidth: 84, maxHeight: "95%", margin: 1 } },
-	);
-}
-
-async function showTextViewer(ctx: ExtensionCommandContext, title: string, text: string, mode?: "diff"): Promise<void> {
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketTextViewer(tui, theme, title, text, done, mode), {
-		overlay: true,
-		overlayOptions: { anchor: "center", width: "90%", minWidth: 90, maxHeight: "95%", margin: 1 },
-	});
-}
-
-async function showArtifactViewer(ctx: ExtensionCommandContext, catalog: ArtifactCatalog, artifact: Artifact): Promise<void> {
-	if (artifact.kind === "file" && !artifactHasDiff(artifact)) {
-		const filePath = artifactFilePath(artifact, ctx.cwd);
-		if (filePath) {
-			await showFileViewer(ctx, filePath);
-			return;
-		}
-	}
-	const inspected = await catalog.inspect(artifact);
-	await showTextViewer(ctx, inspected.title, inspected.text, artifactIsDiffLike(artifact) ? "diff" : undefined);
-}
-
 function relativeTime(timestamp?: number): string {
 	if (!timestamp) return "";
 	const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
@@ -336,61 +151,6 @@ function colorKind(theme: any, kind: ArtifactKind, text: string): string {
 	if (kind === "prompt") return theme.fg("customMessageLabel", text);
 	return theme.fg("muted", text);
 }
-
-type BorderOptions = {
-	fill?: (s: string) => string;
-	left?: string;
-	right?: string;
-};
-
-function fitBorder(left: string, right: string, width: number, border: (s: string) => string, options: BorderOptions = {}): string {
-	const cornerL = options.left ?? "─";
-	const cornerR = options.right ?? "─";
-	const fill = options.fill ?? border;
-	if (width <= 0) return "";
-	if (width === 1) return border(cornerL);
-	let leftText = left;
-	let rightText = right;
-	const fixedWidth = 2;
-	const minimumGap = leftText || rightText ? 3 : 0;
-	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(rightText) > 0) {
-		rightText = truncateToWidth(rightText, Math.max(0, visibleWidth(rightText) - 1), "");
-	}
-	while (fixedWidth + visibleWidth(leftText) + visibleWidth(rightText) + minimumGap > width && visibleWidth(leftText) > 0) {
-		leftText = truncateToWidth(leftText, Math.max(0, visibleWidth(leftText) - 1), "");
-	}
-	const gapWidth = Math.max(0, width - fixedWidth - visibleWidth(leftText) - visibleWidth(rightText));
-	return `${border(cornerL)}${leftText}${fill("─".repeat(gapWidth))}${rightText}${border(cornerR)}`;
-}
-
-function padAnsi(text: string, width: number): string {
-	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
-}
-
-function wrapPlainText(text: string, width: number, maxLines = Infinity): string[] {
-	const limit = Math.max(12, width);
-	const out: string[] = [];
-	for (const raw of text.split(/\r?\n/)) {
-		let line = raw.trim();
-		if (!line) {
-			out.push("");
-			continue;
-		}
-		while (visibleWidth(line) > limit && out.length < maxLines) {
-			let slice = truncateToWidth(line, limit, "");
-			const breakAt = slice.lastIndexOf(" ");
-			if (breakAt > limit * 0.45) slice = slice.slice(0, breakAt);
-			out.push(slice.trimEnd());
-			line = line.slice(slice.length).trimStart();
-		}
-		if (out.length < maxLines) out.push(line);
-	}
-	if (out.length > maxLines) return out.slice(0, maxLines);
-	return out;
-}
-
-const TOP_CORNERS: BorderOptions = { left: "╭", right: "╮" };
-const BOTTOM_CORNERS: BorderOptions = { left: "╰", right: "╯" };
 
 function docketCardBg(theme: any): (s: string) => string {
 	return (s: string) => theme.bg("customMessageBg", s);
@@ -610,26 +370,19 @@ function workerChangeSetLines(artifact: Artifact): string[] {
 	}).filter((line): line is string => line !== undefined);
 }
 
-function inboxButtons(item: ReviewItem, done: boolean): InboxButton[] {
+export function browserCardButtons(item: ReviewItem, done: boolean): InboxButton[] {
 	const primaryLabel = reviewActionLabel(item.primaryAction, item);
-	const buttons: InboxButton[] = [{ key: "Enter", label: primaryLabel }];
-	const seen = new Set<ReviewActionId>([item.primaryAction]);
-	const order: Array<{ id: ReviewActionId; key: string; label: string }> = [
-		{ id: "openVerdict", key: "Enter", label: "Verdict" },
-		{ id: "promoteWorker", key: "P", label: "Promote" },
-		{ id: "inspect", key: "d", label: "Diff" },
-		{ id: "tellWorker", key: "r", label: "Reply" },
-		{ id: "attachReference", key: "a", label: "Attach" },
-		{ id: "copyArtifact", key: "y", label: "Copy" },
-		{ id: "markDone", key: "Space", label: done ? "Restore" : "Done" },
-	];
-	for (const entry of order) {
-		if (seen.has(entry.id)) continue;
-		if (!item.actions.includes(entry.id)) continue;
-		buttons.push({ key: entry.key, label: entry.label });
-		seen.add(entry.id);
-	}
-	return buttons;
+	const actions = new Set<ReviewActionId>(item.actions);
+	const map = defineKeymap("browser card", [
+		{ keys: "enter", action: "primary", label: primaryLabel, slots: ["card"] },
+		...(actions.has("promoteWorker") && item.primaryAction !== "promoteWorker" ? [{ keys: "P", action: "promote", label: "Promote", slots: ["card"] as const }] : []),
+		...(actions.has("inspect") && item.primaryAction !== "inspect" ? [{ keys: "d", action: "inspect", label: artifactIsDiffLike(item.artifact) ? "Review diff" : "Inspect", slots: ["card"] as const }] : []),
+		...(actions.has("tellWorker") && item.primaryAction !== "tellWorker" ? [{ keys: "r", action: "reply", label: "Reply", slots: ["card"] as const }] : []),
+		...(actions.has("attachReference") ? [{ keys: "a", action: "attach", label: "Attach", slots: ["card"] as const }] : []),
+		...(actions.has("copyArtifact") ? [{ keys: "y", action: "copy", label: "Copy", slots: ["card"] as const }] : []),
+		...(actions.has("markDone") ? [{ keys: "space", action: "done", label: done ? "Restore" : "Done", slots: ["card"] as const }] : []),
+	]);
+	return map.hints("card").map((hint) => ({ key: hint.keys[0]!, label: hint.label }));
 }
 
 function navigatorModeLabel(mode: NavigatorMode): string {
@@ -836,7 +589,7 @@ export class DocketView implements Component {
 			}
 		}
 		const done = this.completedRefs.has(artifact.ref);
-		const buttons = inboxButtons(item, done);
+		const buttons = browserCardButtons(item, done);
 		const buttonLine = buttons.map((button, index) => index === 0 ? accent(`[${button.key} ${button.label}]`) : muted(`[${button.key} ${button.label}]`)).join(" ");
 		lines.push(truncateToWidth(buttonLine, width));
 		const time = relativeTime(artifact.timestamp);
@@ -1196,28 +949,30 @@ export class DocketVerdictView implements Component {
 		const state = deriveWorkerState(this.worker);
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
 		const max = Math.max(0, verbs.length - 1);
-		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length });
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.finish(null);
 			return;
 		}
-		const digitOption = verdictOptionForDigit(verbs, data);
+		const digitOption = action?.startsWith("option") ? verdictOptionForDigit(verbs, data) : undefined;
 		if (digitOption) {
 			this.finish({ verb: digitOption.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), text: digitOption.send });
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = max;
-		else if (data === "d" && this.changeSet) {
+		if (action === "down") this.selected = Math.min(max, this.selected + 1);
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = max;
+		else if (action === "diff" && this.changeSet) {
 			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
-		else if (data === "h" && this.changeSet) {
+		else if (action === "hunk" && this.changeSet) {
 			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet });
 			return;
 		}
-		else if (matchesKey(data, Key.enter)) {
+		else if (action === "select") {
 			const verb = verbs[this.selected];
 			if (verb) this.finish({ verb: verb.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(verb.send !== undefined ? { text: verb.send } : {}) });
 			return;
@@ -1319,10 +1074,9 @@ export class DocketVerdictView implements Component {
 			}
 		}
 		this.container.addChild(new DynamicBorder(divider));
-		const diffHint = this.changeSet ? "d full diff · h Hunk review · " : "";
-		const pickHint = optionCount > 0 ? `1-${optionCount} pick · ` : "";
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		this.container.addChild(new Text(dim(`${diffHint}${pickHint}↑↓ move · Enter select · ${exitHint}`), 1, 0));
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount }), "footer");
+		this.container.addChild(new Text(dim(`${hints} · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1438,21 +1192,23 @@ class DocketResumeView implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const keymap = createPickerKeymap({ mode: this.mode, canPreview: true });
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.done(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = Math.max(0, this.summaries.length - 1);
-		else if (matchesKey(data, Key.enter)) {
+		if (action === "down") this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = Math.max(0, this.summaries.length - 1);
+		else if (action === "select") {
 			const action: ResumeAction = this.mode === "delete" ? "delete" : this.mode === "load" ? "load" : "continue";
 			this.finish(action);
 		}
-		else if (data === "p") this.finish("preview");
-		else if (data === "e" && this.mode === "resume") this.finish("edit");
-		else if (data === "d" && this.mode !== "load") this.finish("delete");
+		else if (action === "preview") this.finish("preview");
+		else if (action === "edit" && this.mode === "resume") this.finish("edit");
+		else if (action === "delete" && this.mode !== "load") this.finish("delete");
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -1499,12 +1255,7 @@ class DocketResumeView implements Component {
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const help = this.mode === "delete"
-			? "j/k move · enter delete · p preview · q close"
-			: this.mode === "load"
-				? "j/k move · enter load · p preview · q close"
-				: "j/k move · enter continue · p preview · e edit · d delete · q close";
-		this.container.addChild(new Text(dim(help), 1, 0));
+		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({ mode: this.mode, canPreview: true }), "footer")), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -1830,7 +1581,8 @@ export class DocketParallelWorkView implements Component {
 	handleInput(data: string): void {
 		const rows = this.activityRows();
 		const max = Math.max(0, rows.length - 1);
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const action = createWorkerDashboardKeymap().resolve(data);
+		if (action === "close") {
 			if (this.peek) {
 				this.setPeek(false);
 				this.invalidate();
@@ -1840,35 +1592,35 @@ export class DocketParallelWorkView implements Component {
 			this.finish(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.selected = Math.min(max, this.selected + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-		else if (data === "g") this.selected = 0;
-		else if (data === "G") this.selected = max;
-		else if (matchesKey(data, Key.tab)) this.selectNext();
-		else if (data === "?") this.showHelp = !this.showHelp;
-		else if (data === "t") this.showProgressDetail = !this.showProgressDetail;
-		else if (data === "p") this.setPeek(!this.peek);
-		else if (matchesKey(data, Key.enter)) {
+		if (action === "down") this.selected = Math.min(max, this.selected + 1);
+		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
+		else if (action === "top") this.selected = 0;
+		else if (action === "bottom") this.selected = max;
+		else if (action === "next") this.selectNext();
+		else if (action === "help") this.showHelp = !this.showHelp;
+		else if (action === "progress") this.showProgressDetail = !this.showProgressDetail;
+		else if (action === "peek") this.setPeek(!this.peek);
+		else if (action === "open") {
 			const row = this.selectedRow();
 			if (row) this.finish(this.enterAction(row));
 			return;
 		}
-		else if (data === "l") {
+		else if (action === "load") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "load", worker });
 			return;
 		}
-		else if (data === "c" || data === "t") {
+		else if (action === "reply") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "tell", worker });
 			return;
 		}
-		else if (data === "a") {
+		else if (action === "attach") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "copyAttach", worker });
 			return;
 		}
-		else if (data === "x") {
+		else if (action === "stop") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "stop", worker });
 			return;
@@ -1962,12 +1714,12 @@ export class DocketParallelWorkView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		this.container.addChild(new Text(dim("Enter verdict/details · p peek · l load · c continue · a attach · x dismiss · ? more · Esc"), 1, 0));
+		const keymap = createWorkerDashboardKeymap();
+		this.container.addChild(new Text(dim(formatKeyHints(keymap, "footer")), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Progress")} ${dim("t toggles full todo board; completion comes only from docket_done")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Peek")} ${dim("p live read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Advanced")} ${dim("↑↓ move · t todos · Tab switch worker · x stop worker (destructive)")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Keys")} ${dim(formatKeyHints(keymap, "help"))}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Peek")} ${dim("read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -2034,19 +1786,25 @@ class DocketLoadPicker implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+		const keymap = createPickerKeymap({
+			mode: "load",
+			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
+			canPreview: this.mode === "checkpoint",
+		});
+		const action = keymap.resolve(data);
+		if (action === "close") {
 			this.done(null);
 			return;
 		}
-		if (data === "j" || matchesKey(data, Key.down)) this.setIndex(this.currentIndex() + 1);
-		else if (data === "k" || matchesKey(data, Key.up)) this.setIndex(this.currentIndex() - 1);
-		else if (data === "g") this.setIndex(0);
-		else if (data === "G") this.setIndex(this.currentMax());
-		else if (matchesKey(data, Key.tab)) this.toggleMode();
-		else if (data === "1") this.toggleMode("checkpoint");
-		else if (data === "2") this.toggleMode("worker");
-		else if (matchesKey(data, Key.enter)) this.finishLoad();
-		else if (data === "p" && this.mode === "checkpoint") this.finishPreview();
+		if (action === "down") this.setIndex(this.currentIndex() + 1);
+		else if (action === "up") this.setIndex(this.currentIndex() - 1);
+		else if (action === "top") this.setIndex(0);
+		else if (action === "bottom") this.setIndex(this.currentMax());
+		else if (action === "switch") this.toggleMode();
+		else if (action === "switchCheckpoint") this.toggleMode("checkpoint");
+		else if (action === "switchWorker") this.toggleMode("worker");
+		else if (action === "select") this.finishLoad();
+		else if (action === "preview" && this.mode === "checkpoint") this.finishPreview();
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -2096,10 +1854,11 @@ class DocketLoadPicker implements Component {
 		else this.renderWorkers(listWidth, accent, dim, muted);
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		const help = this.mode === "checkpoint"
-			? "j/k move · tab/1/2 switch · enter load · p preview · q close"
-			: "j/k move · tab/1/2 switch · enter load · q close";
-		this.container.addChild(new Text(dim(help), 1, 0));
+		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({
+			mode: "load",
+			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
+			canPreview: this.mode === "checkpoint",
+		}), "footer")), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
 		this.cachedWidth = width;
@@ -2456,13 +2215,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 			// before the record is gone so /docket log decisions can surface the count.
 			const decisionLog = createDecisionLog();
 			let reviewed: Set<string>;
-			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { reviewed = new Set(); }
+			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { return; }
 			for (const worker of targets) {
-				try {
-					if (!reviewed.has(worker.id)) {
+				if (!reviewed.has(worker.id)) {
+					try {
 						await decisionLog.recordEviction({ workerId: worker.id, workerLabel: workerShortLabel(worker.index), state: worker.state, ...(worker.task ? { task: worker.task } : {}) });
+					} catch {
+						continue;
 					}
-				} catch { /* best-effort: never block the prune on the ledger */ }
+				}
 				try { await store.purge(worker.id); } catch { /* best-effort */ }
 			}
 		} catch { /* best-effort */ }
@@ -2582,7 +2343,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 		notifyDocket(pi, ctx, message, "info");
 	};
 
-	pi.registerMessageRenderer("docket", docketMessageRenderer());
+	const registerMessageRendering = (): void => {
+		pi.registerMessageRenderer("docket", docketMessageRenderer());
+	};
 
 	const workerId = process.env[DOCKET_WORKER_ENV];
 
@@ -2655,7 +2418,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		if (sharedSessionExists()) return;
 		const store = createWorkerStore();
 		for (const worker of sharedTargets) {
-			await store.patchStatus(worker.id, { state: "error", lastError: "tmux session ended; worker terminated" });
+			await store.updateStatus(worker.id, orphanDetectedTransition());
 		}
 	};
 
@@ -2832,15 +2595,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				await workerStore.writeArtifacts(workerId, capped);
 				lastHeartbeatSignature = signature;
 			}
-			const current = await workerStore.find(workerId);
-			await workerStore.patchStatus(workerId, {
-				...workerHeartbeatPatch(current, {
-					pid: process.pid,
-					sessionFile: ctx.sessionManager.getSessionFile?.(),
-					artifactCount: fullArtifacts.length,
-				}),
+			await workerStore.updateStatus(workerId, heartbeatTransition({
+				pid: process.pid,
+				sessionFile: ctx.sessionManager.getSessionFile?.(),
+				artifactCount: fullArtifacts.length,
 				...(ctx.model?.id ? { model: ctx.model.id } : {}),
-			});
+			}));
 		} catch {
 			// best-effort heartbeat; never crash the worker
 		}
@@ -2864,15 +2624,21 @@ export default function docketExtension(pi: ExtensionAPI) {
 				nextDoneInput = undefined;
 			}
 		}
-		const patch = workerProtocolPatch(current, nextState, nextText, {
+		const question = {
 			id: `${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`,
 			text: nextText ?? "",
 			createdAt: new Date().toISOString(),
 			...(nextState === "needs_input" && questionMeta ? questionMeta : {}),
-		}, nextDoneInput);
-		const updated = patch ? await store.patchStatus(workerId, patch) : current;
-		emitWorkerStateArtifact(ctx, nextState, nextText);
-		appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
+		};
+		const transition = nextState === "needs_input"
+			? waitTransition(nextText ?? "", question)
+			: protocolTransition(nextState, nextText, nextDoneInput);
+		const update = await store.updateStatus(workerId, transition);
+		const updated = update.after;
+		if (update.changed) {
+			emitWorkerStateArtifact(ctx, nextState, nextText);
+			appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
+		}
 		await writeWorkerHeartbeat(ctx);
 		return updated;
 	};
@@ -2880,9 +2646,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 	const applyWorkerTodos = async (ctx: ExtensionContext, items: WorkerTodoInput[]): Promise<WorkerStatus | undefined> => {
 		if (!workerId) return undefined;
 		const store = createWorkerStore();
-		const current = await store.find(workerId);
-		if (!current) return undefined;
-		const updated = await store.patchStatus(workerId, workerTodosPatch(items));
+		const update = await store.updateStatus(workerId, todosTransition(items));
+		const updated = update.after;
 		if (updated?.todos) {
 			const progress = workerTodoProgress(updated);
 			appendWorkerEventSync(store.root(), workerId, { kind: "todo", payload: { total: progress.total, completed: progress.completed, inProgress: progress.inProgress } });
@@ -2891,7 +2656,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 		return updated;
 	};
 
-	if (workerId) {
+	const registerWorkerGuardrailsAndProtocol = (): void => {
+		if (!workerId) return;
 		void loadWorkerGuardrails(activeCtx?.cwd ?? process.cwd());
 		void ensureKindRegistryLoaded(activeCtx?.cwd ?? process.cwd());
 		pi.on("before_agent_start", async (event, ctx) => {
@@ -2915,7 +2681,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 			try {
 				const store = createWorkerStore();
 				const current = await store.find(workerId);
-				if (current?.state === "idle") await store.patchStatus(workerId, { state: "active" });
+				if (current?.state === "idle") await store.updateStatus(workerId, turnStartedTransition());
 			} catch { /* best-effort */ }
 		});
 
@@ -2925,7 +2691,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				const store = createWorkerStore();
 				const current = await store.find(workerId);
 				if (!current || current.state !== "active") return;
-				await store.patchStatus(workerId, { state: "idle" });
+				await store.updateStatus(workerId, turnEndedTransition());
 				if (workerNudgesThisSession >= MAX_WORKER_NUDGES) return;
 				workerNudgesThisSession++;
 				pi.sendUserMessage("Docket: this turn ended without calling a protocol tool. If the task is complete with useful output, call `docket_done` with a summary (include a `Recommended:` bullet list if you have recommendations). If you are blocked or any non-trivial assumption is needed, call `docket_wait` with a concise question. If you cannot continue and have no useful partial output, call `docket_fail` with a one-sentence reason. Otherwise continue working.");
@@ -3076,6 +2842,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						return { content: [{ type: "text", text: `Docket: kind "${requestedKind}" not in allowlist (${allowedList}).` }], details: { error: "not-allowed" } };
 					}
 					const childKind = kindRegistry.get(requestedKind);
+					const childLaunchArgs = workerKindLaunchArgs(childKind, { model: current.model });
 					const taskText = ((params as { task: string }).task ?? "").trim();
 					if (!taskText) return { content: [{ type: "text", text: "Docket: child task is empty." }], details: { error: "empty-task" } };
 					try {
@@ -3092,6 +2859,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 							parentWorkerId: current.id,
 							depth: currentDepth + 1,
 							layout: childKind.layout,
+							...(childLaunchArgs.length ? { extensionArgs: [...explicitExtensionArgs(), ...childLaunchArgs] } : {}),
 						});
 						appendWorkerEventSync(store.root(), current.id, { kind: "message", payload: { event: "spawn-child", childId: child.id, childIndex: child.index, kind: childKind.name } });
 						return { content: [{ type: "text", text: `Docket: dispatched child ${workerShortLabel(child.index)} (kind: ${childKind.name}). Their docket_done will surface in your inbox.` }], details: { childId: child.id, childIndex: child.index, kind: childKind.name } };
@@ -3114,9 +2882,57 @@ export default function docketExtension(pi: ExtensionAPI) {
 			await applyWorkerState(ctx, intent.state, intent.text);
 			event.input.command = `printf '%s\n' ${shellSingleQuote(workerProtocolResultText(intent.state))}`;
 		});
-	}
+	};
 
-	pi.on("session_start", (_event, ctx) => {
+	const workerRuntime = createWorkerRuntime({
+		workerId,
+		registerGuardrailsAndProtocol: registerWorkerGuardrailsAndProtocol,
+		startHeartbeat: () => {
+			const ctx = activeCtx;
+			if (!ctx) return;
+			void writeWorkerHeartbeat(ctx);
+			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
+			heartbeatTimer.unref?.();
+		},
+		stopHeartbeat: async () => {
+			if (heartbeatTimer) {
+				clearInterval(heartbeatTimer);
+				heartbeatTimer = undefined;
+			}
+			try { await createWorkerStore().patchStatus(workerId!, { state: "ended" }); } catch { /* best-effort */ }
+		},
+	});
+	const parentRuntime = createParentRuntime({
+		startWorkerWatchAndDock: () => {
+			const ctx = activeCtx;
+			if (!ctx?.hasUI) return;
+			const root = createWorkerStore().root();
+			workerDockCache = new WorkerSnapshotCache(root);
+			workerDockIdleHideMs = 0;
+			workerReadyEmbedEmitted.clear();
+			void loadConfig(ctx.cwd).then((config) => {
+				workerDockIdleHideMs = dockIdleHideMs(config.worker);
+				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
+				void refreshWorkerDockWidget();
+			}).catch(() => undefined);
+			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
+		},
+		stopWorkerWatchAndDock: () => {
+			if (workerDockUnwatch) {
+				workerDockUnwatch();
+				workerDockUnwatch = undefined;
+			}
+			stopDockAnimation();
+			dockTui = undefined;
+			workerDockCache = undefined;
+			workerDockPending = false;
+			workerDockRunning = false;
+			workerDockIdleHideMs = 0;
+		},
+	});
+
+	const registerSessionLifecycle = (): void => {
+		pi.on("session_start", (_event, ctx) => {
 		activeCtx = ctx;
 		sessionProjectKey = projectKey(ctx.cwd);
 		pinnedRefs = new Set();
@@ -3132,43 +2948,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 		setLoadedCheckpointWidget(ctx, loadedCheckpoint);
 		if (loadedCheckpoint) void mountLoadedCheckpoint(loadedCheckpoint.id);
 		void maybeSweep(ctx.cwd);
-		if (workerId) {
-			void writeWorkerHeartbeat(ctx);
-			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
-			heartbeatTimer.unref?.();
-		} else if (ctx.hasUI) {
-			const root = createWorkerStore().root();
-			workerDockCache = new WorkerSnapshotCache(root);
-			workerDockIdleHideMs = 0;
-			workerReadyEmbedEmitted.clear();
-			void loadConfig(ctx.cwd).then((config) => {
-				workerDockIdleHideMs = dockIdleHideMs(config.worker);
-				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
-				void refreshWorkerDockWidget();
-			}).catch(() => undefined);
-			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
-		}
-	});
+		if (workerRuntime.isWorker) workerRuntime.onSessionStart();
+		else parentRuntime.onSessionStart();
+		});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
-		if (heartbeatTimer) {
-			clearInterval(heartbeatTimer);
-			heartbeatTimer = undefined;
-		}
-		if (workerDockUnwatch) {
-			workerDockUnwatch();
-			workerDockUnwatch = undefined;
-		}
-		stopDockAnimation();
-		dockTui = undefined;
-		workerDockCache = undefined;
-		workerDockPending = false;
-		workerDockRunning = false;
-		workerDockIdleHideMs = 0;
+		pi.on("session_shutdown", async (_event, ctx) => {
+		if (workerRuntime.isWorker) await workerRuntime.onSessionShutdown();
+		else parentRuntime.onSessionShutdown();
 		sessionProjectKey = undefined;
-		if (workerId) {
-			try { await createWorkerStore().patchStatus(workerId, { state: "ended" }); } catch { /* best-effort */ }
-		}
 		await drainShutdownConsume();
 		activeCtx = undefined;
 		pinnedRefs = new Set();
@@ -3182,9 +2969,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 			ctx.ui.setWidget("docket-worker-result", undefined);
 			ctx.ui.setWidget("docket-workers", undefined);
 		}
-	});
+		});
+	};
 
-	pi.on("input", async (event, ctx) => {
+	const registerContextExpansion = (): void => {
+		pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
 		if (loadedCheckpoint) {
 			loadedCheckpoint = undefined;
@@ -3202,9 +2991,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 		refreshWorkerResultWidget();
 		if (result.expanded === 0) return { action: "continue" };
 		return { action: "transform", text: result.text };
-	});
+		});
+	};
 
-	pi.registerCommand("docket", {
+	const registerCommandRouting = (): void => {
+		pi.registerCommand("docket", {
 		description: "Review Pi agent work, worker output, and saved evidence",
 		getArgumentCompletions: async (prefix: string) => {
 			const trimmed = prefix.replace(/^\s+/, "");
@@ -3227,14 +3018,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 			return null;
 		},
 		handler: (args, ctx) => runDocketCommand(args, ctx),
-	});
+		});
 
 	// One-key path to the worker progress lens. It stays zero-context until the user
 	// explicitly loads evidence or replies to a worker.
-	pi.registerShortcut?.("f8", {
+		pi.registerShortcut?.("f8", {
 		description: "Docket: open worker progress lens",
 		handler: (ctx) => runDocketCommand("workers", ctx as ExtensionCommandContext),
-	});
+		});
+	};
 
 	async function runDocketCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
 			const parsed = parseDocketCommand(args);
@@ -3256,9 +3048,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
+				parentModel: () => ctx.model?.id,
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
 				captureTerminal: () => captureTerminal,
+				defaultKind: () => docketConfig?.worker?.defaultKind,
 				parentSeedPolicy: () => (docketConfig?.worker?.parentSeedPolicy === "full" ? "full" : "none"),
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				announce: (subject, detail, kind, docket, meta) => announceAction(pi, ctx, subject, detail, kind, docket, meta),
@@ -3331,8 +3125,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
-				reviewWorkerChangeSetInHunk: (worker, changeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, worker, changeSet),
-				chooseHunkReviewAction: (worker, comments) => chooseHunkReviewAction(ctx, worker, comments),
+				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({
+					showBuiltinDiff: (reviewWorker, reviewChangeSet) => showTextViewer(ctx, `${workerSourceLabel(reviewWorker)} · full diff`, formatArtifact(reviewChangeSet), "diff"),
+					reviewInHunk: (reviewWorker, reviewChangeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, reviewWorker, reviewChangeSet),
+					chooseAction: (reviewWorker, comments) => chooseHunkReviewAction(ctx, reviewWorker, comments),
+					sendToWorker: (reviewWorker, text) => workerCommands.tell(workerSourceLabel(reviewWorker), text),
+					copyText: copyToClipboard,
+					notify: (text, level) => notifyDocket(pi, ctx, text, level),
+				}, worker, changeSet, options),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
 				createCheckpoint: async (options) => {
 					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
@@ -3367,4 +3167,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				readDecisionEvents: () => createDecisionLog().read(),
 			}).handle(intent);
 	}
+
+	createSharedSessionRuntime({
+		registerMessageRendering,
+		registerCommandRouting,
+		registerSessionLifecycle,
+		registerContextExpansion,
+	}).register();
+	workerRuntime.register();
 }
