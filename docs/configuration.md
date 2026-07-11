@@ -73,7 +73,6 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 | `worker.pruneAfterHours` | 24 | auto-prune `ended` worker dirs after this many hours; 0 disables. |
 | `worker.tmuxStatusLine` | false | write a compact summary to `docket-workers`' `status-right`. |
 | `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
-| `worker.autoEmbedSummary` | false | when true, append a short summary (outcome + 1-line summary + up to 5 recommended bullets) to the parent session as a worker reaches `ready`. Default false keeps the parent JSONL fully manual — the inbox card still surfaces the ready worker; nothing is auto-injected. |
 | `worker.parentSeedPolicy` | `none` | default parent-seed policy for `/docket spawn` when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers with no parent context; `"full"` seeds the worker with the parent session JSONL (reuses prompt cache prefix but inherits full parent context). Use as a project-wide escape hatch when most workers need parent context. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
 

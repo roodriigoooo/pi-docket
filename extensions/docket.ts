@@ -59,7 +59,6 @@ import { workerResultHeadline, workerResultReport, workerResultText } from "./wo
 import { captureWorkerPane, createWorkerStore, explicitExtensionArgs, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
-import { formatReadyEmbedMessage } from "./worker-summary-embed.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition } from "./worker-lifecycle.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
@@ -2164,8 +2163,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 			stopDockAnimation();
 		}
 	};
-	let workerAutoEmbedSummary = true;
-	const workerReadyEmbedEmitted = new Set<string>();
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
 	let loadedWorkerIds = new Set<string>();
 	let pinnedRefs = new Set<string>();
@@ -2453,39 +2450,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 		try {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
 			const { workers: allWorkers, artifactsByWorker, eventsByWorker, newEventsByWorker } = await workerDockCache.snapshot();
+			// Metadata-only parent flow (#17): ready/blocked events refresh widgets and
+			// extension subscribers only. Worker summaries never enter the parent transcript
+			// (see worker-parent-flow.ts / tests/worker-parent-flow.test.ts).
 			for (const [id, events] of newEventsByWorker) {
-				for (const ev of events) {
-					docketSurface.emitWorkerEvent(id, ev);
-					if (
-						workerAutoEmbedSummary &&
-						ev.kind === "state" &&
-						(ev.payload?.state === "ready" || ev.payload?.state === "ready_open_todos") &&
-						!workerReadyEmbedEmitted.has(id)
-					) {
-						const worker = allWorkers.find((w) => w.id === id);
-						if (worker) {
-							const embed = formatReadyEmbedMessage(worker);
-							if (embed) {
-								workerReadyEmbedEmitted.add(id);
-								try {
-									pi.sendMessage({
-										customType: "docket",
-										content: embed.content,
-										display: true,
-										details: {
-											kind: "action",
-											heading: embed.heading,
-											subject: embed.subject,
-											docket: { kind: "response", title: embed.title, subtitle: embed.subtitle },
-										} as DocketMessageDetails & { docket: { kind: ArtifactKind; title: string; subtitle: string } },
-									}, { triggerTurn: false });
-								} catch {
-									workerReadyEmbedEmitted.delete(id);
-								}
-							}
-						}
-					}
-				}
+				for (const ev of events) docketSurface.emitWorkerEvent(id, ev);
 			}
 			const tmuxStatusEnabled = await loadConfig(ctx.cwd).then((c) => c.worker?.tmuxStatusLine === true).catch(() => false);
 			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
@@ -2909,10 +2878,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const root = createWorkerStore().root();
 			workerDockCache = new WorkerSnapshotCache(root);
 			workerDockIdleHideMs = 0;
-			workerReadyEmbedEmitted.clear();
 			void loadConfig(ctx.cwd).then((config) => {
 				workerDockIdleHideMs = dockIdleHideMs(config.worker);
-				workerAutoEmbedSummary = config.worker?.autoEmbedSummary !== false;
 				void refreshWorkerDockWidget();
 			}).catch(() => undefined);
 			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
@@ -2950,7 +2917,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		void maybeSweep(ctx.cwd);
 		if (workerRuntime.isWorker) workerRuntime.onSessionStart();
 		else parentRuntime.onSessionStart();
-		});
+	});
 
 		pi.on("session_shutdown", async (_event, ctx) => {
 		if (workerRuntime.isWorker) await workerRuntime.onSessionShutdown();

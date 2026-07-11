@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **metadata-only parent flow**: automatic worker → parent traffic is dock/widget metadata only (state, progress, questions, readiness/failure, compact change stats, attachable refs). `worker.autoEmbedSummary` is removed; existing JSON keys are ignored as legacy. Ready/blocked watcher events refresh widgets and extension subscribers but never call `pi.sendMessage` with worker summaries. Full completion content stays on disk until you open Report or otherwise load/attach evidence.
+
 ## 0.7.1
 
 - **attach back to parent from workers**: `/docket attach parent` now returns a worker to the parent tmux target recorded at spawn. Top-level workers store the spawning tmux session/window/pane, child workers can fall back to their parent worker window, and non-tmux launches get a clear warning instead of a bogus attach command.
