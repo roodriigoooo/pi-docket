@@ -50,10 +50,12 @@ const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
 export function docketUsage(advanced = false): string {
 	const primary = [
-		"Docket · core loop:",
+		"Docket · delegate safely without losing control:",
 		"/docket                         open decision docket",
 		"f8                              open worker progress lens",
 		"/docket spawn [--seed|--fresh] [--as <kind>] <task>  start explicit background worker",
+		"  e.g. /docket spawn --as scout map auth call sites",
+		"  e.g. /docket spawn --as patcher fix failing auth test",
 		"/docket tell w<N> [text]        reply to a worker",
 		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
 		"/docket load [id|last|w<N>]     mount bundle/worker artifacts without model tokens",
