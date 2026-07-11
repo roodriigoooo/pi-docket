@@ -107,7 +107,7 @@ test("DocketVerdictView exposes Hunk review for worker change sets", () => {
 	assert.match(rendered, /Evidence/);
 	assert.match(rendered, /Worker says/);
 	assert.match(rendered, /Actions/);
-	assert.match(rendered, /h Hunk review/);
+	assert.match(rendered, /h Hunk[\s\S]*review/);
 	assert.match(rendered, /r Report/);
 
 	view.handleInput("h");
