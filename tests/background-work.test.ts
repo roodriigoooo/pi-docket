@@ -88,8 +88,8 @@ test("Background Work stores structured done outcomes", () => {
 		scopeConfidence: "clear",
 	});
 
-	assert.equal(formatWorkerDoneSummary({ summary: "Wrote candidate files.", recommended: ["Review generated SVG"] }), "Wrote candidate files.\n\nRecommended:\n- Review generated SVG");
-	assert.equal(patch?.summary, "Wrote candidate files.\n\nRecommended:\n- Review generated SVG\n- Adopt markdown notes");
+	assert.equal(formatWorkerDoneSummary({ summary: "Wrote candidate files.", recommended: ["Review generated SVG"] }), "Wrote candidate files.");
+	assert.equal(patch?.summary, "Wrote candidate files.");
 	assert.equal(patch?.outcome, "proposal");
 	assert.deepEqual(patch?.evidence, ["wrote logo.svg"]);
 	assert.deepEqual(patch?.recommended, ["Review generated SVG", "Adopt markdown notes"]);

@@ -9,7 +9,7 @@ import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./
 import { verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
 	text?: string;
@@ -24,6 +24,7 @@ export type WorkerVerdictDeps = {
 	workerCommands: Pick<WorkerCommands, "tell" | "delete" | "respawn">;
 	notify(text: string, level: NotifyLevel): void;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
+	showReport(worker: WorkerStatus): Promise<void>;
 	confirmDeleteWorker(worker: WorkerStatus): Promise<boolean>;
 	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	formatArtifact(artifact: Artifact): string;
@@ -124,6 +125,10 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
 			if (changeSet) await deps.reviewWorkerChangeSet(latest, changeSet, { preferred: "builtin" });
+			continue;
+		}
+		if (result.verb === "report") {
+			await deps.showReport(latest);
 			continue;
 		}
 		if (result.verb === "hunk") {

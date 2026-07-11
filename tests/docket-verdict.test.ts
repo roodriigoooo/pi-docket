@@ -104,11 +104,52 @@ test("DocketVerdictView exposes Hunk review for worker change sets", () => {
 	};
 	const view = new DocketVerdictView({ requestRender() {} } as never, theme, worker({ state: "ready" }), changeSet, (result) => { action = result; });
 	const rendered = view.render(100).join("\n");
+	assert.match(rendered, /Evidence/);
+	assert.match(rendered, /Worker says/);
+	assert.match(rendered, /Actions/);
 	assert.match(rendered, /h Hunk review/);
+	assert.match(rendered, /r Report/);
 
 	view.handleInput("h");
 
 	assert.deepEqual(action, { verb: "hunk", worker: worker({ state: "ready" }), changeSet });
+});
+
+test("DocketVerdictView binds r to Report even without a change set", () => {
+	let action: unknown;
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const ready = worker({ state: "ready", summary: "Scouted auth callers", recommended: ["review src/auth.ts"] });
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, ready, undefined, (result) => { action = result; });
+	const rendered = view.render(100).join("\n");
+	assert.match(rendered, /Evidence/);
+	assert.match(rendered, /Worker says/);
+	assert.match(rendered, /Scouted auth callers/);
+	assert.match(rendered, /r Report/);
+	assert.doesNotMatch(rendered, /d full diff/);
+
+	view.handleInput("r");
+	assert.deepEqual(action, { verb: "report", worker: ready });
+});
+
+test("DocketVerdictView keeps waiting cards on Question / Actions", () => {
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const waiting = worker({
+		state: "needs_input",
+		questions: [{ id: "q1", text: "Proceed?", createdAt: "2026-01-01T00:00:00.000Z", risk: "touches auth" }],
+	});
+	const rendered = new DocketVerdictView({ requestRender() {} } as never, theme, waiting, undefined, () => {}).render(100).join("\n");
+	assert.match(rendered, /Question/);
+	assert.match(rendered, /Actions/);
+	assert.doesNotMatch(rendered, /Worker says/);
+	assert.doesNotMatch(rendered, /r Report/);
 });
 
 test("workerVerdictPayload surfaces structured risk on a waiting worker", () => {

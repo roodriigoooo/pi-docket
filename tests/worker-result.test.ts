@@ -74,6 +74,7 @@ test("Worker Result report sections include outcome, recommendations, references
 	assert.equal(report.references[0]?.displayId, "w1.r24");
 	assert.equal(report.references[1]?.displayId, "w1.c25");
 	assert.equal(report.nextActions[0]?.key, "Enter");
+	assert.equal(report.nextActions.some((a) => a.key === "a"), false);
 });
 
 test("Worker Result report uses Question for needs_input state", () => {

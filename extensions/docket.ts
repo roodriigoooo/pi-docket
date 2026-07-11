@@ -38,7 +38,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerMascotLines, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
 import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
@@ -55,6 +55,8 @@ import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, work
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
+import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
+import { workerSummaryHeadline } from "./worker-review.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
 import { captureWorkerPane, createWorkerStore, explicitExtensionArgs, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
@@ -795,15 +797,6 @@ export type VerdictVerb = { id: VerdictVerbId; label: string; description: strin
 
 type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
 
-function artifactChangedFiles(artifact: Artifact | undefined): Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> {
-	return Array.isArray(artifact?.meta?.changedFiles) ? artifact.meta.changedFiles as Array<{ path?: unknown; additions?: unknown; deletions?: unknown }> : [];
-}
-
-function artifactHunkCount(artifact: Artifact | undefined): number | undefined {
-	const hunkCount = artifact?.meta?.hunkCount;
-	return typeof hunkCount === "number" && Number.isFinite(hunkCount) ? hunkCount : undefined;
-}
-
 export function diffBar(additions: number, deletions: number, width: number): string {
 	const slots = Math.max(1, Math.floor(width));
 	const adds = Math.max(0, additions);
@@ -862,12 +855,6 @@ export function verdictOptionForDigit(verbs: VerdictVerb[], data: string): Verdi
 	return verb && verb.send !== undefined ? verb : undefined;
 }
 
-function workerIntentLine(worker: WorkerStatus): string | undefined {
-	const summary = typeof worker.summary === "string" ? worker.summary : "";
-	const line = summary.split(/\r?\n/).map((part) => part.trim()).find((part) => part.length > 0);
-	return line && line.length > 0 ? line : undefined;
-}
-
 function primaryWorkerQuestion(worker: WorkerStatus) {
 	const questions = workerQuestions(worker);
 	return questions.length ? questions[questions.length - 1] : undefined;
@@ -881,29 +868,25 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}) };
 	}
 	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
-	const changedFiles = artifactChangedFiles(changeSet);
-	if (changedFiles.length > 0) {
-		const totals = changedFiles.reduce<{ additions: number; deletions: number }>((acc, file) => {
-			const additions = typeof file.additions === "number" ? file.additions : 0;
-			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
-			return { additions: acc.additions + additions, deletions: acc.deletions + deletions };
-		}, { additions: 0, deletions: 0 });
-		const hunkCount = artifactHunkCount(changeSet);
-		const fileLines = changedFiles.slice(0, 5).map((file) => {
-			const filePath = typeof file.path === "string" ? file.path : "unknown";
-			const additions = typeof file.additions === "number" ? file.additions : 0;
-			const deletions = typeof file.deletions === "number" ? file.deletions : 0;
-			return `${filePath}   +${additions}/-${deletions}`;
-		});
-		const fileEntries = changedFiles.slice(0, 5).map((file) => ({
-			path: typeof file.path === "string" ? file.path : "unknown",
-			...(typeof file.additions === "number" ? { additions: file.additions } : {}),
-			...(typeof file.deletions === "number" ? { deletions: file.deletions } : {}),
-		}));
-		const intent = workerIntentLine(worker);
-		return { lines: fileLines, additions: totals.additions, deletions: totals.deletions, hunkCount, hasChangeSet: true, fileEntries, ...(intent ? { intent } : {}) };
+	const report = projectWorkerReport(worker, [], changeSet);
+	const preview = verdictReadyPreview(report);
+	const intent = workerSummaryHeadline(worker) ?? (report.summary ? report.summaryHeadline : undefined);
+	if (report.changeTotals.files > 0) {
+		return {
+			lines: preview.evidence.fileLines,
+			additions: report.changeTotals.additions,
+			deletions: report.changeTotals.deletions,
+			...(report.changeTotals.hunkCount !== undefined ? { hunkCount: report.changeTotals.hunkCount } : {}),
+			hasChangeSet: changeSet !== undefined,
+			fileEntries: report.changedFiles.slice(0, 5).map((file) => ({
+				path: file.path,
+				...(file.additions !== undefined ? { additions: file.additions } : {}),
+				...(file.deletions !== undefined ? { deletions: file.deletions } : {}),
+			})),
+			...(intent ? { intent } : {}),
+		};
 	}
-	const lines = [worker.summary, ...(worker.recommended ?? [])].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+	const lines = [report.summaryHeadline, ...preview.workerSays.recommendations].filter((line) => line.trim().length > 0);
 	return { lines: lines.length ? lines : ["Worker ready."], additions: 0, deletions: 0, hasChangeSet: false };
 }
 
@@ -913,6 +896,7 @@ export class DocketVerdictView implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 	private readonly changeSet?: Artifact;
+	private readonly artifacts: Artifact[];
 	private readonly options: string[];
 	private readonly recommend?: string;
 	private readonly timer?: NodeJS.Timeout;
@@ -925,8 +909,10 @@ export class DocketVerdictView implements Component {
 		private done: (result: DocketVerdictAction | null) => void,
 		private remaining = 0,
 		private paneTail?: string,
+		artifacts: Artifact[] = [],
 	) {
 		this.changeSet = changeSet;
+		this.artifacts = artifacts;
 		const question = primaryWorkerQuestion(worker);
 		this.options = deriveWorkerState(worker) === "needs_input" && question?.options ? question.options : [];
 		this.recommend = question?.recommend;
@@ -948,7 +934,8 @@ export class DocketVerdictView implements Component {
 		const state = deriveWorkerState(this.worker);
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
 		const max = Math.max(0, verbs.length - 1);
-		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length });
+		const ready = state === "ready" || state === "ready_open_todos";
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready });
 		const action = keymap.resolve(data);
 		if (action === "close") {
 			this.finish(null);
@@ -963,6 +950,10 @@ export class DocketVerdictView implements Component {
 		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
 		else if (action === "top") this.selected = 0;
 		else if (action === "bottom") this.selected = max;
+		else if (action === "report" && ready) {
+			this.finish({ verb: "report", worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}) });
+			return;
+		}
 		else if (action === "diff" && this.changeSet) {
 			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
 			return;
@@ -986,14 +977,20 @@ export class DocketVerdictView implements Component {
 		this.cachedLines = undefined;
 	}
 
+	private addSectionHeading(listWidth: number, muted: (s: string) => string, title: string): void {
+		this.container.addChild(new Text(truncateToWidth(` ${muted(this.theme.bold(title))}`, listWidth - 2), 1, 0));
+	}
+
 	render(width: number): string[] {
 		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 		this.container = new Box(2, 1, docketCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
 		const listWidth = Math.max(30, innerWidth);
 		const state = deriveWorkerState(this.worker);
+		const ready = state === "ready" || state === "ready_open_todos";
+		const report = projectWorkerReport(this.worker, this.artifacts, this.changeSet);
 		const payload = workerVerdictPayload(this.worker, this.changeSet);
-		const verbs = verdictVerbs(state, payload.hasChangeSet, this.options);
+		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
 		this.selected = Math.min(this.selected, Math.max(0, verbs.length - 1));
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
@@ -1013,28 +1010,61 @@ export class DocketVerdictView implements Component {
 		const head = `${workerStateColor(this.theme, state, glyph)}  ${text(`${label} · ${task}`)}  ${muted(`${stateLabel} · ${relativeTime(Date.parse(this.worker.updatedAt))}`)}`;
 		this.container.addChild(new Text(truncateToWidth(` ${head}`, listWidth - 2), 1, 0));
 		this.container.addChild(new Spacer(1));
-		if (payload.hasChangeSet) {
-			if (payload.intent) {
-				for (const wrapped of wrapPlainText(payload.intent, listWidth - 4, 2)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
-				this.container.addChild(new Spacer(1));
+
+		if (ready) {
+			const preview = verdictReadyPreview(report);
+			this.addSectionHeading(listWidth, muted, "Evidence");
+			if (preview.evidence.changeLine) {
+				const hunk = report.changeTotals.hunkCount === undefined ? "" : `   ${muted(`${report.changeTotals.hunkCount} hunk${report.changeTotals.hunkCount === 1 ? "" : "s"}`)}`;
+				const stat = `${muted(`${report.changeTotals.files} file${report.changeTotals.files === 1 ? "" : "s"}`)}   ${coloredAdditions(this.theme, report.changeTotals.additions)} ${dim("/")} ${coloredDeletions(this.theme, report.changeTotals.deletions)}   ${coloredDiffBar(this.theme, report.changeTotals.additions, report.changeTotals.deletions, 14)}${hunk}`;
+				this.container.addChild(new Text(truncateToWidth(`  ${stat}`, listWidth - 2), 1, 0));
 			}
-			const hunk = payload.hunkCount === undefined ? "" : `   ${muted(`${payload.hunkCount} hunk${payload.hunkCount === 1 ? "" : "s"}`)}`;
-			const files = artifactChangedFiles(this.changeSet).length;
-			const stat = `${muted(`${files} file${files === 1 ? "" : "s"}`)}   ${coloredAdditions(this.theme, payload.additions)} ${dim("/")} ${coloredDeletions(this.theme, payload.deletions)}   ${coloredDiffBar(this.theme, payload.additions, payload.deletions, 14)}${hunk}`;
-			this.container.addChild(new Text(truncateToWidth(` ${stat}`, listWidth - 2), 1, 0));
-			const entries = payload.fileEntries ?? [];
-			for (let i = 0; i < payload.lines.length; i++) {
-				const entry = entries[i];
-				const rendered = entry
-					? `${dim(entry.path)}   ${coloredFileStat(this.theme, entry.additions, entry.deletions)}`
-					: dim(payload.lines[i]!);
+			for (const entry of report.changedFiles.slice(0, 5)) {
+				const rendered = `${dim(entry.path)}   ${coloredFileStat(this.theme, entry.additions, entry.deletions)}`;
 				this.container.addChild(new Text(truncateToWidth(`   ${rendered}`, listWidth - 2), 1, 0));
 			}
-		} else {
+			if (preview.evidence.filesOverflow > 0) {
+				this.container.addChild(new Text(truncateToWidth(`   ${muted(`… ${preview.evidence.filesOverflow} more · r Report`)}`, listWidth - 2), 1, 0));
+			}
+			if (preview.evidence.checksLine) this.container.addChild(new Text(truncateToWidth(`  ${dim(preview.evidence.checksLine)}`, listWidth - 2), 1, 0));
+			for (const item of preview.evidence.evidenceLines) {
+				for (const wrapped of wrapPlainText(`· ${item}`, listWidth - 4, 2)) this.container.addChild(new Text(truncateToWidth(`  ${dim(wrapped)}`, listWidth - 2), 1, 0));
+			}
+			if (preview.evidence.evidenceOverflow > 0) {
+				this.container.addChild(new Text(truncateToWidth(`  ${muted(`… ${preview.evidence.evidenceOverflow} more evidence · r Report`)}`, listWidth - 2), 1, 0));
+			}
+			if (preview.evidence.refsLine) this.container.addChild(new Text(truncateToWidth(`  ${dim(preview.evidence.refsLine)}`, listWidth - 2), 1, 0));
+			if (!preview.evidence.changeLine && !preview.evidence.checksLine && preview.evidence.evidenceLines.length === 0 && !preview.evidence.refsLine) {
+				this.container.addChild(new Text(truncateToWidth(`  ${dim("no captured changes yet")}`, listWidth - 2), 1, 0));
+			}
+			this.container.addChild(new Spacer(1));
+			this.addSectionHeading(listWidth, muted, "Worker says");
+			for (const wrapped of wrapPlainText(preview.workerSays.headline || "Worker ready.", listWidth - 4, 3)) {
+				this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
+			}
+			for (const rec of preview.workerSays.recommendations) {
+				for (const wrapped of wrapPlainText(`· ${rec}`, listWidth - 4, 2)) {
+					this.container.addChild(new Text(truncateToWidth(`  ${muted(wrapped)}`, listWidth - 2), 1, 0));
+				}
+			}
+			if (preview.workerSays.recommendationsOverflow > 0) {
+				this.container.addChild(new Text(truncateToWidth(`  ${muted(`… ${preview.workerSays.recommendationsOverflow} more · r Report`)}`, listWidth - 2), 1, 0));
+			}
+			this.container.addChild(new Spacer(1));
+			this.addSectionHeading(listWidth, muted, "Actions");
+		} else if (state === "needs_input") {
+			this.addSectionHeading(listWidth, muted, "Question");
 			if (payload.risk) {
 				for (const wrapped of wrapPlainText(payload.risk, listWidth - 6, 2)) this.container.addChild(new Text(truncateToWidth(`  ${warning(`⚠ ${wrapped}`)}`, listWidth - 2), 1, 0));
 				this.container.addChild(new Spacer(1));
 			}
+			for (const line of payload.lines.slice(0, 5)) {
+				for (const wrapped of wrapPlainText(line, listWidth - 4, 3)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
+			}
+			this.container.addChild(new Spacer(1));
+			this.addSectionHeading(listWidth, muted, "Actions");
+		} else {
+			this.addSectionHeading(listWidth, muted, state === "failed" ? "Failure" : "Status");
 			for (const line of payload.lines.slice(0, 5)) {
 				for (const wrapped of wrapPlainText(line, listWidth - 4, 3)) this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
 			}
@@ -1046,19 +1076,19 @@ export class DocketVerdictView implements Component {
 					for (const line of tailLines) this.container.addChild(new Text(truncateToWidth(`  ${dim(line)}`, listWidth - 2), 1, 0));
 				}
 			}
+			this.container.addChild(new Spacer(1));
+			this.addSectionHeading(listWidth, muted, "Actions");
 		}
+
 		this.container.addChild(new DynamicBorder(divider));
 		const optionCount = this.options.length;
 		for (let i = 0; i < verbs.length; i++) {
 			const verb = verbs[i]!;
 			const selected = i === this.selected;
 			const marker = selected ? accent("▸") : " ";
-			// Reject & stop kills the worker and removes its workspace. Set it apart with a
-			// blank line and warning color so it never reads as the next routine step.
 			const destructive = verb.id === "rejectStop";
 			if (destructive) this.container.addChild(new Spacer(1));
 			if (verb.send !== undefined) {
-				// Number the offered options so they can be picked directly with 1..9.
 				const number = dim(`${i + 1} `);
 				const badge = this.recommend && verb.send === this.recommend ? muted(" · recommended") : "";
 				const optionLabel = selected ? accent(this.theme.bold(verb.label)) : text(verb.label);
@@ -1074,7 +1104,7 @@ export class DocketVerdictView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount }), "footer");
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready }), "footer");
 		this.container.addChild(new Text(dim(`${hints} · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1087,10 +1117,99 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 	const state = deriveWorkerState(worker);
 	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
 	const paneTail = state === "failed" && worker.paneCapturedAt ? await createWorkerStore().readPaneTail(worker.id) : undefined;
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail), {
+	const artifacts = state === "ready" || state === "ready_open_todos" ? await readWorkerArtifactsForReview(worker) : [];
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
+}
+
+async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<void> {
+	if (!ctx.hasUI) return;
+	const changeSet = workerChangeSetArtifact(worker);
+	const artifacts = await readWorkerArtifactsForReview(worker);
+	const report = projectWorkerReport(worker, artifacts, changeSet);
+	const body = formatWorkerReportText(report);
+	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketWorkerReportView(tui, theme, `${workerSourceLabel(worker)} · Report`, body, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "84%", minWidth: 72, maxHeight: "88%", margin: 1 },
+	});
+}
+
+class DocketWorkerReportView implements Component {
+	private offset = 0;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+	private wrapped: string[] = [];
+	private viewportHeight = 28;
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private title: string,
+		private body: string,
+		private done: () => void,
+	) {}
+
+	handleInput(data: string): void {
+		const maxOffset = Math.max(0, this.wrapped.length - this.viewportHeight);
+		const half = Math.max(1, Math.floor(this.viewportHeight / 2));
+		const page = Math.max(1, this.viewportHeight - 2);
+		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
+			this.done();
+			return;
+		}
+		const before = this.offset;
+		if (data === "j" || matchesKey(data, Key.down)) this.offset = Math.min(maxOffset, this.offset + 1);
+		else if (data === "k" || matchesKey(data, Key.up)) this.offset = Math.max(0, this.offset - 1);
+		else if (data === "d" || matchesKey(data, Key.ctrl("d"))) this.offset = Math.min(maxOffset, this.offset + half);
+		else if (data === "u" || matchesKey(data, Key.ctrl("u"))) this.offset = Math.max(0, this.offset - half);
+		else if (data === " " || matchesKey(data, Key.pageDown) || matchesKey(data, Key.ctrl("f"))) this.offset = Math.min(maxOffset, this.offset + page);
+		else if (data === "b" || matchesKey(data, Key.pageUp) || matchesKey(data, Key.ctrl("b"))) this.offset = Math.max(0, this.offset - page);
+		else if (data === "g") this.offset = 0;
+		else if (data === "G") this.offset = maxOffset;
+		if (this.offset === before) return;
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const container = new Box(2, 1, docketCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const text = (s: string) => this.theme.fg("text", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		this.wrapped = [];
+		for (const raw of this.body.split(/\r?\n/)) {
+			if (!raw) {
+				this.wrapped.push("");
+				continue;
+			}
+			const isHeading = raw === "Evidence" || raw === "Worker says" || raw.startsWith("Recommendations");
+			const chunks = wrapPlainText(raw, innerWidth - 2, Number.POSITIVE_INFINITY);
+			for (const chunk of chunks.length ? chunks : [""]) this.wrapped.push(isHeading ? `§${chunk}` : chunk);
+		}
+		const headerLeft = ` ${accent(this.theme.bold("docket · Report"))} ${dim(this.title)} `;
+		const headerRight = ` ${dim(`${Math.min(this.offset + 1, Math.max(1, this.wrapped.length))}-${Math.min(this.offset + this.viewportHeight, this.wrapped.length)}/${this.wrapped.length}`)} `;
+		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
+		for (const line of this.wrapped.slice(this.offset, this.offset + this.viewportHeight)) {
+			if (line.startsWith("§")) container.addChild(new Text(truncateToWidth(muted(this.theme.bold(line.slice(1))), innerWidth - 2), 1, 0));
+			else container.addChild(new Text(truncateToWidth(text(line), innerWidth - 2), 1, 0));
+		}
+		container.addChild(new Text(dim("j/k line · Space/b page · g/G top/bottom · q close · zero context"), 1, 0));
+		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
 }
 
 class HunkExternalReviewView implements Component {
@@ -1685,13 +1804,8 @@ export class DocketParallelWorkView implements Component {
 		this.container.addChild(new DynamicBorder(divider));
 
 		if (activityRows.length === 0) {
-			const mascotWorker = this.workers[0];
 			this.container.addChild(new Spacer(1));
-			for (const line of workerMascotLines(mascotWorker)) this.container.addChild(new Text(` ${accent(line)}`, 1, 0));
-			this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("No parallel work yet"))} `, "", listWidth - 2, divider, TOP_CORNERS), 1, 0));
-			this.container.addChild(new Text(truncateToWidth(` ${muted("Spawn a side investigation when you want evidence without interrupting current flow.")}`, listWidth - 2), 1, 0));
-			this.container.addChild(new Text(truncateToWidth(` ${dim("Try: /docket spawn <task>")}`, listWidth - 2), 1, 0));
-			this.container.addChild(new Text(fitBorder("", "", listWidth - 2, divider, BOTTOM_CORNERS), 1, 0));
+			this.container.addChild(new Text(truncateToWidth(` ${muted("docket · no workers yet · /docket spawn <task>")}`, listWidth - 2), 1, 0));
 			this.container.addChild(new Spacer(1));
 		} else {
 			this.container.addChild(new Text(dim(workerActivityHeaderText(listWidth - 2)), 1, 0));
@@ -1719,6 +1833,7 @@ export class DocketParallelWorkView implements Component {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Keys")} ${dim(formatKeyHints(keymap, "help"))}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Peek")} ${dim("read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Debug")} ${dim("a attach tmux is secondary · use only when peek/Report is not enough")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1890,7 +2005,7 @@ class DocketLoadPicker implements Component {
 
 	private renderWorkers(listWidth: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
 		if (this.workers.length === 0) {
-			this.container.addChild(new Text(muted("no workers — /docket spawn <task>, then 2"), 2, 0));
+			this.container.addChild(new Text(muted("docket · no workers yet · /docket spawn <task>"), 2, 0));
 			return;
 		}
 		const start = Math.max(0, Math.min(this.workerIndex - 5, this.workers.length - 11));
@@ -3119,6 +3234,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
 				showVerdict: (worker, remaining) => showWorkerVerdict(ctx, worker, remaining),
+				showReport: (worker) => showWorkerReport(ctx, worker),
 				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),
 				openFileOrArtifact: async (catalog, artifact) => {
 					const filePath = artifactFilePath(artifact, ctx.cwd);

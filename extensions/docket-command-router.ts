@@ -75,6 +75,7 @@ export type DocketCommandRouterDeps = {
 	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	showDocketBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<DocketBrowserAction | null>;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
+	showReport(worker: WorkerStatus): Promise<void>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	openFileOrArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	input(title: string, placeholder: string): Promise<string | undefined>;

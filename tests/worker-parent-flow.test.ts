@@ -22,7 +22,7 @@ function readyWorker(): WorkerStatus {
 
 function stateEvent(state: string): WorkerEvent {
 	return {
-		ts: "2026-01-01T00:00:00.000Z",
+		ts: Date.parse("2026-01-01T00:00:00.000Z"),
 		kind: "state",
 		payload: { state },
 	};
