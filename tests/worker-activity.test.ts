@@ -131,7 +131,8 @@ test("Worker Activity preview shows Task, Progress, Outcome, Evidence, Next acti
 	assert.match(preview, /^Evidence$/m);
 	assert.doesNotMatch(preview, /1\/1 progress/);
 	assert.match(preview, /^Next actions$/m);
-	assert.match(preview, /Enter verdict · p peek · l load · r Reply · a attach · x stop/);
+	assert.match(preview, /Enter verdict · p peek · l load · r Reply · x stop/);
+	assert.doesNotMatch(preview, /a attach/);
 	assert.doesNotMatch(preview, /Actions:/);
 });
 

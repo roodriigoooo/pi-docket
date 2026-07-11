@@ -44,6 +44,7 @@ function depsFor(w: WorkerStatus, overrides: Partial<WorkerVerdictDeps> = {}): {
 		},
 		notify: (text, level) => { calls.push(`notify:${level}:${text}`); },
 		showVerdict: async () => ({ verb: "accept", worker: w }),
+		showReport: async () => { calls.push("showReport"); },
 		confirmDeleteWorker: async () => true,
 		showText: async (title, _text, options) => { calls.push(`showText:${title}:${options?.diff ? "diff" : "plain"}`); },
 		formatArtifact: (artifact: Artifact) => artifact.body,
@@ -211,6 +212,23 @@ test("runWorkerVerdict marks failed worker reviewed on reject (dismiss)", async 
 	await runWorkerVerdict(deps, w);
 
 	assert.ok(calls.some((c) => /^update:worker-1:.*reviewedAt/.test(c)));
+});
+
+test("runWorkerVerdict report verb opens Report then returns to verdict without decisions", async () => {
+	const w = worker({ state: "ready", summary: "done" });
+	let first = true;
+	const { deps, calls, decisions } = depsFor(w, {
+		showVerdict: async () => first ? (first = false, { verb: "report", worker: w }) : null,
+		showReport: async () => { calls.push("showReport"); },
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "stop");
+	assert.deepEqual(calls, ["showReport"]);
+	assert.equal(decisions.length, 0);
+	assert.equal(calls.some((c) => c.startsWith("patch:")), false);
+	assert.equal(calls.some((c) => c.startsWith("tell:")), false);
 });
 
 test("runWorkerVerdict stops without UI", async () => {

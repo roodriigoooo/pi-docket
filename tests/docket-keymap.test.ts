@@ -30,7 +30,10 @@ test("worker dashboard keeps progress, reply, and hint bindings aligned", () => 
 	assert.equal(keymap.resolve("r"), "reply");
 	assert.equal(keymap.resolve("c"), undefined);
 	assert.equal(keymap.resolve("\r"), "open");
+	assert.equal(keymap.resolve("a"), "attach");
 	assert.match(formatKeyHints(keymap, "footer"), /r Reply/);
+	assert.doesNotMatch(formatKeyHints(keymap, "footer"), /attach/);
+	assert.match(formatKeyHints(keymap, "help"), /attach \(debug\)/);
 });
 
 test("picker only advertises available switch and preview actions", () => {
@@ -70,9 +73,13 @@ test("browser card calls d Review diff only for diff-like artifacts", () => {
 test("verdict hints contain only contextually active review actions", () => {
 	const noChangeSet = createVerdictKeymap({ hasChangeSet: false, optionCount: 0 });
 	const withChangeSet = createVerdictKeymap({ hasChangeSet: true, optionCount: 2 });
+	const readyReport = createVerdictKeymap({ hasChangeSet: false, optionCount: 0, canReport: true });
 
 	assert.equal(noChangeSet.resolve("d"), undefined);
 	assert.equal(noChangeSet.resolve("1"), undefined);
+	assert.equal(noChangeSet.resolve("r"), undefined);
 	assert.equal(withChangeSet.resolve("d"), "diff");
 	assert.equal(withChangeSet.resolve("2"), "option2");
+	assert.equal(readyReport.resolve("r"), "report");
+	assert.match(formatKeyHints(readyReport, "footer"), /r Report/);
 });

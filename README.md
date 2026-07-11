@@ -4,20 +4,18 @@
 
 # pi-docket
 
-> Review Pi agent work, run visible tmux workers, and save evidence outside model context.
+> Delegate safely without losing control.
 
-Docket is a review inbox for work done inside Pi.
+Docket lets you spawn visible background workers, watch them calmly, and decide from evidence — without smuggling worker claims into your parent session.
 
-When a Pi agent run gets long, important things hide in scrollback: failed commands, file edits, worker questions, proposed patches, notes, and results. Docket pulls those moments into review cards.
-
-Open `/docket`, decide what matters, and attach evidence only when you want the model to see it.
+Evidence bundles matter, but they are supporting infrastructure. The first-use story is workers: spawn → watch / peek / tell → verdict → Report / diff / Hunk → decide.
 
 ## What Docket helps with
 
-- **Review:** see only work that needs attention, not every line of history.
-- **Workers:** start background Pi workers for research or patches.
+- **Workers:** start an explicit scout or patcher, peek without attaching, then resolve a verdict card.
+- **Control:** automatic worker → parent flow is metadata only. Content enters model context only when you attach it.
 - **Evidence:** save useful artifacts on disk and load them later without spending model context.
-- **Decisions:** accept, reject, redirect, promote, or dismiss worker output from cards.
+- **Decisions:** promote, discard, reply, or acknowledge from cards — you keep the final say.
 
 Docket keeps three things separate:
 
@@ -29,16 +27,6 @@ Docket keeps three things separate:
 
 Compressed terminal recordings from the demo project.
 
-### Capture test failure evidence
-
-![Capture test failure evidence demo](.github/media/docket-capture-evidence.gif)
-
-Shows:
-
-- Ask Pi to run tests and explain failures.
-- Docket turns the failed command and model answer into review cards.
-- Save useful bits as a bundle, then open the inbox.
-
 ### Run a patcher worker and steer it
 
 ![Run a patcher worker and steer it demo](.github/media/docket-worker-verdict.gif)
@@ -49,6 +37,16 @@ Shows:
 - Watch live worker status, then peek without attaching.
 - Pick a verdict when the worker asks how far to go.
 - Promote the patch only after you like the plan.
+
+### Capture test failure evidence
+
+![Capture test failure evidence demo](.github/media/docket-capture-evidence.gif)
+
+Shows:
+
+- Ask Pi to run tests and explain failures.
+- Docket turns the failed command and model answer into review cards.
+- Save useful bits as a bundle, then open the inbox.
 
 ## What it is not
 
@@ -77,22 +75,28 @@ Dependencies:
 ## Basic loop
 
 ```text
-work -> capture evidence or spawn worker -> open /docket -> decide -> act
+spawn worker -> watch / peek / tell -> verdict -> Report / diff / Hunk -> decide
 ```
 
-1. Work in Pi, or start a worker with `/docket spawn`.
-2. Docket records useful artifacts: errors, edits, answers, worker status, and bundles.
-3. `/docket` shows review cards for items that need judgment.
-4. You accept, reject, reply, attach evidence, save a bundle, or mark done.
+1. Start a worker with `/docket spawn` (always user-initiated — Docket never silently spawns).
+2. Watch the dock; peek or tell if you need to steer.
+3. When the worker is ready, open the verdict card.
+4. Press `r` for Report if you need the full evidence view, then `d`/`h` for diff/Hunk, then promote or discard.
 
-The model does not see full evidence until you attach it with `/docket ref` or `/docket inject-full`.
+Evidence bundles (`/docket save` / `/docket load`) sit beside that loop when you want durable capture outside a worker.
 
 ## Quick start
 
 Start a background worker:
 
 ```text
-/docket spawn --as scout find the auth middleware and list risky paths
+/docket spawn --as scout map auth call sites
+```
+
+Or a patcher:
+
+```text
+/docket spawn --as patcher fix failing auth test
 ```
 
 Workers start fresh by default, without parent-session context. Add `--seed` only when the worker needs the current conversation:
@@ -178,14 +182,20 @@ Docket opens the exact worker patch in `hunk patch`. If you leave Hunk comments,
 
 ## Workers
 
-Workers are explicit. Docket does not silently spawn them.
+Workers are explicit and user-initiated. Docket does not silently spawn them, and it does not suggest spawn forms or wizards.
 
-Useful examples:
+Focused examples:
 
 ```text
-/docket spawn --as scout map every caller of getUser()
-/docket spawn --as patcher fix the failing auth test, but ask before edits
+/docket spawn --as scout map auth call sites
+/docket spawn --as patcher fix failing auth test
 /docket tell w1 focus only on src/auth and tests/auth
+```
+
+When there are no workers yet, empty states stay tiny:
+
+```text
+docket · no workers yet · /docket spawn <task>
 ```
 
 Bundled worker kinds:
@@ -195,6 +205,8 @@ Bundled worker kinds:
 - `patcher`: plan-gated edits in an isolated worker workspace.
 
 A plan gate lets a worker inspect first, then requires it to ask before its first edit or mutating command.
+
+Ready review loop: verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for diff/Hunk → promote or discard. Attach is a secondary debug escape hatch, not the normal path.
 
 ## Evidence bundles
 

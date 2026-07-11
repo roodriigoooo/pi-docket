@@ -150,7 +150,7 @@ export function createWorkerDashboardKeymap(): DocketKeymap<DashboardKeyAction> 
 		{ keys: "enter", action: "open", label: "verdict/details", slots: ["footer"] },
 		{ keys: "l", action: "load", label: "load", slots: ["footer"] },
 		{ keys: "r", action: "reply", label: "Reply", slots: ["footer"] },
-		{ keys: "a", action: "attach", label: "attach", slots: ["footer"] },
+		{ keys: "a", action: "attach", label: "attach (debug)", slots: ["help"] },
 		{ keys: "x", action: "stop", label: "stop", slots: ["footer"] },
 	]);
 }
@@ -196,9 +196,9 @@ export function createEvidenceBundleKeymap(): DocketKeymap<EvidenceBundleKeyActi
 	]);
 }
 
-export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
+export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
 
-export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number }): DocketKeymap<VerdictKeyAction> {
+export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean }): DocketKeymap<VerdictKeyAction> {
 	const bindings: KeyBinding<VerdictKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -207,6 +207,9 @@ export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCoun
 		{ keys: "G", action: "bottom", label: "bottom" },
 		{ keys: "enter", action: "select", label: "select", slots: ["footer"] },
 	];
+	if (options.canReport) {
+		bindings.push({ keys: "r", action: "report", label: "Report", slots: ["footer"] });
+	}
 	if (options.hasChangeSet) {
 		bindings.push({ keys: "d", action: "diff", label: "full diff", slots: ["footer"] });
 		bindings.push({ keys: "h", action: "hunk", label: "Hunk review", slots: ["footer"] });

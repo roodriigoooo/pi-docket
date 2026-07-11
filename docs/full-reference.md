@@ -10,9 +10,11 @@
 
 > This page keeps the longer README content from earlier releases. The root README is now shorter and more product-focused.
 
-Docket is a decision queue for work done inside pi.
+Docket's promise: **delegate safely without losing control.**
 
-It pulls the few moments that need human judgment out of long agent work: worker findings, proposed patches, failed commands, saved evidence bundles, and questions. It is not a transcript browser, not a memory system, and not a task manager. Docket keeps evidence available and asks: **what needs a decision now?**
+Spawn explicit workers, watch them in the dock, peek or tell when needed, then decide from an evidence-first verdict — optionally opening Report for the full `docket_done` payload without injecting model context. Evidence bundles are supporting infrastructure for durable capture beside that loop.
+
+It is not a transcript browser, not a memory system, and not a task manager.
 
 > Formerly `trail`. The rename is intentional: the product is no longer framed as a history trail or session-resume system. Docket is a docket of cases needing judgment, with evidence bundles attached.
 
@@ -21,7 +23,7 @@ It pulls the few moments that need human judgment out of long agent work: worker
 - **Pi owns sessions.** Use pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for conversation topology and context-window management.
 - **Docket owns decisions.** It ranks artifacts into review items, shows cards, and keeps evidence out of model context until you attach it.
 - **tmux owns parallel visibility.** Workers are visible pi processes in one shared tmux session. You can attach and inspect them directly.
-- **Workers are explicit.** Docket may eventually suggest a worker only when context-heavy work is obvious and maps to a known worker kind. It must never silently spawn.
+- **Workers are explicit.** Spawning stays user-initiated through `/docket spawn`. Docket never silently spawns and does not proactively suggest workers.
 
 ## Install
 
@@ -38,7 +40,8 @@ Open Docket:
 Spawn a worker explicitly:
 
 ```bash
-/docket spawn --as scout map callers of getUser()
+/docket spawn --as scout map auth call sites
+/docket spawn --as patcher fix failing auth test
 ```
 
 Save evidence as a zero-token bundle:
@@ -81,16 +84,18 @@ cp .pi/trail.json .pi/docket.json 2>/dev/null || true
 ## Basic loop
 
 ```text
-  work / spawn       capture             decide                act
-  current pi    ->   artifacts       ->  /docket cards   ->   Enter review
-  /docket spawn      status.json         evidence             r reply · b save
-                                      bundles/workers         a attach ref
+  spawn             watch              decide                 act
+  /docket spawn ->  dock / peek /   -> verdict card      ->  r Report
+                    tell                 Evidence first         d/h diff
+                                         Worker says           promote
 ```
 
-1. **Work or spawn** — keep working in the parent session, or explicitly start a background worker with `/docket spawn`.
-2. **Capture** — Docket records failed commands, file changes, worker results, saved bundles, and questions.
-3. **Decide** — `/docket` opens only items that likely need attention.
-4. **Act** — review, reply, promote, dismiss, attach evidence, save/load bundles, or attach to tmux.
+1. **Spawn** — explicitly start a background worker with `/docket spawn` (never automatic).
+2. **Watch** — dock metadata updates; peek or tell to steer without attaching.
+3. **Decide** — open the verdict; press `r` for zero-context Report when the card is too compact.
+4. **Act** — promote, discard, reply, or attach evidence only when you choose.
+
+Evidence bundles (`/docket save` / `/docket load`) support durable capture beside that worker loop.
 
 ## Commands
 
@@ -219,7 +224,7 @@ Workers have:
 - append-only `events.ndjson`,
 - protocol tools for parent communication.
 
-Worker artifacts never enter model context automatically except for the short ready summary, if enabled. Full evidence stays on disk until loaded or attached. Loading a ready worker marks it `loaded` in the dock; that is an attention-state change, not an accept verdict.
+Worker artifacts never enter model context automatically. Parent updates from workers are metadata only (dock state, progress, readiness). Full evidence stays on disk until you open Report, load, or attach. Loading a ready worker marks it `loaded` in the dock; that is an attention-state change, not an accept verdict.
 
 Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before the first edit or mutating command. The bundled `patcher` kind uses this by default.
 

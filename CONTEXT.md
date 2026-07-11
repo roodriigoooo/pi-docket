@@ -78,6 +78,10 @@ _Avoid_: history, audit log, transcript.
 A terminal worker pruned with no verdict ever recorded against it. It aged out before anyone decided. Surfaced as "N workers evicted unreviewed this week" so unreviewed work stays visible instead of disappearing on prune.
 _Avoid_: backlog, stale worker, orphan.
 
+**Report**:
+A user-opened, zero-context view of a ready worker's structured completion data and evidence metadata (full summary, recommendations, checks, changed files, refs). It is not a transcript, model summary, or context injection; closing it returns to the unresolved verdict without recording a decision.
+_Avoid_: attach, inject, summary message, transcript dump.
+
 **Silence warning**:
 A passive dock hint for a running worker with no recent tool/todo event, shown as `silent Nm`. It is not a kill switch. Peek or attach if you need live scrollback.
 _Avoid_: deadman, timeout, auto-kill.

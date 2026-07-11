@@ -1,6 +1,7 @@
 import { workerActivityChip, workerTodoBoardLines, type WorkerDerivedState, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
-import { extractWorkerRecommendations, fallbackWorkerSentences, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview, truncateWorkerReviewText, workerAnswerArtifacts } from "./worker-review.js";
+import { projectWorkerReport, type WorkerReport } from "./worker-report.js";
+import { projectWorkerReview, truncateWorkerReviewText } from "./worker-review.js";
 
 export { isWorkerStatusArtifact } from "./worker-review.js";
 
@@ -55,74 +56,39 @@ export type WorkerResultReport = {
 	resultRef?: string;
 };
 
-function workerProgressLine(worker: WorkerStatus): string {
-	const todos = worker.todos ?? [];
-	if (todos.length === 0) return "no progress";
-	const completed = todos.filter((t) => t.state === "completed").length;
-	const open = todos.length - completed;
-	if (open === 0) return `${completed}/${todos.length} progress complete`;
-	return `${completed}/${todos.length} progress · ${open} open`;
-}
-
-function workerChangesLine(artifacts: Artifact[]): string {
-	const changeSet = artifacts.find((a) => a.meta?.workerChangeSet === true);
-	const changedFiles = Array.isArray(changeSet?.meta?.changedFiles) ? changeSet.meta.changedFiles : undefined;
-	if (changedFiles?.length) return `${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}`;
-	const edited = artifacts.filter((a) => a.kind === "file" && (a.meta?.tool === "edit" || a.meta?.tool === "write"));
-	if (edited.length === 0) return "none";
-	if (edited.length === 1) return `1 file (${edited[0]!.title})`;
-	return `${edited.length} files`;
-}
-
-function workerReferences(label: string, artifacts: Artifact[], max = 4): WorkerResultReference[] {
-	const candidates = workerAnswerArtifacts(artifacts);
-	const order: Artifact["kind"][] = ["response", "code", "file", "command", "error"];
-	const grouped = order.flatMap((kind) => candidates.filter((a) => a.kind === kind));
-	const seen = new Set<string>();
-	const refs: WorkerResultReference[] = [];
-	for (const artifact of grouped) {
-		const id = `${label}.${artifact.displayId}`;
-		if (seen.has(id)) continue;
-		seen.add(id);
-		refs.push({ displayId: id, kind: artifact.kind, label: firstWorkerReviewLine(artifact.title) ?? artifact.kind });
-		if (refs.length >= max) break;
+function changesLineFromReport(report: WorkerReport): string {
+	if (report.changeTotals.files === 0) return "none";
+	if (report.changeTotals.files === 1) {
+		const path = report.changedFiles[0]?.path;
+		return path ? `1 file (${path})` : "1 file";
 	}
-	return refs;
+	return `${report.changeTotals.files} files`;
 }
 
 export function workerResultReport(worker: WorkerStatus, artifacts: Artifact[] = []): WorkerResultReport {
+	const report = projectWorkerReport(worker, artifacts);
 	const review = projectWorkerReview(worker, artifacts);
-	const recommendations = review.recommendations.length > 0 ? [...review.recommendations] : extractWorkerRecommendations(review.summarySource);
-	if (recommendations.length === 0 && review.state !== "needs_input" && review.state !== "failed") {
-		recommendations.push(...fallbackWorkerSentences(review.summarySource, 2).filter((s) => s !== review.summary));
-	}
-	const primarySection: WorkerResultReportSection = review.state === "needs_input" ? "question" : review.state === "failed" ? "failure" : "outcome";
-	const primaryBody = primarySection === "question"
-		? review.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n") || review.summary
-		: primarySection === "failure"
-			? worker.lastError ?? review.summary
-			: review.summary;
-	const stateLabel = review.state === "ready_open_todos" ? "ready · progress" : review.state === "needs_input" ? "needs reply" : review.state;
 	const nextActions: Array<{ key: string; label: string }> = [];
-	if (review.state === "needs_input") nextActions.push({ key: "c", label: "Reply" });
-	else if (review.state === "failed") nextActions.push({ key: "Enter", label: "Inspect failure" });
+	if (report.state === "needs_input") nextActions.push({ key: "c", label: "Reply" });
+	else if (report.state === "failed") nextActions.push({ key: "Enter", label: "Inspect failure" });
 	else nextActions.push({ key: "Enter", label: "Review answer" });
-	nextActions.push({ key: "c", label: review.state === "needs_input" ? "Send answer" : "Ask follow-up" });
+	nextActions.push({ key: "c", label: report.state === "needs_input" ? "Send answer" : "Ask follow-up" });
 	nextActions.push({ key: "l", label: "Load into prompt" });
-	nextActions.push({ key: "a", label: "Attach tmux" });
 	nextActions.push({ key: "x", label: "Dismiss" });
 	const uniqueActions = nextActions.filter((entry, index, arr) => arr.findIndex((other) => other.key === entry.key && other.label === entry.label) === index);
 	return {
-		label: review.label,
-		state: review.state,
-		stateLabel,
-		taskLabel: worker.task,
-		progressLine: workerProgressLine(worker),
-		changesLine: workerChangesLine(artifacts),
-		primarySection,
-		primaryBody,
-		recommendations,
-		references: workerReferences(review.label, artifacts),
+		label: report.label,
+		state: report.state,
+		stateLabel: report.stateLabel,
+		taskLabel: report.task,
+		progressLine: report.progressLine,
+		changesLine: changesLineFromReport(report),
+		primarySection: report.primarySection,
+		primaryBody: report.primaryBody,
+		recommendations: report.recommendations,
+		references: report.refs
+			.filter((ref) => !ref.displayId.endsWith(".changes"))
+			.map((ref) => ({ displayId: ref.displayId, kind: ref.kind, label: ref.label })),
 		nextActions: uniqueActions,
 		...(review.result && !review.resultIsStatus ? { resultRef: `@${review.label}.${review.result.displayId}` } : {}),
 	};

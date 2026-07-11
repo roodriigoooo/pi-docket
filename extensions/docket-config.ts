@@ -22,8 +22,6 @@ export type DocketWorkerConfig = {
 	captureTerminal?: boolean;
 	/** Default parent-seed policy when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers; `"full"` seeds the worker with the parent session JSONL. */
 	parentSeedPolicy?: "full" | "none";
-	/** When true, a short summary message is appended to the parent session when a worker reaches ready. Default false: nothing enters the parent JSONL automatically — the inbox card still surfaces the ready worker. */
-	autoEmbedSummary?: boolean;
 };
 
 export type DocketConfig = {
@@ -56,7 +54,6 @@ export const DEFAULT_CONFIG: DocketConfig = {
 		maxSpawnDepth: 2,
 		tmuxStatusLine: false,
 		captureTerminal: false,
-		autoEmbedSummary: false,
 		parentSeedPolicy: "none",
 	},
 };

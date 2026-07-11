@@ -1,6 +1,8 @@
 # Docket Architecture
 
-Docket is a pi extension. The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved evidence bundle). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — reading only status fields and the deterministic change set, never the transcript. **Workers** are background pi processes; **evidence bundles** are durable artifact packages. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md).
+Docket is a pi extension whose first-use promise is **delegate safely without losing control**. Explicit workers are the primary story: spawn → watch/peek/tell → verdict → Report/diff/Hunk → decide. Evidence bundles are durable supporting infrastructure for capture outside a worker.
+
+The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved evidence bundle). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — evidence first, worker claims second, never the transcript. Automatic worker → parent flow is **metadata only**. **Workers** are background pi processes; **evidence bundles** are durable artifact packages. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md).
 
 If you're contributing, read this end-to-end. If you're using Docket, the README and [configuration.md](./configuration.md) are what you want.
 
@@ -20,6 +22,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Worker Lifecycle | `extensions/worker-lifecycle.ts` | Pure status transitions and lifecycle selectors: review/respawn/harvest eligibility, dock-terminal age, and prune disposition. |
 | Background Work | `extensions/background-work.ts` | Protocol payload shaping, pre-flight task docs, synthetic status artifacts, and heartbeat artifact dedup. |
 | Worker Review | `extensions/worker-review.ts` | Shared Worker + Artifact projection: state, result artifact, summary, recommendations, and status-card text. |
+| Worker Report | `extensions/worker-report.ts` | Pure Report projection for verdict Evidence/Worker-says sections, full Report overlay, and expanded result widget. |
 | Worker Conflicts | `extensions/worker-conflicts.ts` | Edited-file overlap detection across workers; warning text for dock, dashboard, and promote confirmation. |
 | Worker Verdict | `extensions/worker-verdict.ts` | Worker decision lifecycle: candidate ranking, verdict actions, decision-ledger context, and change-set promotion. |
 | Worker Change Review | `extensions/worker-change-review.ts` | One review operation over a deterministic change set: built-in diff, Hunk fallback, comment disposition, and worker-only comment delivery. It cannot promote or mount artifacts. |

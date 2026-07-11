@@ -372,12 +372,7 @@ export function normalizeWorkerDoneInput(input: WorkerDoneInput = {}): WorkerDon
 
 export function formatWorkerDoneSummary(input: WorkerDoneInput = {}): string | undefined {
 	const done = normalizeWorkerDoneInput(input);
-	const parts: string[] = [];
-	if (done.summary) parts.push(done.summary);
-	if (done.recommended?.length && !/\bRecommended\s*:/i.test(done.summary ?? "")) {
-		parts.push(["Recommended:", ...done.recommended.map((item) => `- ${item}`)].join("\n"));
-	}
-	return parts.join("\n\n") || undefined;
+	return done.summary || undefined;
 }
 
 const TASK_STOP_WORDS = new Set(["a", "an", "the", "and", "or", "to", "of", "for", "in", "on", "with", "by", "from", "up", "about", "please", "just"]);

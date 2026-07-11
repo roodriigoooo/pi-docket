@@ -7,6 +7,9 @@ test("docketUsage primary view exposes core commands and a hint", () => {
 	for (const cmd of ["/docket ", "f8", "/docket spawn", "/docket tell w<N>", "/docket save", "/docket load"]) {
 		assert.equal(text.includes(cmd), true, `missing ${cmd}`);
 	}
+	assert.match(text, /delegate safely without losing control/);
+	assert.match(text, /\/docket spawn --as scout map auth call sites/);
+	assert.match(text, /\/docket spawn --as patcher fix failing auth test/);
 	assert.match(text, /more: \/docket help advanced/);
 	assert.equal(text.includes("/docket checkpoint"), false);
 	assert.equal(text.includes("/docket continue"), false);

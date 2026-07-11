@@ -1,15 +1,16 @@
 {
   "name": "@roodriigoooo/pi-docket",
   "version": "0.7.1",
-  "description": "Review Pi agent work, run visible tmux workers, and save evidence outside model context",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "docket",
-    "evidence-bundles",
-    "context",
-    "coding-agent"
-  ],
+	"description": "Delegate safely without losing control — visible tmux workers, evidence-first verdicts, evidence outside model context",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"docket",
+		"workers",
+		"evidence-bundles",
+		"context",
+		"coding-agent"
+	],
   "license": "MIT",
   "type": "module",
   "repository": {

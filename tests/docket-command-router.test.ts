@@ -114,6 +114,7 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		showText: async () => { calls.push("showText"); },
 		showDocketBrowser: async () => null,
 		showVerdict: async () => null,
+		showReport: async () => { calls.push("showReport"); },
 		showArtifact: async () => { calls.push("showArtifact"); },
 		openFileOrArtifact: async () => { calls.push("openFileOrArtifact"); },
 		input: async () => undefined,
