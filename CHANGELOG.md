@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.3
+
+- **provider-safe worker model inheritance**: workers now receive the parent's canonical `provider/model` reference instead of a bare model id, preventing newly ambiguous ids from resolving to an unauthenticated provider. Nested worker spawns preserve the same provider identity.
+- **release notes**: see [docs/releases/0.7.3.md](docs/releases/0.7.3.md).
+
 ## 0.7.2
 
 - **metadata-only parent flow**: automatic worker → parent traffic is dock/widget metadata only (state, progress, questions, readiness/failure, compact change stats, attachable refs). `worker.autoEmbedSummary` is removed; existing JSON keys are ignored as legacy. Ready/blocked watcher events refresh widgets and extension subscribers but never call `pi.sendMessage` with worker summaries. Full completion content stays on disk until you open Report or otherwise load/attach evidence.

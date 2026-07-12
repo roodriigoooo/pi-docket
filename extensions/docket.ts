@@ -67,7 +67,7 @@ import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReview
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
-import { workerKindLaunchArgs } from "./worker-spawn-policy.js";
+import { qualifiedModelRef, workerKindLaunchArgs } from "./worker-spawn-policy.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 import { createSharedSessionRuntime } from "./shared-session-runtime.js";
 import { createParentRuntime } from "./parent-runtime.js";
@@ -2696,11 +2696,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				await workerStore.writeArtifacts(workerId, capped);
 				lastHeartbeatSignature = signature;
 			}
+			const model = qualifiedModelRef(ctx.model);
 			await workerStore.updateStatus(workerId, heartbeatTransition({
 				pid: process.pid,
 				sessionFile: ctx.sessionManager.getSessionFile?.(),
 				artifactCount: fullArtifacts.length,
-				...(ctx.model?.id ? { model: ctx.model.id } : {}),
+				...(model ? { model } : {}),
 			}));
 		} catch {
 			// best-effort heartbeat; never crash the worker
@@ -3147,7 +3148,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
-				parentModel: () => ctx.model?.id,
+				parentModel: () => qualifiedModelRef(ctx.model),
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
 				captureTerminal: () => captureTerminal,

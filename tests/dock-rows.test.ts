@@ -19,10 +19,11 @@ function makeWorker(partial: Partial<WorkerStatus> & { id: string; index: number
 	};
 }
 
-test("shortModelLabel strips known provider prefixes", () => {
+test("shortModelLabel strips provider prefixes", () => {
 	assert.equal(shortModelLabel("claude-opus-4-7"), "opus-4-7");
 	assert.equal(shortModelLabel("anthropic/claude-sonnet-4-6"), "sonnet-4-6");
 	assert.equal(shortModelLabel("openai/gpt-5.2"), "gpt-5.2");
+	assert.equal(shortModelLabel("openai-codex/gpt-5.6-sol"), "gpt-5.6-sol");
 	assert.equal(shortModelLabel(undefined), undefined);
 });
 

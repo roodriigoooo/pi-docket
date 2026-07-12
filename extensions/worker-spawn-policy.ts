@@ -22,6 +22,11 @@ export type ResolvedWorkerSpawnPolicy = {
 	launchArgs: string[];
 };
 
+export function qualifiedModelRef(model: { provider: string; id: string } | undefined): string | undefined {
+	if (!model?.provider || !model.id) return undefined;
+	return `${model.provider}/${model.id}`;
+}
+
 function kindExists(kinds: WorkerKindRegistry, name: string | undefined): boolean {
 	const normalized = normalizeWorkerKindName(name);
 	return normalized ? kinds.names().includes(normalized) : false;

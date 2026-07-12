@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
-import { resolveWorkerSpawnPolicy, workerKindLaunchArgs } from "../extensions/worker-spawn-policy.js";
+import { qualifiedModelRef, resolveWorkerSpawnPolicy, workerKindLaunchArgs } from "../extensions/worker-spawn-policy.js";
 
 function registerPlanner() {
 	const kinds = createWorkerKindRegistry();
@@ -63,4 +63,10 @@ test("workerKindLaunchArgs only emits configured launch flags", () => {
 	assert.deepEqual(workerKindLaunchArgs({ thinking: "minimal" }), ["--thinking", "minimal"]);
 	assert.deepEqual(workerKindLaunchArgs({}, { model: "google/gemini-3-pro" }), ["--model", "google/gemini-3-pro"]);
 	assert.deepEqual(workerKindLaunchArgs({}), []);
+});
+
+test("qualifiedModelRef preserves provider identity for ambiguous model ids", () => {
+	assert.equal(qualifiedModelRef({ provider: "openai-codex", id: "gpt-5.6-sol" }), "openai-codex/gpt-5.6-sol");
+	assert.equal(qualifiedModelRef({ provider: "azure-openai-responses", id: "gpt-5.6-sol" }), "azure-openai-responses/gpt-5.6-sol");
+	assert.equal(qualifiedModelRef(undefined), undefined);
 });

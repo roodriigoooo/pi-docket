@@ -116,7 +116,8 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 
 export function shortModelLabel(id: string | undefined): string | undefined {
 	if (!id) return undefined;
-	const cleaned = id.replace(/^anthropic\//, "").replace(/^openai\//, "").replace(/^claude-/, "");
+	const providerSlash = id.indexOf("/");
+	const cleaned = (providerSlash >= 0 ? id.slice(providerSlash + 1) : id).replace(/^claude-/, "");
 	const stripped = cleaned.replace(/-\d{8}$/, "");
 	return stripped.length > 12 ? stripped.slice(0, 12) : stripped;
 }
