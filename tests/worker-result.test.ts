@@ -89,7 +89,7 @@ test("Worker Result report uses Question for needs_input state", () => {
 	assert.equal(report.primarySection, "question");
 	assert.match(report.primaryBody, /Which migration order should I use\?/);
 	assert.equal(report.stateLabel, "needs reply");
-	assert.equal(report.nextActions[0]?.label, "Reply");
+	assert.equal(report.nextActions[0]?.label, "tell");
 });
 
 test("Worker Result includes lightweight progress board", () => {

@@ -79,7 +79,7 @@ test("Docket worker progress lens renders compact and expanded todo boards", () 
 	assert.match(compact, /work\s+status\s+task\s+result/);
 	assert.doesNotMatch(compact, /result\s+action/);
 	assert.match(compact, /▌ w1\s+\[active\]/);
-	assert.match(compact, /Esc\/q\/Ctrl\+C close[\s\S]*r Reply[\s\S]*x stop/);
+	assert.match(compact, /Esc\/q\/Ctrl\+C close[\s\S]*r tell[\s\S]*x stop/);
 	assert.doesNotMatch(compact, /a attach/);
 	assert.match(compact, /progress 2\/5/);
 	assert.match(compact, /Progress/);
@@ -94,6 +94,22 @@ test("Docket worker progress lens renders compact and expanded todo boards", () 
 	assert.doesNotMatch(expanded, /└ … 2 more/);
 });
 
+test("Docket worker dashboard stays useful across compact widths", () => {
+	const states: WorkerStatus[] = [
+		worker({ id: "active", index: 1, state: "active", task: "map auth call sites" }),
+		worker({ id: "waiting", index: 2, state: "needs_input", task: "choose migration path", question: "Which path?" }),
+		worker({ id: "ready", index: 3, state: "ready", task: "fix auth flake", summary: "done" }),
+	];
+	for (const width of [64, 96, 120]) {
+		const view = new DocketParallelWorkView(tui as never, theme, states, new Map(), () => {}, false, new Set(["ready"]));
+		const rendered = view.render(width).join("\n");
+		assert.match(rendered, /map auth call sites/);
+		assert.match(rendered, /choose migration path/);
+		assert.match(rendered, /fix auth flake/);
+		assert.doesNotMatch(rendered, /tool:/);
+	}
+});
+
 test("Docket worker progress lens routes Enter to verdict for decision rows", () => {
 	const w = worker({ state: "ready", summary: "done" });
 	let action: unknown;
@@ -102,6 +118,23 @@ test("Docket worker progress lens routes Enter to verdict for decision rows", ()
 	view.handleInput("\r");
 
 	assert.deepEqual(action, { action: "verdict", worker: w });
+});
+
+test("Docket worker progress lens routes failed rows to verdict and hides load after loading", () => {
+	const failed = worker({ state: "failed", lastError: "boom" });
+	let failedAction: unknown;
+	const failedView = new DocketParallelWorkView(tui as never, theme, [failed], new Map(), (result) => { failedAction = result; }, false, new Set());
+	failedView.handleInput("\r");
+	assert.deepEqual(failedAction, { action: "verdict", worker: failed });
+
+	const ready = worker({ state: "ready", summary: "done" });
+	let loadedAction: unknown;
+	const loadedView = new DocketParallelWorkView(tui as never, theme, [ready], new Map(), (result) => { loadedAction = result; }, false, new Set([ready.id]));
+	const rendered = loadedView.render(96).join("\n");
+	assert.doesNotMatch(rendered, /Enter verdict\/details/);
+	assert.doesNotMatch(rendered, /l load/);
+	loadedView.handleInput("l");
+	assert.equal(loadedAction, undefined);
 });
 
 test("artifact preview colors file diff stats and diff body", () => {
