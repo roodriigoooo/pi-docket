@@ -3,6 +3,7 @@ import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
+import { isReviewableWorker } from "./worker-lifecycle.js";
 
 export type WorkerEvidence = {
 	reads: number;
@@ -89,27 +90,28 @@ function computeEvidence(artifacts: Artifact[]): { evidence: WorkerEvidence; fil
 
 function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefined, recommendations: number, filesChanged: number, progress: { total: number; completed: number }, conflicts: WorkerFileConflict[], loaded: boolean): string {
 	const conflict = conflictSummary(conflicts, 1);
-	if (loaded && (state === "ready" || state === "ready_open_todos")) return conflict ? `loaded · ${conflict}` : "loaded";
-	if (conflict) return conflict;
-	if (state === "needs_input") return "needs reply";
-	if (state === "starting" || state === "thinking") return "working";
-	if (state === "failed") return "error";
-	if (state === "stale") return "stale";
-	if (state === "ready" || state === "ready_open_todos") {
+	let label: string;
+	if (conflict) label = conflict;
+	else if (state === "needs_input") label = "needs reply";
+	else if (state === "starting" || state === "thinking") label = "working";
+	else if (state === "failed") label = "error";
+	else if (state === "stale") label = "stale";
+	else if (state === "ready" || state === "ready_open_todos") {
 		const parts: string[] = [];
 		if (recommendations > 0) parts.push(`${recommendations} ${recommendations === 1 ? "rec" : "recs"}`);
 		parts.push(filesChanged > 0 ? `${filesChanged} ${filesChanged === 1 ? "file" : "files"} changed` : "no files");
 		if (progress.total > 0) parts.push(`${progress.completed}/${progress.total} progress`);
 		if (parts.length === 0 || (parts.length === 1 && parts[0] === "no files")) {
-			if (!answer || isWorkerStatusArtifact(answer)) return "summary only";
+			label = !answer || isWorkerStatusArtifact(answer) ? "summary only" : parts.join(" · ");
+		} else {
+			label = parts.join(" · ");
 		}
-		return parts.join(" · ");
-	}
-	if (state === "reviewed") return "reviewed";
-	if (!answer || isWorkerStatusArtifact(answer)) return "no output";
-	if (answer.kind === "error") return "error";
-	if (answer.kind === "code") return "code output";
-	return "text output";
+	} else if (state === "reviewed") label = "reviewed";
+	else if (!answer || isWorkerStatusArtifact(answer)) label = "no output";
+	else if (answer.kind === "error") label = "error";
+	else if (answer.kind === "code") label = "code output";
+	else label = "text output";
+	return loaded ? `${label} · loaded` : label;
 }
 
 export function shortModelLabel(id: string | undefined): string | undefined {
@@ -174,6 +176,7 @@ export type DockRow = {
 	progressLabel: string;
 	ageLabel: string;
 	attention: boolean;
+	loaded: boolean;
 	chip?: string;
 	kindLabel?: string;
 	modelBadge?: string;
@@ -263,7 +266,7 @@ export function dockEventSubLine(events: WorkerEvent[] | undefined, state: Worke
 	const lastSignal = latestWorkerEventTs(events) ?? (Number.isFinite(startedAt) ? startedAt : undefined);
 	const silenceMs = lastSignal === undefined ? 0 : now - lastSignal;
 	if (silenceMs >= WORKER_SILENCE_WARN_MS) return latestLine ? `silent ${ageLabelFromMs(silenceMs)} · last ${latestLine}` : `silent ${ageLabelFromMs(silenceMs)} · p peek or attach`;
-	return latestLine;
+	return undefined;
 }
 
 function relativeAgeLabel(updatedAtMs: number, now: number): string {
@@ -284,19 +287,14 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 	return "";
 }
 
-function dockChip(state: WorkerDerivedState, loaded: boolean): string | undefined {
-	if (loaded && (state === "ready" || state === "ready_open_todos")) return "loaded";
-	if (state === "needs_input") return "← reply";
-	if (state === "failed") return "← inspect";
-	if (state === "ready" || state === "ready_open_todos") return "← review";
+function dockChip(state: WorkerDerivedState): string | undefined {
+	if (state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos") return "f8 verdict";
 	if (state === "reviewed") return "✓";
 	return undefined;
 }
 
-function isAttentionState(state: WorkerDerivedState, loaded: boolean): boolean {
-	if (loaded && (state === "ready" || state === "ready_open_todos")) return false;
-	if (state === "reviewed") return false;
-	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
+function isAttentionState(worker: WorkerStatus, now: number): boolean {
+	return isReviewableWorker(worker, now);
 }
 
 export function dockRowsForRender(
@@ -307,7 +305,7 @@ export function dockRowsForRender(
 	const workers = rows.map((row) => row.worker);
 	return rows.map((row) => {
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
-		const chip = dockChip(row.state, row.loaded);
+		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
 		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker });
 		const kindLabel = workerKindLabel(row.worker);
@@ -318,7 +316,8 @@ export function dockRowsForRender(
 			taskLabel: row.taskLabel,
 			progressLabel: dockProgressLabel(row),
 			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
-			attention: isAttentionState(row.state, row.loaded),
+			attention: isAttentionState(row.worker, now),
+			loaded: row.loaded,
 			...(chip ? { chip } : {}),
 			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),
@@ -340,16 +339,32 @@ export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	return "idle";
 }
 
-function workerActivityActionHint(state: WorkerDerivedState): string {
-	if (state === "needs_input") return "press c to reply";
-	if (state === "ready" || state === "ready_open_todos") return "press l to load";
-	if (state === "failed") return "Enter details";
+function workerActivityActionHint(worker: WorkerStatus, state: WorkerDerivedState, now: number): string {
+	if (isReviewableWorker(worker, now)) return "press Enter for verdict";
 	if (state === "reviewed") return "Enter re-open";
 	if (state === "starting" || state === "thinking") return "working";
 	return "Enter details";
 }
 
-export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number; loadedWorkerIds?: ReadonlySet<string> } = {}): WorkerActivityRow[] {
+export type WorkerActivityActionProjection = {
+	enter: "verdict" | "details";
+	load: boolean;
+	peek: "peek";
+	tell: "tell";
+	stop: "stop";
+};
+
+export function workerActivityActionProjection(row: WorkerActivityRow, now = Date.now()): WorkerActivityActionProjection {
+	return {
+		enter: isReviewableWorker(row.worker, now) ? "verdict" : "details",
+		load: !row.loaded,
+		peek: "peek",
+		tell: "tell",
+		stop: "stop",
+	};
+}
+
+export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number; explicitlyLoadedWorkerIds?: ReadonlySet<string> } = {}): WorkerActivityRow[] {
 	const now = options.now ?? Date.now();
 	const conflictsByWorker = workerConflictMap(workers, artifactsByWorker);
 	return workers.map((worker) => {
@@ -366,7 +381,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 		const { evidence, filesChanged } = computeEvidence(artifacts);
 		const progress = workerTodoProgress(worker);
 		const conflicts = conflictsByWorker.get(worker.id) ?? [];
-		const loaded = options.loadedWorkerIds?.has(worker.id) === true;
+		const loaded = options.explicitlyLoadedWorkerIds?.has(worker.id) === true;
 		return {
 			worker,
 			label: workerSourceLabel(worker),
@@ -378,7 +393,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			answer,
 			answerLine,
 			outputLabel: buildOutputLabel(state, answer, recommendations, filesChanged, progress, conflicts, loaded),
-			actionHint: workerActivityActionHint(state),
+			actionHint: workerActivityActionHint(worker, state, now),
 			questions,
 			progress,
 			todoLines: workerTodoBoardLines(worker, { maxItems: options.maxTodoItems ?? 12, maxText: Number.POSITIVE_INFINITY }),
@@ -396,13 +411,15 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 export function workerActivityTotals(rows: WorkerActivityRow[]): WorkerActivityTotals {
 	return rows.reduce((acc, row) => {
 		acc.workers++;
-		if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) acc.loaded++;
-		else if (row.state === "reviewed") acc.reviewed++;
-		else if (row.state === "thinking" || row.state === "starting") acc.active++;
-		else if (row.state === "needs_input") acc.waiting++;
-		else if (row.state === "ready_open_todos") acc.readyOpenTodos++;
-		else if (row.state === "ready") acc.ready++;
-		else if (row.state === "failed") acc.failed++;
+		if (row.loaded) acc.loaded++;
+		if (row.state === "reviewed") acc.reviewed++;
+		else if (isReviewableWorker(row.worker)) {
+			if (row.state === "thinking" || row.state === "starting") acc.active++;
+			else if (row.state === "needs_input") acc.waiting++;
+			else if (row.state === "ready_open_todos") acc.readyOpenTodos++;
+			else if (row.state === "ready") acc.ready++;
+			else if (row.state === "failed") acc.failed++;
+		} else if (row.state === "thinking" || row.state === "starting") acc.active++;
 		acc.todos += row.progress.total;
 		acc.completedTodos += row.progress.completed;
 		return acc;
@@ -413,8 +430,7 @@ export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActiv
 	const lines: WorkerActivityStackLine[] = [];
 	for (const row of rows) {
 		const progressStatus = row.progress.total ? ` · progress ${row.progress.completed}/${row.progress.total}` : "";
-		const loadedStatus = row.loaded && (row.state === "ready" || row.state === "ready_open_todos") ? " · loaded" : "";
-		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${loadedStatus}${progressStatus} · ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}` });
+		lines.push({ kind: "worker", state: row.state, worker: row.worker, text: `${row.chip} · ${row.stateLabel}${progressStatus} · ${row.taskLabel} · ${row.outputLabel} · ${row.actionHint}` });
 	}
 	return lines;
 }
@@ -440,13 +456,14 @@ function previewEvidenceBody(row: WorkerActivityRow): string {
 }
 
 function previewNextActions(row: WorkerActivityRow): string {
-	const primary = row.state === "failed"
-		? "Enter inspect"
-		: row.state === "starting" || row.state === "thinking"
-			? "Enter details"
-			: "Enter verdict";
-	const load = row.loaded ? "l loaded" : "l load";
-	return [primary, "p peek", load, "r Reply", "x stop"].join(" · ");
+	const actions = workerActivityActionProjection(row);
+	return [
+		`p ${actions.peek}`,
+		`r ${actions.tell}`,
+		`Enter ${actions.enter}`,
+		actions.load ? "l load" : undefined,
+		`x ${actions.stop}`,
+	].filter((item): item is string => item !== undefined).join(" · ");
 }
 
 function previewProgressBody(row: WorkerActivityRow, options: WorkerActivityPreviewOptions): string | undefined {

@@ -54,29 +54,29 @@ test("dockRowsForRender marks attention states accurately", () => {
 	assert.equal(byLabel.get("w1")!.attention, true);
 	assert.equal(byLabel.get("w2")!.attention, false);
 	assert.equal(byLabel.get("w3")!.attention, true);
-	assert.equal(byLabel.get("w1")!.chip, "← reply");
-	assert.equal(byLabel.get("w3")!.chip, "← review");
+	assert.equal(byLabel.get("w1")!.chip, "f8 verdict");
+	assert.equal(byLabel.get("w3")!.chip, "f8 verdict");
 });
 
 function event(kind: WorkerEvent["kind"], payload: Record<string, unknown>): WorkerEvent {
 	return { ts: Date.now(), kind, payload };
 }
 
-test("dockEventSubLine picks latest non-protocol tool when thinking", () => {
+test("dockEventSubLine suppresses ordinary tool chatter when thinking", () => {
 	const events: WorkerEvent[] = [
 		event("tool", { tool: "docket_todos" }),
 		event("tool", { tool: "read", target: "src/foo.ts" }),
 		event("tool", { tool: "docket_wait" }),
 	];
-	assert.equal(dockEventSubLine(events, "thinking"), "tool: read src/foo.ts");
+	assert.equal(dockEventSubLine(events, "thinking"), undefined);
 });
 
-test("dockEventSubLine falls back to progress when no tool events", () => {
+test("dockEventSubLine suppresses ordinary progress chatter when thinking", () => {
 	const events: WorkerEvent[] = [
 		event("state", { state: "active" }),
 		event("todo", { total: 5, completed: 2, inProgress: 1 }),
 	];
-	assert.equal(dockEventSubLine(events, "thinking"), "progress ▰▰▱▱▱ · 1 active");
+	assert.equal(dockEventSubLine(events, "thinking"), undefined);
 });
 
 test("dockEventSubLine returns undefined for non-thinking states", () => {
@@ -99,7 +99,7 @@ test("dockEventSubLine warns on old parent questions", () => {
 	assert.equal(dockEventSubLine(undefined, "needs_input", { now, worker: waiting }), "waiting 31m · reply, reject, or stop");
 });
 
-test("dockRowsForRender attaches eventLine for thinking rows when events present", () => {
+test("dockRowsForRender omits ordinary tool event lines", () => {
 	const now = Date.now();
 	const fresh = new Date(now).toISOString();
 	const thinking = makeWorker({ id: "a", index: 1, state: "active", createdAt: fresh, updatedAt: fresh });
@@ -108,7 +108,7 @@ test("dockRowsForRender attaches eventLine for thinking rows when events present
 	]);
 	const rows = workerActivityRows([thinking], new Map(), { now });
 	const dock = dockRowsForRender(rows, { eventsByWorker: events, now });
-	assert.equal(dock[0]!.eventLine, "tool: edit src/bar.ts");
+	assert.equal(dock[0]!.eventLine, undefined);
 });
 
 test("dockRowsForRender uses compact progress bars", () => {
@@ -124,13 +124,14 @@ test("dockRowsForRender uses compact progress bars", () => {
 	assert.equal(dock[0]!.progressLabel, "▰▰▱▱▱");
 });
 
-test("dockRowsForRender dims loaded ready workers", () => {
+test("dockRowsForRender keeps loaded ready workers reviewable", () => {
 	const ready = makeWorker({ id: "a", index: 1, state: "ready" });
-	const rows = workerActivityRows([ready], new Map(), { loadedWorkerIds: new Set([ready.id]) });
+	const rows = workerActivityRows([ready], new Map(), { explicitlyLoadedWorkerIds: new Set([ready.id]) });
 	const dock = dockRowsForRender(rows);
 
-	assert.equal(dock[0]!.attention, false);
-	assert.equal(dock[0]!.chip, "loaded");
+	assert.equal(dock[0]!.attention, true);
+	assert.equal(dock[0]!.loaded, true);
+	assert.equal(dock[0]!.chip, "f8 verdict");
 });
 
 test("dockRowsForRender exposes kindLabel for non-default kinds", () => {

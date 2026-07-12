@@ -201,7 +201,7 @@ A Docket bundle is a frozen artifact sidecar plus a small orientation markdown f
 - writes `<id>.md` + `<id>.artifacts.json`,
 - labels the current pi session tree leaf as `docket:<id>`.
 
-`/docket load` mounts bundle artifacts into the current session's Docket navigator at zero model-context cost. Nothing enters the model prompt until you explicitly attach a compact ref or full artifact. Loading a worker marks it `loaded` in the dock: visible, but no longer counted as unresolved review work.
+`/docket load` mounts bundle artifacts into the current session's Docket navigator at zero model-context cost. Nothing enters the model prompt until you explicitly attach a compact ref or full artifact. Loading a worker makes its evidence available and adds a `loaded` marker; it does not resolve unresolved review work. Only a verdict records judgment and clears that decision debt.
 
 This deliberately complements pi:
 
@@ -224,7 +224,7 @@ Workers have:
 - append-only `events.ndjson`,
 - protocol tools for parent communication.
 
-Worker artifacts never enter model context automatically. Parent updates from workers are metadata only (dock state, progress, readiness). Full evidence stays on disk until you open Report, load, or attach. Loading a ready worker marks it `loaded` in the dock; that is an attention-state change, not an accept verdict.
+Worker artifacts never enter model context automatically. Parent updates from workers are metadata only (dock state, progress, readiness). Full evidence stays on disk until you open Report, load, or attach. Loading a worker mounts evidence and marks it `loaded` alongside its existing lifecycle state; a ready worker remains ready and still needs a verdict.
 
 Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before the first edit or mutating command. The bundled `patcher` kind uses this by default.
 

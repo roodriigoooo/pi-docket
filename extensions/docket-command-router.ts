@@ -169,6 +169,20 @@ function loadResultDetail(result: LoadResult): string {
 
 export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 	const announceLoadResult = (result: LoadResult): void => deps.announce(loadResultSubject(result), loadResultDetail(result), "success");
+	const explicitlyLoadWorker = async (worker: WorkerStatus): Promise<LoadResult> => {
+		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
+		deps.markWorkerLoaded(worker);
+		announceLoadResult(result);
+		await deps.refreshWorkerDockWidget();
+		return result;
+	};
+	const explicitlyUnloadWorker = async (worker: WorkerStatus): Promise<void> => {
+		const removed = deps.loadedArtifacts.unloadSource("worker", worker.id);
+		deps.markWorkerUnloaded(worker);
+		if (removed) deps.announce(`unloaded ${removed.slot}`, workerSummaryName(worker));
+		else deps.notify("Docket worker not loaded", "warning");
+		await deps.refreshWorkerDockWidget();
+	};
 	const navigateTmux = async (target: string): Promise<void> => {
 		const nav = buildTmuxNavigation(target);
 		if (nav.mode === "switch" && runTmuxNavigation(nav)) {
@@ -191,8 +205,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			else deps.emitText(workerResultText(worker, artifacts), "list", `docket · ${workerSourceLabel(worker)}`);
 			return;
 		}
-		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
-		deps.markWorkerLoaded(worker);
+		const result = await explicitlyLoadWorker(worker);
 		const artifact = workerResultArtifact(worker, result.slot.artifacts);
 		if (!artifact) {
 			deps.notify(`No result yet for ${workerSourceLabel(worker)}`, "warning");
@@ -202,7 +215,6 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 		deps.refreshChipWidget();
 		deps.showWorkerResult(worker, result.slot.artifacts, false);
 		deps.announceChipChange(artifact, "ref", chipResult);
-		await deps.refreshWorkerDockWidget();
 	};
 
 	const tellWorker = async (ref: string, text?: string, artifact?: Artifact): Promise<void> => {
@@ -360,9 +372,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 						return;
 					}
 					if (result.action === "load") {
-						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker: result.worker }));
-						deps.markWorkerLoaded(result.worker);
-						await deps.refreshWorkerDockWidget();
+						await explicitlyLoadWorker(result.worker);
 						return;
 					}
 					if (result.action === "copyAttach") {
@@ -374,6 +384,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 						return;
 					}
 					if (result.action === "stop") {
+						if (!(await deps.confirmDeleteWorker(result.worker))) return;
 						await deps.workerCommands.delete(workerSourceLabel(result.worker));
 						await deps.refreshWorkerDockWidget();
 						return;
@@ -393,12 +404,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 						return;
 					}
 					try {
-						announceLoadResult(await deps.loadedArtifacts.loadSource({ kind: "worker", worker }));
-						deps.markWorkerLoaded(worker);
+						await explicitlyLoadWorker(worker);
 					} catch (err) {
 						deps.notify(`Docket load failed: ${String(err)}`, "error");
 					}
-					await deps.refreshWorkerDockWidget();
 					return;
 				}
 
@@ -446,11 +455,11 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				}
 				if (!source) return;
 				try {
-					const result = await deps.loadedArtifacts.loadSource(source);
-					announceLoadResult(result);
 					if (source.kind === "worker") {
-						deps.markWorkerLoaded(source.worker);
-						await deps.refreshWorkerDockWidget();
+						await explicitlyLoadWorker(source.worker);
+					} else {
+						const result = await deps.loadedArtifacts.loadSource(source);
+						announceLoadResult(result);
 					}
 				} catch (err) {
 					deps.notify(`Docket load failed: ${String(err)}`, "error");
@@ -465,13 +474,13 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					deps.markAllWorkersUnloaded();
 					if (slots.length) deps.announce(`unloaded ${slots.length} slot${slots.length === 1 ? "" : "s"}`, slots.join(", "));
 					else deps.notify("Docket had no loaded slots", "info");
+					await deps.refreshWorkerDockWidget();
 					return;
 				}
 				if (intent.targetKind === "worker") {
 					const worker = await deps.workerStore.find(intent.target);
-					await deps.workerCommands.unload(intent.target);
-					if (worker) deps.markWorkerUnloaded(worker);
-					await deps.refreshWorkerDockWidget();
+					if (worker) await explicitlyUnloadWorker(worker);
+					else deps.notify("Docket worker not found", "error");
 					return;
 				}
 				const checkpoint = await deps.checkpointStore.find(intent.target, { includeConsumed: true });

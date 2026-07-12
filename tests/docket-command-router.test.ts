@@ -9,6 +9,7 @@ import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 import type { WorkerCommands } from "../extensions/worker-commands.js";
 import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import type { DecisionEvent, DecisionRecord } from "../extensions/decision-log.js";
+import { findVerdictWorker, type WorkerVerdictDeps } from "../extensions/worker-verdict.js";
 
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
 const checkpoint: CheckpointIndexEntry = { id: "ck-1", mode: "handoff", file: "/tmp/ck.md", createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo", consumeOnUse: true };
@@ -127,7 +128,7 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		readDecisionEvents: async () => [],
 		...overrides,
 	};
-	return { calls, decisions, router: createDocketCommandRouter(deps) };
+	return { calls, decisions, deps, router: createDocketCommandRouter(deps) };
 }
 
 test("Docket Command Router handles clear through loaded artifact context", async () => {
@@ -143,15 +144,32 @@ test("Docket Command Router loads default checkpoint without UI", async () => {
 });
 
 test("Docket Command Router marks explicit worker load", async () => {
-	const { calls, router } = harness();
+	const { calls, decisions, deps, router } = harness();
 	await router.handle({ kind: "load", refKind: "worker", ref: "w2", includeConsumed: false });
-	assert.deepEqual(calls, ["loadSource:worker", "announce:loaded w2 · 1 artifact", "loaded:worker-1", "refreshWorkers"]);
+	assert.deepEqual(calls, ["loadSource:worker", "loaded:worker-1", "announce:loaded w2 · 1 artifact", "refreshWorkers"]);
+	assert.equal(worker.state, "ready");
+	assert.equal(worker.reviewedAt, undefined);
+	assert.equal(decisions.length, 0);
+	const verdictWorker = await findVerdictWorker({ workerStore: deps.workerStore, projectRoot: "/repo" } as unknown as WorkerVerdictDeps);
+	assert.equal(verdictWorker?.id, worker.id);
 });
 
 test("Docket Command Router routes worker delete and refreshes dock", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "delete", target: "w2", targetKind: "worker" });
 	assert.deepEqual(calls, ["worker.delete", "refreshWorkers"]);
+});
+
+test("Docket Command Router confirms dashboard stop before purging", async () => {
+	const decisions: string[] = [];
+	const { calls, router } = harness({
+		hasUI: true,
+		showParallelWorkDashboard: async () => ({ action: "stop", worker }),
+		confirmDeleteWorker: async () => { decisions.push("confirm"); return false; },
+	});
+	await router.handle({ kind: "workers", allProjects: false });
+	assert.deepEqual(decisions, ["confirm"]);
+	assert.equal(calls.includes("worker.delete"), false);
 });
 
 test("Docket Command Router attaches from worker back to recorded parent target", async () => {
