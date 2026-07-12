@@ -87,13 +87,19 @@ Evidence bundles (`/docket save` / `/docket load`) sit beside that loop when you
 
 ## Quick start
 
-Start a background worker:
+Start with the simple, safe default:
+
+```text
+/docket spawn investigate auth flake
+```
+
+The built-in default uses an isolated worktree and asks before the first mutation. Choose a read-only scout for reconnaissance:
 
 ```text
 /docket spawn --as scout map auth call sites
 ```
 
-Or a patcher:
+Choose the plan-gated patcher when you want scoped edits and child-scout rights:
 
 ```text
 /docket spawn --as patcher fix failing auth test
@@ -200,11 +206,12 @@ docket · no workers yet · /docket spawn <task>
 
 Bundled worker kinds:
 
-- `default`: general background work.
+- `default`: plan-gated general work in a fresh isolated workspace.
 - `scout`: read-only investigation.
 - `patcher`: plan-gated edits in an isolated worker workspace.
 
 A plan gate lets a worker inspect first, then requires it to ask before its first edit or mutating command.
+Configured `worker.defaultKind` values are deliberate power-user overrides: Docket preserves the selected kind's declared rights instead of adding an implicit policy on top.
 
 Ready review loop: verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for diff/Hunk → promote or discard. Attach is a secondary debug escape hatch, not the normal path.
 
@@ -212,7 +219,7 @@ Ready review loop: verdict card (Evidence → Worker says → Actions) → `r` R
 
 `/docket save` writes a small markdown note plus an artifact sidecar. It preserves evidence. It does not move your Pi session.
 
-`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens. Loading a ready worker also marks it `loaded` in the dock, so it stops presenting as unresolved review work without pretending you accepted it.
+`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens. Loading a worker makes its evidence available and adds a `loaded` marker; it does not resolve the worker's decision debt. Only a verdict clears unresolved review attention.
 
 Only these commands send evidence to the model:
 

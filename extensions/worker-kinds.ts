@@ -44,11 +44,12 @@ export type WorkerKindRegistry = {
 
 const BUILTIN_DEFAULT: WorkerKind = {
 	name: DEFAULT_KIND_NAME,
-	description: "General-purpose Docket worker; matches pre-kinds behavior.",
+	description: "General work: inspect freely; ask before the first mutation.",
 	readOnly: false,
 	defaultWorktree: true,
 	parentSeedPolicy: "none",
 	canSpawn: [],
+	planGate: true,
 	layout: "single",
 	source: "builtin",
 };

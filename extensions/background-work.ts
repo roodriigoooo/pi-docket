@@ -236,6 +236,12 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 			"Read files and run non-mutating discovery commands.",
 			"Do not edit files. If edits are needed, call `docket_wait` and ask for a writable worker.",
 		]
+		: input.planGate
+			? [
+				"Before approval, inspect files and run non-mutating discovery commands.",
+				"After parent approval, edit only files needed for the assigned task; keep diffs minimal.",
+				"After edits, run local non-destructive checks needed to verify your own changes.",
+			]
 		: [
 			"Read files and run non-mutating discovery commands.",
 			"Edit only files needed for the assigned task; keep diffs minimal.",
@@ -244,7 +250,7 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 	const planGate = input.planGate
 		? [
 			"## Plan gate",
-			"Before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with:",
+			"After read-only discovery and before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with:",
 			"- the plan you intend to execute",
 			"- 2-4 concrete options when meaningful",
 			"- `recommend` set to your preferred option",

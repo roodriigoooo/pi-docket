@@ -95,12 +95,12 @@ function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: b
 function formatKindList(kinds: WorkerKind[]): string {
 	if (kinds.length === 0) return "No Docket worker kinds registered";
 	return kinds.map((k) => {
-		const ro = k.readOnly ? "ro" : "rw";
+		const rights = k.readOnly ? "read-only" : k.planGate ? "plan-gated" : "writable";
 		const seed = k.parentSeedPolicy === "none" ? "fresh" : "seeded";
 		const spawn = k.canSpawn.length ? `spawn:${k.canSpawn.join(",")}` : "no-spawn";
 		const src = `[${k.source}]`;
 		const desc = k.description ? ` — ${k.description}` : "";
-		return `${k.name.padEnd(12)} ${ro} ${seed} ${spawn} ${src}${desc}`;
+		return `${k.name.padEnd(12)} ${rights.padEnd(10)} ${seed} ${spawn} ${src}${desc}`;
 	}).join("\n");
 }
 
