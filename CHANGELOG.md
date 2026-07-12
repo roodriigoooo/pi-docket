@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+## 0.7.2
+
 - **metadata-only parent flow**: automatic worker → parent traffic is dock/widget metadata only (state, progress, questions, readiness/failure, compact change stats, attachable refs). `worker.autoEmbedSummary` is removed; existing JSON keys are ignored as legacy. Ready/blocked watcher events refresh widgets and extension subscribers but never call `pi.sendMessage` with worker summaries. Full completion content stays on disk until you open Report or otherwise load/attach evidence.
 - **evidence-first verdict + Report**: ready verdict cards show Evidence → Worker says → Actions. Press `r` for a zero-context Report overlay (full `docket_done` summary, evidence, recommendations, checks, change metadata, refs) that closes back to the same unresolved verdict without recording a decision or injecting model context. `d`/`h` still open full diff / Hunk on every change set. Attach stays available as a secondary debug action in the worker lens. `docket_done` keeps its public fields; summaries no longer append a generated `Recommended:` block (recommendations stay in the structured field; legacy combined summaries normalize at display time).
+- **worker activity controls**: loading evidence adds a visible `loaded` marker without resolving verdict attention. Dashboard actions now distinguish verdict/details, tell, peek, load, and direct tmux control.
+- **plan-gated default worker**: the built-in `default` kind now uses a fresh isolated workspace and asks before its first edit or mutating command. Configured `worker.defaultKind` remains an explicit power-user override with its declared rights.
 - **first-use story**: README, package description, primary help, and empty states lead with safe delegation — spawn → watch → verdict → Report — with evidence bundles as supporting infrastructure. Compact empty copy: `docket · no workers yet · /docket spawn <task>`.
+- **release notes**: see [docs/releases/0.7.2.md](docs/releases/0.7.2.md).
 
 ## 0.7.1
 
