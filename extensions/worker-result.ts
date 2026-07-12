@@ -69,10 +69,10 @@ export function workerResultReport(worker: WorkerStatus, artifacts: Artifact[] =
 	const report = projectWorkerReport(worker, artifacts);
 	const review = projectWorkerReview(worker, artifacts);
 	const nextActions: Array<{ key: string; label: string }> = [];
-	if (report.state === "needs_input") nextActions.push({ key: "c", label: "Reply" });
+	if (report.state === "needs_input") nextActions.push({ key: "r", label: "tell" });
 	else if (report.state === "failed") nextActions.push({ key: "Enter", label: "Inspect failure" });
 	else nextActions.push({ key: "Enter", label: "Review answer" });
-	nextActions.push({ key: "c", label: report.state === "needs_input" ? "Send answer" : "Ask follow-up" });
+	nextActions.push({ key: "r", label: report.state === "needs_input" ? "Send answer" : "Ask follow-up" });
 	nextActions.push({ key: "l", label: "Load into prompt" });
 	nextActions.push({ key: "x", label: "Dismiss" });
 	const uniqueActions = nextActions.filter((entry, index, arr) => arr.findIndex((other) => other.key === entry.key && other.label === entry.label) === index);

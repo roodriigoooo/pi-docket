@@ -50,11 +50,11 @@ test("Worker Activity keeps all workers visible as compact rows", () => {
 	const w2 = rows.find((row) => row.label === "w2")!;
 	assert.equal(w2.stateLabel, "ready");
 	assert.equal(w2.outputLabel, "3 recs · no files · 1/2 progress");
-	assert.equal(w2.actionHint, "press l to load");
+	assert.equal(w2.actionHint, "press Enter for verdict");
 	assert.equal(workerActivityTotals(rows).readyOpenTodos, 0);
 	assert.equal(workerActivityTotals(rows).ready, 2);
-	assert.match(lines.join("\n"), /w2\(\^_\^\) · ready · progress 1\/2 · inspect worker flow · 3 recs · no files · 1\/2 progress · press l to load/);
-	assert.match(lines.join("\n"), /w3\(\^_\^\) · ready · inspect worker flow · summary only · press l to load/);
+	assert.match(lines.join("\n"), /w2\(\^_\^\) · ready · progress 1\/2 · inspect worker flow · 3 recs · no files · 1\/2 progress · press Enter for verdict/);
+	assert.match(lines.join("\n"), /w3\(\^_\^\) · ready · inspect worker flow · summary only · press Enter for verdict/);
 	assert.match(lines.join("\n"), /w1 · active · inspect worker flow · working · working/);
 	assert.doesNotMatch(lines.join("\n"), /├|└|said:|also tracking/);
 });
@@ -131,20 +131,43 @@ test("Worker Activity preview shows Task, Progress, Outcome, Evidence, Next acti
 	assert.match(preview, /^Evidence$/m);
 	assert.doesNotMatch(preview, /1\/1 progress/);
 	assert.match(preview, /^Next actions$/m);
-	assert.match(preview, /Enter verdict · p peek · l load · r Reply · x stop/);
+	assert.match(preview, /p peek · r tell · Enter verdict · l load · x stop/);
 	assert.doesNotMatch(preview, /a attach/);
 	assert.doesNotMatch(preview, /Actions:/);
 });
 
-test("Worker Activity marks explicitly loaded ready workers as non-attention", () => {
+test("Worker Activity keeps explicitly loaded ready workers in verdict debt", () => {
 	const ready = worker({ state: "ready", summary: "Reviewed README and found improvements" });
-	const rows = workerActivityRows([ready], new Map([[ready.id, [answer]]]), { now: 0, loadedWorkerIds: new Set([ready.id]) });
+	const rows = workerActivityRows([ready], new Map([[ready.id, [answer]]]), { now: 0, explicitlyLoadedWorkerIds: new Set([ready.id]) });
 	const totals = workerActivityTotals(rows);
 	const preview = workerActivityPreviewLines(rows[0]!).join("\n");
 
 	assert.equal(rows[0]?.loaded, true);
-	assert.equal(rows[0]?.outputLabel, "loaded");
+	assert.equal(rows[0]?.stateLabel, "ready");
+	assert.equal(rows[0]?.outputLabel, "3 recs · no files · loaded");
 	assert.equal(totals.loaded, 1);
-	assert.equal(totals.ready, 0);
-	assert.match(preview, /Enter verdict · p peek · l loaded/);
+	assert.equal(totals.ready, 1);
+	assert.match(preview, /p peek · r tell · Enter verdict · x stop/);
+});
+
+test("Worker Activity state matrix keeps verdict and load axes independent", () => {
+	const workers = [
+		worker({ id: "active", index: 1, state: "active", updatedAt: "2026-01-01T00:02:00.000Z" }),
+		worker({ id: "waiting", index: 2, state: "needs_input", question: "Which path?" }),
+		worker({ id: "ready", index: 3, state: "ready" }),
+		worker({ id: "failed", index: 4, state: "failed", lastError: "boom" }),
+		worker({ id: "reviewed", index: 5, state: "ready", reviewedAt: "2026-01-01T00:01:00.000Z" }),
+	];
+	const rows = workerActivityRows(workers, new Map(), { explicitlyLoadedWorkerIds: new Set(["ready"]), now: Date.parse("2026-01-01T00:02:00.000Z") });
+	const byId = new Map(rows.map((row) => [row.worker.id, row]));
+
+	assert.equal(byId.get("active")?.actionHint, "working");
+	assert.equal(byId.get("waiting")?.actionHint, "press Enter for verdict");
+	assert.equal(byId.get("ready")?.stateLabel, "ready");
+	assert.equal(byId.get("ready")?.loaded, true);
+	assert.equal(byId.get("failed")?.actionHint, "press Enter for verdict");
+	assert.equal(byId.get("reviewed")?.stateLabel, "reviewed");
+
+	const totals = workerActivityTotals(rows);
+	assert.deepEqual({ active: totals.active, waiting: totals.waiting, ready: totals.ready, failed: totals.failed, reviewed: totals.reviewed, loaded: totals.loaded }, { active: 1, waiting: 1, ready: 1, failed: 1, reviewed: 1, loaded: 1 });
 });

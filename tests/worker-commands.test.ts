@@ -47,7 +47,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 	return { store, spawned, purged, sent };
 }
 
-function deps(workers = [worker]) {
+function deps(workers = [worker], kinds = createWorkerKindRegistry()) {
 	const { store, spawned, purged, sent } = fakeStore(workers);
 	const notifications: string[] = [];
 	const announcements: Array<{ subject: string; detail?: string; kind?: string; meta?: { workerId: string } }> = [];
@@ -70,14 +70,14 @@ function deps(workers = [worker]) {
 		},
 		cwd: "/repo",
 		parentSession: "/session.json",
-		kinds: createWorkerKindRegistry(),
+			kinds,
 		maxActive: () => 8,
 		captureTerminal: () => false,
 		notify: (text) => notifications.push(text),
 		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
 	});
-	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded };
+	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded, kinds };
 }
 
 test("Worker Commands spawns worker with cwd and fresh session by default", async () => {
@@ -96,6 +96,17 @@ test("Worker Commands spawns worker with cwd and fresh session by default", asyn
 	assert.match(announcements[0]?.detail ?? "", /inbox:  \/docket/);
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/docket workers/);
 	assert.deepEqual(announcements[0]?.meta, { workerId: "worker-1" });
+});
+
+test("Worker Commands does not infer kind policy from task wording", async () => {
+	const { commands, spawned } = deps();
+
+	await commands.spawn("investigate auth flake");
+	await commands.spawn("fix auth flake");
+
+	assert.deepEqual(spawned.map((input) => input.kind), ["default", "default"]);
+	assert.deepEqual(spawned.map((input) => input.planGate), [true, true]);
+	assert.deepEqual(spawned.map((input) => input.readOnly), [false, false]);
 });
 
 test("Worker Commands passes worktree spawn option", async () => {
@@ -199,6 +210,18 @@ test("Worker Commands uses configured default kind", async () => {
 	assert.equal(setup.spawned[0]?.readOnly, true);
 	assert.equal(setup.spawned[0]?.worktree, false);
 	assert.equal(setup.spawned[0]?.layout, "split-events");
+	assert.equal(setup.spawned[0]?.planGate, undefined);
+});
+
+test("Worker Commands lists explicit worker rights", async () => {
+	const kinds = createWorkerKindRegistry();
+	kinds.register({ name: "writer", readOnly: false, defaultWorktree: true, parentSeedPolicy: "none", canSpawn: [], planGate: false, layout: "single", source: "runtime" });
+	const setup = deps([worker], kinds);
+
+	await setup.commands.listKinds();
+
+	assert.match(setup.emitted[0] ?? "", /default\s+plan-gated\s+fresh\s+no-spawn/);
+	assert.match(setup.emitted[0] ?? "", /writer\s+writable\s+fresh\s+no-spawn/);
 });
 
 test("Worker Commands passes kind model and thinking to worker launch", async () => {

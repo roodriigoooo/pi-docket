@@ -156,7 +156,7 @@ test("Background Work builds task docs with pre-flight brief and plan gate", () 
 	assert.match(doc, /## Decision rights/);
 	assert.match(doc, /May edit src\/auth\.ts after approval/);
 	assert.match(doc, /## Plan gate/);
-	assert.match(doc, /Before the first file edit/);
+	assert.match(doc, /After read-only discovery and before the first file edit/);
 });
 
 test("Background Work surfaces kind in chip and launch detail", () => {

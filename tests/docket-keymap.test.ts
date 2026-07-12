@@ -27,13 +27,13 @@ test("worker dashboard keeps progress, reply, and hint bindings aligned", () => 
 	const keymap = createWorkerDashboardKeymap();
 
 	assert.equal(keymap.resolve("t"), "progress");
-	assert.equal(keymap.resolve("r"), "reply");
+	assert.equal(keymap.resolve("r"), "tell");
 	assert.equal(keymap.resolve("c"), undefined);
 	assert.equal(keymap.resolve("\r"), "open");
 	assert.equal(keymap.resolve("a"), "attach");
-	assert.match(formatKeyHints(keymap, "footer"), /r Reply/);
+	assert.match(formatKeyHints(keymap, "footer"), /r tell/);
 	assert.doesNotMatch(formatKeyHints(keymap, "footer"), /attach/);
-	assert.match(formatKeyHints(keymap, "help"), /attach \(debug\)/);
+	assert.match(formatKeyHints(keymap, "help"), /direct tmux control/);
 });
 
 test("picker only advertises available switch and preview actions", () => {

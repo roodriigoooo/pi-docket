@@ -134,10 +134,10 @@ export function createScrollingKeymap(): DocketKeymap<ScrollKeyAction> {
 	]);
 }
 
-export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "next" | "help" | "progress" | "peek" | "open" | "load" | "reply" | "attach" | "stop";
+export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "next" | "help" | "progress" | "peek" | "open" | "load" | "tell" | "attach" | "stop";
 
-export function createWorkerDashboardKeymap(): DocketKeymap<DashboardKeyAction> {
-	return defineKeymap("worker dashboard", [
+export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | "details"; canLoad?: boolean } = {}): DocketKeymap<DashboardKeyAction> {
+	const bindings: KeyBinding<DashboardKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "down", slots: ["footer"] },
 		{ keys: ["k", "up"], action: "up", label: "up", slots: ["footer"] },
@@ -147,12 +147,13 @@ export function createWorkerDashboardKeymap(): DocketKeymap<DashboardKeyAction> 
 		{ keys: "?", action: "help", label: "more", slots: ["footer"] },
 		{ keys: "t", action: "progress", label: "progress details", slots: ["help"] },
 		{ keys: "p", action: "peek", label: "peek", slots: ["footer"] },
-		{ keys: "enter", action: "open", label: "verdict/details", slots: ["footer"] },
-		{ keys: "l", action: "load", label: "load", slots: ["footer"] },
-		{ keys: "r", action: "reply", label: "Reply", slots: ["footer"] },
-		{ keys: "a", action: "attach", label: "attach (debug)", slots: ["help"] },
+		{ keys: "r", action: "tell", label: "tell", slots: ["footer"] },
+		{ keys: "enter", action: "open", label: options.enterLabel ?? "verdict/details", slots: ["footer"] },
+		...(options.canLoad === false ? [] : [{ keys: "l", action: "load", label: "load", slots: ["footer"] } satisfies KeyBinding<DashboardKeyAction>]),
+		{ keys: "a", action: "attach", label: "direct tmux control", slots: ["help"] },
 		{ keys: "x", action: "stop", label: "stop", slots: ["footer"] },
-	]);
+	];
+	return defineKeymap("worker dashboard", bindings);
 }
 
 export type PickerKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "preview" | "edit" | "delete" | "switchCheckpoint" | "switchWorker" | "switch";

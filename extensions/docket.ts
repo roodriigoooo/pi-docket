@@ -51,7 +51,7 @@ import { createDocketCommandRouter, type LoadPickerMode, type LoadPickerSelectio
 import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./docket-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { dockRowsForRender, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
+import { dockRowsForRender, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
@@ -1434,12 +1434,10 @@ function fitColumn(text: string, width: number): string {
 type WorkerTableColumns = { label: number; status: number; task: number; result: number };
 
 function workerRowNeedsAction(row: WorkerActivityRow): boolean {
-	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return false;
-	return row.state === "needs_input" || row.state === "failed" || row.state === "ready" || row.state === "ready_open_todos";
+	return workerActivityActionProjection(row).enter === "verdict";
 }
 
 function workerStatusBadgeLabel(row: WorkerActivityRow): string {
-	if (row.loaded && (row.state === "ready" || row.state === "ready_open_todos")) return "loaded";
 	if (row.state === "needs_input") return "needs input";
 	if (row.state === "ready_open_todos") return "ready";
 	if (row.state === "thinking" || row.state === "starting") return "active";
@@ -1464,6 +1462,15 @@ function workerStatusBadge(theme: any, row: WorkerActivityRow, selected: boolean
 }
 
 function workerResultLabel(row: WorkerActivityRow): string {
+	if (row.state === "thinking" || row.state === "starting") {
+		if (row.progress.total > 0) return workerProgressCompact(row.progress) ?? `${row.progress.completed}/${row.progress.total} todos`;
+		if (row.conflicts.length > 0 || row.filesChanged > 0 || row.evidence.errors > 0) {
+			if (row.conflicts.length > 0) return row.outputLabel;
+			if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
+			return `${row.evidence.errors} ${row.evidence.errors === 1 ? "error" : "errors"}`;
+		}
+		return "";
+	}
 	return row.outputLabel.replace(/(\d+\/\d+) progress/g, "$1 todos");
 }
 
@@ -1482,7 +1489,7 @@ function workerActivityHeaderText(width: number): string {
 }
 
 function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
-	const rail = selected ? "▌" : " ";
+	const rail = selected ? "▌" : workerRowNeedsAction(row) ? "●" : " ";
 	if (width < 92) {
 		return truncateToWidth(`${rail} ${row.label} ${workerStatusText(row)} ${row.taskLabel} — ${workerResultLabel(row)}`, width, "");
 	}
@@ -1502,22 +1509,31 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 		const selected = selectedIndex === index;
 		const raw = workerActivityRowText(row, width, selected);
 		const badge = workerStatusText(row);
-		const colored = raw.replace(badge, workerStatusBadge(theme, row, selected));
-		const line = selected ? theme.fg("text", theme.bold(colored)) : workerStateColor(theme, row.state, colored);
+		const coloredBody = raw.slice(1).replace(badge, workerStatusBadge(theme, row, selected));
+		const rail = selected
+			? theme.fg("accent", "▌")
+			: workerRowNeedsAction(row)
+				? workerStateColor(theme, row.state, "●")
+				: " ";
+		const colored = `${rail}${coloredBody}`;
+		const line = selected ? theme.fg("text", theme.bold(colored)) : colored;
 		return selected ? theme.bg("selectedBg", padAnsi(line, width)) : line;
 	});
 }
 
-function dockRowText(row: DockRow, width: number, now: number): string {
+function dockRowText(theme: any, row: DockRow, width: number, now: number): string {
 	// Active workers breathe; everyone else (attention, idle) holds a steady dot.
-	const marker = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : "●";
+	const markerText = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : "●";
+	const marker = row.attention ? workerStateColor(theme, row.state, markerText) : theme.fg("dim", markerText);
 	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
 	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
 	const labelCell = `${row.label}${kindCell}${modelCell}`;
 	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/progress" : row.state.replace(/_/g, " ");
-	const docketing = [row.progressLabel, row.ageLabel].filter(Boolean).join(" · ");
-	const left = `${marker} ${labelCell}${stateCell ? ` ${stateCell}` : ""} ${row.taskLabel}`.trim();
-	const right = [docketing, row.chip].filter(Boolean).join(" ");
+	const stateStyled = stateCell ? workerStateColor(theme, row.state, stateCell) : "";
+	const docketing = [row.progressLabel, row.loaded ? theme.fg("muted", "loaded") : undefined, row.ageLabel].filter(Boolean).join(" · ");
+	const left = `${marker} ${labelCell}${stateStyled ? ` ${stateStyled}` : ""} ${row.taskLabel}`.trim();
+	const action = row.chip ? row.attention ? workerStateColor(theme, row.state, row.chip) : theme.fg("dim", row.chip) : undefined;
+	const right = [docketing, action].filter(Boolean).join(" · ");
 	const sep = "  ";
 	const rightLen = visibleWidth(right);
 	if (!right) return truncateToWidth(left, width, "");
@@ -1528,12 +1544,10 @@ function dockRowText(row: DockRow, width: number, now: number): string {
 }
 
 function renderDockRows(theme: any, rows: DockRow[], width: number, now: number): string[] {
-	const dim = (s: string) => theme.fg("dim", s);
 	const muted = (s: string) => theme.fg("muted", s);
 	const out: string[] = [];
 	for (const row of rows) {
-		const plain = dockRowText(row, width, now);
-		out.push(row.attention ? workerStateColor(theme, row.state, plain) : dim(plain));
+		out.push(dockRowText(theme, row, width, now));
 		if (row.eventLine) {
 			const sub = truncateToWidth(`    ${row.eventLine}`, width, "");
 			out.push(muted(sub));
@@ -1644,7 +1658,7 @@ export class DocketParallelWorkView implements Component {
 		private artifactsByWorker: Map<string, Artifact[]>,
 		private done: (result: ParallelWorkAction) => void,
 		private groupByProject = false,
-		private loadedWorkerIds: ReadonlySet<string> = new Set(),
+		private explicitlyLoadedWorkerIds: ReadonlySet<string> = new Set(),
 	) {}
 
 	private finish(result: ParallelWorkAction): void {
@@ -1673,7 +1687,7 @@ export class DocketParallelWorkView implements Component {
 	}
 
 	private activityRows(): WorkerActivityRow[] {
-		const rows = workerActivityRows(this.workers, this.artifactsByWorker, { loadedWorkerIds: this.loadedWorkerIds });
+		const rows = workerActivityRows(this.workers, this.artifactsByWorker, { explicitlyLoadedWorkerIds: this.explicitlyLoadedWorkerIds });
 		if (!this.groupByProject) return rows;
 		return [...rows].sort((a, b) => workerProjectKey(a.worker).localeCompare(workerProjectKey(b.worker)));
 	}
@@ -1687,7 +1701,7 @@ export class DocketParallelWorkView implements Component {
 	}
 
 	private enterAction(row: WorkerActivityRow): ParallelWorkAction {
-		if (row.state === "needs_input" || row.state === "ready" || row.state === "ready_open_todos") return { action: "verdict", worker: row.worker };
+		if (workerActivityActionProjection(row).enter === "verdict") return { action: "verdict", worker: row.worker };
 		return { action: "details", worker: row.worker };
 	}
 
@@ -1699,7 +1713,9 @@ export class DocketParallelWorkView implements Component {
 	handleInput(data: string): void {
 		const rows = this.activityRows();
 		const max = Math.max(0, rows.length - 1);
-		const action = createWorkerDashboardKeymap().resolve(data);
+		const selectedRow = rows[this.selected];
+		const projection = selectedRow ? workerActivityActionProjection(selectedRow) : undefined;
+		const action = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true }).resolve(data);
 		if (action === "close") {
 			if (this.peek) {
 				this.setPeek(false);
@@ -1725,10 +1741,10 @@ export class DocketParallelWorkView implements Component {
 		}
 		else if (action === "load") {
 			const worker = this.selectedWorker();
-			if (worker) this.finish({ action: "load", worker });
+			if (worker && projection?.load !== false) this.finish({ action: "load", worker });
 			return;
 		}
-		else if (action === "reply") {
+		else if (action === "tell") {
 			const worker = this.selectedWorker();
 			if (worker) this.finish({ action: "tell", worker });
 			return;
@@ -1827,13 +1843,14 @@ export class DocketParallelWorkView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
-		const keymap = createWorkerDashboardKeymap();
+		const projection = selectedRow ? workerActivityActionProjection(selectedRow) : undefined;
+		const keymap = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true });
 		this.container.addChild(new Text(dim(formatKeyHints(keymap, "footer")), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Keys")} ${dim(formatKeyHints(keymap, "help"))}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Peek")} ${dim("read-only view of the worker's tmux pane · no attach, no context cost")}`, 1, 0));
-			this.container.addChild(new Text(`${muted("Debug")} ${dim("a attach tmux is secondary · use only when peek/Report is not enough")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Debug")} ${dim("a direct tmux control is secondary · use only when peek/Report is not enough")}`, 1, 0));
 		}
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1843,8 +1860,8 @@ export class DocketParallelWorkView implements Component {
 
 }
 
-async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, groupByProject = false, loadedWorkerIds: ReadonlySet<string> = new Set()): Promise<ParallelWorkAction> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new DocketParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject, loadedWorkerIds), {
+async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, groupByProject = false, explicitlyLoadedWorkerIds: ReadonlySet<string> = new Set()): Promise<ParallelWorkAction> {
+	return ctx.ui.custom((tui, theme, _kb, done) => new DocketParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject, explicitlyLoadedWorkerIds), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -2279,7 +2296,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		}
 	};
 	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
-	let loadedWorkerIds = new Set<string>();
+	let explicitlyLoadedWorkerIds = new Set<string>();
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
 	const loadedArtifacts = createLoadedArtifactContext({
@@ -2590,7 +2607,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				ctx.ui.setWidget("docket-workers", undefined);
 				return;
 			}
-			const rows = workerActivityRows(workers, artifactsByWorker, { loadedWorkerIds });
+			const rows = workerActivityRows(workers, artifactsByWorker, { explicitlyLoadedWorkerIds });
 			const counts = workerActivityTotals(rows);
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
@@ -2609,7 +2626,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/progress`);
 						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
 						if (counts.loaded) attentionParts.push(`${counts.loaded} loaded`);
-						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.loaded - counts.reviewed;
+						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.active - counts.reviewed;
 						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
 						const reviewedPart = counts.reviewed > 0 ? dim(`${counts.reviewed} reviewed`) : "";
 						const attentionJoined = attentionParts.length ? attentionParts.join(" · ") : "";
@@ -3019,7 +3036,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		sessionProjectKey = projectKey(ctx.cwd);
 		pinnedRefs = new Set();
 		completedRefs = new Set();
-		loadedWorkerIds = new Set<string>();
+		explicitlyLoadedWorkerIds = new Set<string>();
 		loadedArtifacts.reset();
 		workerResult = undefined;
 		loadedCheckpoint = loadedCheckpointFromSession(ctx);
@@ -3042,7 +3059,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		activeCtx = undefined;
 		pinnedRefs = new Set();
 		completedRefs = new Set();
-		loadedWorkerIds = new Set<string>();
+		explicitlyLoadedWorkerIds = new Set<string>();
 		loadedArtifacts.reset();
 		workerResult = undefined;
 		loadedCheckpoint = undefined;
@@ -3173,9 +3190,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 				showWorkerResult: showWorkerResultWidget,
 				clearWorkerResult: clearWorkerResultWidget,
 				markArtifactDone: (artifact) => completedRefs.add(artifact.ref),
-				markWorkerLoaded: (worker) => loadedWorkerIds.add(worker.id),
-				markWorkerUnloaded: (worker) => loadedWorkerIds.delete(worker.id),
-				markAllWorkersUnloaded: () => { loadedWorkerIds = new Set<string>(); },
+				markWorkerLoaded: (worker) => explicitlyLoadedWorkerIds.add(worker.id),
+				markWorkerUnloaded: (worker) => explicitlyLoadedWorkerIds.delete(worker.id),
+				markAllWorkersUnloaded: () => { explicitlyLoadedWorkerIds = new Set<string>(); },
 				promoteWorkerChangeSet: async (artifact) => {
 					const workerIdValue = typeof artifact.meta?.workerId === "string" ? artifact.meta.workerId : undefined;
 					const worker = workerIdValue ? await workerStore.find(workerIdValue) : undefined;
@@ -3229,7 +3246,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 				},
 				readWorkersWithArtifacts: (options) => readWorkersWithArtifacts(workerStore, options?.allProjects ? undefined : sessionProjectKey ?? projectKey(ctx.cwd)),
-				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true, loadedWorkerIds),
+				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true, explicitlyLoadedWorkerIds),
 				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
 				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),

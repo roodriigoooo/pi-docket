@@ -78,6 +78,8 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 
 `worker.guardrailsPath` replaces `extensions/worker-guardrails.md` from this package. Use it to pin team-wide policies into every worker.
 
+`worker.defaultKind` is a deliberate power-user override. Docket preserves the configured kind's declared rights, including a custom kind with no plan gate; it does not silently add another policy layer.
+
 ## Worker kinds
 
 A *kind* is a markdown file with YAML frontmatter. Drop into either:

@@ -6,7 +6,7 @@ import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerInProject } from "./worker-store.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
-import { verdictResolvedTransition } from "./worker-lifecycle.js";
+import { isReviewableWorker, verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
 	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report";
@@ -49,6 +49,7 @@ export function workerHasChangeSet(worker: WorkerStatus): Artifact | undefined {
 export function verdictCandidateRank(worker: WorkerStatus): number {
 	// Rank on cheap derived state only. Change sets are computed lazily for the single
 	// opened verdict card, so N ready workers do not trigger N git stage/diff calls.
+	if (!isReviewableWorker(worker)) return 100;
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input") return 0;
 	if (state === "failed") return 1;
