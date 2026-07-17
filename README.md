@@ -309,4 +309,5 @@ npm run pack:dry
 - [Full reference](./docs/full-reference.md)
 - [Configuration](./docs/configuration.md)
 - [Architecture](./docs/architecture.md)
+- [Manual visual demo](./docs/manual-demo.md)
 - [Changelog](./CHANGELOG.md)
