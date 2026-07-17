@@ -7,6 +7,7 @@ import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, buildWorkerTaskDocument, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
 import { paneHarvestedTransition, parentReplyAcceptedTransition, respawnFailedTransition, respawnStartedTransition, type WorkerTransition } from "./worker-lifecycle.js";
 import type { Artifact, GitSnapshot } from "./types.js";
+import { readCurrentWorkerDeliverable, readWorkerDeliverable, workerDeliverableFile, workerDeliverablesDir, type WorkerDeliverable, type WorkerHandoffProvenance } from "./worker-deliverable.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
@@ -30,6 +31,10 @@ export type WorkerStore = {
 	statusFile(id: string): string;
 	artifactsFile(id: string): string;
 	taskFile(id: string): string;
+	deliverablesDir(id: string): string;
+	deliverableFile(id: string, version: number): string;
+	readDeliverable(id: string, version: number): Promise<WorkerDeliverable | undefined>;
+	readCurrentDeliverable(worker: WorkerStatus | string): Promise<WorkerDeliverable | undefined>;
 	list(options?: { projectRoot?: string }): Promise<WorkerStatus[]>;
 	find(id: string): Promise<WorkerStatus | undefined>;
 	readArtifacts(id: string): Promise<Artifact[]>;
@@ -87,6 +92,12 @@ export type SpawnInput = {
 	layout?: "single" | "split-events";
 	/** When true, run tmux pipe-pane to capture terminal output to pane.log. */
 	captureTerminal?: boolean;
+	/** Internal launch override used only by reviewed-deliverable handoff. */
+	model?: string;
+	/** Internal launch override used only by reviewed-deliverable handoff. */
+	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** Exact reviewed body and provenance for a human-started handoff worker. */
+	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
 };
 
 function workersRoot(): string {
@@ -443,6 +454,19 @@ export function createWorkerStore(): WorkerStore {
 		taskFile(id: string) {
 			return path.join(workerDir(id), "task.md");
 		},
+		deliverablesDir(id: string) {
+			return workerDeliverablesDir(workersRoot(), id);
+		},
+		deliverableFile(id: string, version: number) {
+			return workerDeliverableFile(workersRoot(), id, version);
+		},
+		async readDeliverable(id: string, version: number): Promise<WorkerDeliverable | undefined> {
+			return readWorkerDeliverable(workersRoot(), id, version);
+		},
+		async readCurrentDeliverable(workerOrId: WorkerStatus | string): Promise<WorkerDeliverable | undefined> {
+			const status = typeof workerOrId === "string" ? await this.find(workerOrId) : workerOrId;
+			return status ? readCurrentWorkerDeliverable(workersRoot(), status) : undefined;
+		},
 
 		async list(options: { projectRoot?: string } = {}): Promise<WorkerStatus[]> {
 			const root = workersRoot();
@@ -545,6 +569,10 @@ export function createWorkerStore(): WorkerStore {
 
 			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
 			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
+			const sourceHandoff = input.sourceDeliverable
+				? { ...input.sourceDeliverable.provenance, sidecarPath: path.join(dir, "source-deliverable.md") }
+				: undefined;
+			if (input.sourceDeliverable) await fs.writeFile(sourceHandoff!.sidecarPath, input.sourceDeliverable.body, "utf8");
 			if (worktree) await fs.mkdir(workerCwd, { recursive: true });
 
 			const sessionDir = path.join(dir, "session");
@@ -570,6 +598,7 @@ export function createWorkerStore(): WorkerStore {
 				...(input.planGate ? { planGate: true } : {}),
 				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
 				...(parentLabel ? { parentWorkerLabel: parentLabel } : {}),
+				...(sourceHandoff ? { sourceHandoff } : {}),
 			}), "utf8");
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
@@ -590,6 +619,9 @@ export function createWorkerStore(): WorkerStore {
 				state: "starting",
 				runToken,
 				...(input.kind ? { kind: input.kind } : {}),
+				...(input.model ? { model: input.model } : {}),
+				...(input.thinking ? { thinking: input.thinking } : {}),
+				...(sourceHandoff ? { sourceHandoff } : {}),
 				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
 				...(parentTmuxTarget ? { parentTmuxTarget } : {}),
 				...(depth ? { depth } : {}),

@@ -81,6 +81,31 @@ test("WorkerSnapshotCache yields empty snapshot when root missing", async () => 
 	assert.equal(snap.artifactsByWorker.size, 0);
 });
 
+test("WorkerSnapshotCache reads current immutable deliverable sidecar", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-deliverable-"));
+	try {
+		const { statusFile } = await seedWorkerDir(root, "alpha", 1, "[]");
+		const pointer = { id: "worker-deliverable:alpha", version: 2, ref: "worker-deliverable:alpha:2" };
+		await writeFile(statusFile, `${JSON.stringify({ ...makeStatus({ id: "alpha", index: 1, state: "ready" }), deliverable: pointer })}\n`, "utf8");
+		await mkdir(path.join(root, "alpha", "deliverables"), { recursive: true });
+		await writeFile(path.join(root, "alpha", "deliverables", "v2.json"), `${JSON.stringify({
+			schemaVersion: 1,
+			...pointer,
+			createdAt: "2026-05-01T00:00:00.000Z",
+			source: { workerId: "alpha", workerLabel: "w1", task: "demo" },
+			body: "exact body",
+			summary: "summary",
+			outcome: "proposal",
+			evidence: [], recommendations: [], refs: [],
+		})}\n`, "utf8");
+
+		const snapshot = await new WorkerSnapshotCache(root).snapshot();
+		assert.equal(snapshot.deliverablesByWorker.get("alpha")?.body, "exact body");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("WorkerSnapshotCache keeps a sticky recent-event buffer across snapshots", async () => {
 	const root = await mkdtemp(path.join(os.tmpdir(), "docket-dock-cache-events-"));
 	try {

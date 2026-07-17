@@ -8,6 +8,10 @@ export type WorkerSpawnOptions = {
 	worktree?: boolean;
 	layout?: WorkerLayout;
 	captureTerminal?: boolean;
+	/** Internal reviewed-handoff override; public command grammar does not expose it. */
+	model?: string;
+	/** Internal reviewed-handoff override; public command grammar does not expose it. */
+	thinking?: WorkerKind["thinking"];
 };
 
 export type ResolvedWorkerSpawnPolicy = {
@@ -20,6 +24,8 @@ export type ResolvedWorkerSpawnPolicy = {
 	captureTerminal: boolean;
 	layout: WorkerLayout;
 	launchArgs: string[];
+	model?: string;
+	thinking?: WorkerKind["thinking"];
 };
 
 export function qualifiedModelRef(model: { provider: string; id: string } | undefined): string | undefined {
@@ -43,11 +49,16 @@ function resolveKind(kinds: WorkerKindRegistry, requestedName: string | undefine
 	return { kind: kinds.defaultKind(configuredDefault) };
 }
 
-export function workerKindLaunchArgs(kind: Pick<WorkerKind, "model" | "thinking">, defaults: { model?: string } = {}): string[] {
+export function workerKindLaunchArgs(
+	kind: Pick<WorkerKind, "model" | "thinking">,
+	defaults: { model?: string; thinking?: WorkerKind["thinking"] } = {},
+	overrides: { model?: string; thinking?: WorkerKind["thinking"] } = {},
+): string[] {
 	const args: string[] = [];
-	const model = kind.model ?? defaults.model;
+	const model = overrides.model ?? kind.model ?? defaults.model;
+	const thinking = overrides.thinking ?? kind.thinking ?? defaults.thinking;
 	if (model) args.push("--model", model);
-	if (kind.thinking) args.push("--thinking", kind.thinking);
+	if (thinking) args.push("--thinking", thinking);
 	return args;
 }
 
@@ -77,6 +88,8 @@ export function resolveWorkerSpawnPolicy(input: {
 		useWorktree: options.worktree === true || kind.defaultWorktree,
 		captureTerminal: options.captureTerminal === true || input.captureTerminalDefault === true,
 		layout: options.layout ?? kind.layout,
-		launchArgs: workerKindLaunchArgs(kind, { model: input.parentModel }),
+		...(options.model ?? kind.model ?? input.parentModel ? { model: options.model ?? kind.model ?? input.parentModel } : {}),
+		...(options.thinking ?? kind.thinking ? { thinking: options.thinking ?? kind.thinking } : {}),
+		launchArgs: workerKindLaunchArgs(kind, { model: input.parentModel }, { model: options.model, thinking: options.thinking }),
 	};
 }

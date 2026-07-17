@@ -1,3 +1,4 @@
+import type { WorkerDeliverablePointer } from "./worker-deliverable.js";
 import {
 	formatWorkerDoneSummary,
 	normalizeWorkerDoneInput,
@@ -16,6 +17,10 @@ export type PruneDisposition = "keep" | "prune" | "prune-with-debt";
 const TERMINAL_STATES = new Set<WorkerStatus["state"]>(["ready", "failed", "error", "ended"]);
 const HARVEST_STATES = new Set<WorkerStatus["state"]>(["failed", "error", "ended"]);
 
+function sameWorkerDeliverablePointer(a: WorkerDeliverablePointer | undefined, b: WorkerDeliverablePointer | undefined): boolean {
+	return Boolean(a && b && a.id === b.id && a.version === b.version && a.ref === b.ref);
+}
+
 export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	if (worker.state === "needs_input") return "needs_input";
 	if (worker.reviewedAt && TERMINAL_STATES.has(worker.state)) return "reviewed";
@@ -31,7 +36,7 @@ export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now(
 
 export function isReviewableWorker(worker: WorkerStatus, now = Date.now()): boolean {
 	const state = deriveWorkerLifecycleState(worker, now);
-	return state === "needs_input" || state === "failed" || state === "ready";
+	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
 }
 
 export function isRespawnEligible(worker: WorkerStatus): boolean {
@@ -94,7 +99,7 @@ export function waitTransition(text: string, question: WorkerQuestion): WorkerTr
 	};
 }
 
-export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_input">, text?: string, doneInput?: WorkerDoneInput): WorkerTransition {
+export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_input">, text?: string, doneInput?: WorkerDoneInput, deliverable?: WorkerDeliverablePointer): WorkerTransition {
 	return () => {
 		const patch: Partial<WorkerStatus> = {
 			state,
@@ -105,6 +110,7 @@ export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_in
 			reviewedAt: undefined,
 		};
 		if (state === "ready") {
+			if (deliverable) patch.deliverable = deliverable;
 			const done = normalizeWorkerDoneInput(doneInput ?? { summary: text });
 			if (done.outcome) patch.outcome = done.outcome;
 			if (done.evidence?.length) patch.evidence = done.evidence;
@@ -122,12 +128,16 @@ export function parentReplyAcceptedTransition(before: Pick<WorkerStatus, "state"
 	};
 }
 
-export function verdictResolvedTransition(at: string): WorkerTransition {
-	return (current) => TERMINAL_STATES.has(current.state) ? { reviewedAt: at } : undefined;
+export function verdictResolvedTransition(at: string, deliverable?: WorkerDeliverablePointer): WorkerTransition {
+	return (current) => {
+		if (!TERMINAL_STATES.has(current.state)) return undefined;
+		if (deliverable && !sameWorkerDeliverablePointer(current.deliverable, deliverable)) return undefined;
+		return { reviewedAt: at };
+	};
 }
 
 export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string }): WorkerTransition {
-	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
+	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
 }
 
 export function respawnFailedTransition(message: string): WorkerTransition {

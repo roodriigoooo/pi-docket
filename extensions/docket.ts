@@ -52,7 +52,7 @@ import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavi
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { dockRowsForRender, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
-import { workerChangeSetArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { freezeWorkerChangeSet, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
@@ -65,9 +65,11 @@ import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorker
 import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition } from "./worker-lifecycle.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
-import { createDecisionLog, reviewedWorkerIds } from "./decision-log.js";
+import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { qualifiedModelRef, workerKindLaunchArgs } from "./worker-spawn-policy.js";
+import { classifyWorkerDeliverable, extractWorkerDeliverableBody, legacyWorkerDeliverableInput, publishWorkerDeliverable, readCurrentWorkerDeliverable, sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable } from "./worker-deliverable.js";
+import { availableHandoffModels, createWorkerHandoffProvenance, formatWorkerHandoffConfirmation, handoffModelRef, handoffThinkingChoices } from "./worker-handoff.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 import { createSharedSessionRuntime } from "./shared-session-runtime.js";
 import { createParentRuntime } from "./parent-runtime.js";
@@ -792,7 +794,7 @@ async function showDocketBrowser(
 	});
 }
 
-type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send";
+type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send" | "report" | "use";
 export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
 type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
@@ -815,7 +817,7 @@ function coloredDiffBar(theme: any, additions: number, deletions: number, width:
 	return `[${[...bar].map((char) => char === "█" ? theme.fg("success", char) : theme.fg("error", char)).join("")}]`;
 }
 
-export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, options: string[] = []): VerdictVerb[] {
+export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, options: string[] = [], canUse = false, deliverable = false): VerdictVerb[] {
 	if (state === "needs_input") {
 		if (options.length > 0) return [
 			...options.map((option): VerdictVerb => ({ id: "send", label: option, description: "send to worker", send: option })),
@@ -830,6 +832,10 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 			{ id: "chat", label: "Chat", description: "type a reply" },
 		];
 	}
+	if (state === "reviewed" && canUse) return [
+		{ id: "use", label: "Use", description: "handoff approved deliverable" },
+		{ id: "report", label: "Report", description: "read reviewed deliverable" },
+	];
 	if (state === "failed") return [
 		{ id: "accept", label: "Retry", description: "relaunch worker" },
 		{ id: "reject", label: "Dismiss", description: "drop from inbox" },
@@ -837,10 +843,10 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 		{ id: "chat", label: "Chat", description: "send follow-up" },
 	];
 	return [
-		{ id: "accept", label: hasChangeSet ? "Promote" : "Acknowledge", description: hasChangeSet ? "apply diff into your worktree" : "mark reviewed" },
+		{ id: "accept", label: hasChangeSet ? "Promote" : deliverable ? "Approve" : "Acknowledge", description: hasChangeSet ? "apply diff into your worktree" : deliverable ? "record approval" : "mark reviewed" },
 		{ id: "reject", label: hasChangeSet ? "Discard" : "Dismiss", description: hasChangeSet ? "drop changes · keep worktree" : "drop from inbox" },
 		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
-		{ id: "chat", label: "Chat", description: hasChangeSet ? "send back for revision" : "send follow-up" },
+		{ id: "chat", label: deliverable ? "Request revision" : "Chat", description: deliverable ? "write a version-bound review note" : hasChangeSet ? "send back for revision" : "send follow-up" },
 	];
 }
 
@@ -860,7 +866,7 @@ function primaryWorkerQuestion(worker: WorkerStatus) {
 	return questions.length ? questions[questions.length - 1] : undefined;
 }
 
-export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact): VerdictPayload {
+export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact, deliverable?: WorkerDeliverable): VerdictPayload {
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input") {
 		const lines = workerQuestions(worker).map((question) => question.text);
@@ -868,9 +874,9 @@ export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact)
 		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}) };
 	}
 	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
-	const report = projectWorkerReport(worker, [], changeSet);
+	const report = projectWorkerReport(worker, [], changeSet, deliverable);
 	const preview = verdictReadyPreview(report);
-	const intent = workerSummaryHeadline(worker) ?? (report.summary ? report.summaryHeadline : undefined);
+	const intent = deliverable?.summary ?? workerSummaryHeadline(worker) ?? (report.summary ? report.summaryHeadline : undefined);
 	if (report.changeTotals.files > 0) {
 		return {
 			lines: preview.evidence.fileLines,
@@ -897,6 +903,7 @@ export class DocketVerdictView implements Component {
 	private cachedLines?: string[];
 	private readonly changeSet?: Artifact;
 	private readonly artifacts: Artifact[];
+	private readonly deliverable?: WorkerDeliverable;
 	private readonly options: string[];
 	private readonly recommend?: string;
 	private readonly timer?: NodeJS.Timeout;
@@ -910,9 +917,12 @@ export class DocketVerdictView implements Component {
 		private remaining = 0,
 		private paneTail?: string,
 		artifacts: Artifact[] = [],
+		deliverable?: WorkerDeliverable,
+		private canUse = false,
 	) {
 		this.changeSet = changeSet;
 		this.artifacts = artifacts;
+		this.deliverable = deliverable;
 		const question = primaryWorkerQuestion(worker);
 		this.options = deriveWorkerState(worker) === "needs_input" && question?.options ? question.options : [];
 		this.recommend = question?.recommend;
@@ -932,10 +942,10 @@ export class DocketVerdictView implements Component {
 
 	handleInput(data: string): void {
 		const state = deriveWorkerState(this.worker);
-		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
+		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options, this.canUse, Boolean(this.deliverable));
 		const max = Math.max(0, verbs.length - 1);
-		const ready = state === "ready" || state === "ready_open_todos";
-		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready });
+		const ready = state === "ready" || state === "ready_open_todos" || state === "reviewed";
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready, canUse: this.canUse });
 		const action = keymap.resolve(data);
 		if (action === "close") {
 			this.finish(null);
@@ -943,7 +953,7 @@ export class DocketVerdictView implements Component {
 		}
 		const digitOption = action?.startsWith("option") ? verdictOptionForDigit(verbs, data) : undefined;
 		if (digitOption) {
-			this.finish({ verb: digitOption.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), text: digitOption.send });
+			this.finish({ verb: digitOption.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(this.deliverable ? { deliverable: this.deliverable } : {}), text: digitOption.send });
 			return;
 		}
 		if (action === "down") this.selected = Math.min(max, this.selected + 1);
@@ -951,20 +961,24 @@ export class DocketVerdictView implements Component {
 		else if (action === "top") this.selected = 0;
 		else if (action === "bottom") this.selected = max;
 		else if (action === "report" && ready) {
-			this.finish({ verb: "report", worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}) });
+			this.finish({ verb: "report", worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(this.deliverable ? { deliverable: this.deliverable } : {}) });
+			return;
+		}
+		else if (action === "use" && this.canUse && this.deliverable) {
+			this.finish({ verb: "use", worker: this.worker, deliverable: this.deliverable });
 			return;
 		}
 		else if (action === "diff" && this.changeSet) {
-			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet });
+			this.finish({ verb: "diff", worker: this.worker, changeSet: this.changeSet, ...(this.deliverable ? { deliverable: this.deliverable } : {}) });
 			return;
 		}
 		else if (action === "hunk" && this.changeSet) {
-			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet });
+			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet, ...(this.deliverable ? { deliverable: this.deliverable } : {}) });
 			return;
 		}
 		else if (action === "select") {
 			const verb = verbs[this.selected];
-			if (verb) this.finish({ verb: verb.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(verb.send !== undefined ? { text: verb.send } : {}) });
+			if (verb) this.finish({ verb: verb.id, worker: this.worker, ...(this.changeSet ? { changeSet: this.changeSet } : {}), ...(this.deliverable ? { deliverable: this.deliverable } : {}), ...(verb.send !== undefined ? { text: verb.send } : {}) });
 			return;
 		}
 		this.invalidate();
@@ -987,10 +1001,10 @@ export class DocketVerdictView implements Component {
 		const innerWidth = Math.max(20, width - 4);
 		const listWidth = Math.max(30, innerWidth);
 		const state = deriveWorkerState(this.worker);
-		const ready = state === "ready" || state === "ready_open_todos";
-		const report = projectWorkerReport(this.worker, this.artifacts, this.changeSet);
-		const payload = workerVerdictPayload(this.worker, this.changeSet);
-		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options);
+		const ready = state === "ready" || state === "ready_open_todos" || state === "reviewed";
+		const report = projectWorkerReport(this.worker, this.artifacts, this.changeSet, this.deliverable);
+		const payload = workerVerdictPayload(this.worker, this.changeSet, this.deliverable);
+		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options, this.canUse, Boolean(this.deliverable));
 		this.selected = Math.min(this.selected, Math.max(0, verbs.length - 1));
 		const accent = (s: string) => this.theme.fg("accent", s);
 		const dim = (s: string) => this.theme.fg("dim", s);
@@ -1009,6 +1023,10 @@ export class DocketVerdictView implements Component {
 		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, border, TOP_CORNERS), 0, 0));
 		const head = `${workerStateColor(this.theme, state, glyph)}  ${text(`${label} · ${task}`)}  ${muted(`${stateLabel} · ${relativeTime(Date.parse(this.worker.updatedAt))}`)}`;
 		this.container.addChild(new Text(truncateToWidth(` ${head}`, listWidth - 2), 1, 0));
+		if (this.deliverable) {
+			const source = this.deliverable.sourceHandoff ? ` · handoff ${this.deliverable.sourceHandoff.sourceRef}` : "";
+			this.container.addChild(new Text(truncateToWidth(`  ${muted(`v${this.deliverable.version} · ${this.deliverable.ref}${source}`)}`, listWidth - 2), 1, 0));
+		}
 		this.container.addChild(new Spacer(1));
 
 		if (ready) {
@@ -1038,7 +1056,9 @@ export class DocketVerdictView implements Component {
 				this.container.addChild(new Text(truncateToWidth(`  ${dim("no captured changes yet")}`, listWidth - 2), 1, 0));
 			}
 			this.container.addChild(new Spacer(1));
-			this.addSectionHeading(listWidth, muted, "Worker says");
+			const presentation = this.deliverable ? classifyWorkerDeliverable(this.deliverable) : undefined;
+			const deliverableHeading = presentation === "document" ? "Proposal" : presentation === "findings" ? "Findings" : "Worker says";
+			this.addSectionHeading(listWidth, muted, deliverableHeading);
 			for (const wrapped of wrapPlainText(preview.workerSays.headline || "Worker ready.", listWidth - 4, 3)) {
 				this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
 			}
@@ -1104,7 +1124,7 @@ export class DocketVerdictView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready }), "footer");
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse }), "footer");
 		this.container.addChild(new Text(dim(`${hints} · ${exitHint}`), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -1115,20 +1135,26 @@ export class DocketVerdictView implements Component {
 
 async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus, remaining = 0): Promise<DocketVerdictAction | null> {
 	const state = deriveWorkerState(worker);
-	const changeSet = state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
+	const deliverable = state === "ready" || state === "ready_open_todos" || state === "reviewed" ? await currentWorkerDeliverableForReview(worker) : undefined;
+	const changeSet = deliverable ? workerChangeSetArtifact(worker, deliverable) : state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
 	const paneTail = state === "failed" && worker.paneCapturedAt ? await createWorkerStore().readPaneTail(worker.id) : undefined;
-	const artifacts = state === "ready" || state === "ready_open_todos" ? await readWorkerArtifactsForReview(worker) : [];
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts), {
+	const artifacts = state === "ready" || state === "ready_open_todos" || state === "reviewed" ? await readWorkerArtifactsForReview(worker, deliverable) : [];
+	let canUse = false;
+	if (deliverable) {
+		try { canUse = isDeliverableApproved(await createDecisionLog().read(), workerDeliverablePointer(deliverable)); } catch { /* ledger is best-effort */ }
+	}
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
 }
 
-async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<void> {
+async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStatus, currentDeliverable?: WorkerDeliverable): Promise<void> {
 	if (!ctx.hasUI) return;
-	const changeSet = workerChangeSetArtifact(worker);
-	const artifacts = await readWorkerArtifactsForReview(worker);
-	const report = projectWorkerReport(worker, artifacts, changeSet);
+	const deliverable = currentDeliverable ?? await currentWorkerDeliverableForReview(worker);
+	const changeSet = workerChangeSetArtifact(worker, deliverable);
+	const artifacts = await readWorkerArtifactsForReview(worker, deliverable);
+	const report = projectWorkerReport(worker, artifacts, changeSet, deliverable);
 	const body = formatWorkerReportText(report);
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketWorkerReportView(tui, theme, `${workerSourceLabel(worker)} · Report`, body, done), {
 		overlay: true,
@@ -1583,13 +1609,46 @@ function addWorkerActivityPreview(container: Container | Box, theme: any, row: W
 	}
 }
 
-async function readWorkerArtifactsForReview(worker: WorkerStatus): Promise<Artifact[]> {
+async function currentWorkerDeliverableForReview(worker: WorkerStatus, artifacts?: Artifact[]): Promise<WorkerDeliverable | undefined> {
+	const store = createWorkerStore();
+	const current = await (store.readCurrentDeliverable?.(worker) ?? readCurrentWorkerDeliverable(store.root(), worker));
+	if (current) return current;
+	const state = deriveWorkerState(worker);
+	const readyGeneration = state === "ready" || state === "ready_open_todos" || (state === "reviewed" && worker.state === "ready");
+	if (!readyGeneration) return undefined;
+	const raw = artifacts ?? await store.readArtifacts(worker.id);
+	// Legacy ready workers have no protocol-bound body to recover. Freeze their best
+	// available artifact once so every later surface still agrees on v1.
+	const publication = await publishWorkerDeliverable({
+		root: store.root(),
+		worker,
+		...legacyWorkerDeliverableInput(worker, raw),
+		captureChangeSet: (version) => freezeWorkerChangeSet(worker, version),
+	});
+	const pointer = workerDeliverablePointer(publication.deliverable);
+	await store.updateStatus(worker.id, (latest) => latest.deliverable ? undefined : { deliverable: pointer });
+	return publication.deliverable;
+}
+
+async function readWorkerArtifactsForReview(worker: WorkerStatus, deliverable?: WorkerDeliverable): Promise<Artifact[]> {
 	const store = createWorkerStore();
 	const artifacts = await store.readArtifacts(worker.id);
-	const status = workerStatusArtifact(worker);
-	const changes = worker.state === "ready" || worker.state === "failed" || worker.state === "ended" || worker.state === "needs_input" ? workerChangeSetArtifact(worker) : undefined;
+	const resolved = deliverable ?? await currentWorkerDeliverableForReview(worker, artifacts);
 	const paneTail = worker.paneCapturedAt ? await store.readPaneTail(worker.id) : undefined;
 	const tail = paneTail ? workerPaneTailArtifact(worker, paneTail) : undefined;
+	if (resolved) {
+		const primaryBase = workerDeliverableArtifact(resolved);
+		const primary = { ...primaryBase, meta: { ...primaryBase.meta, workerStatus: deriveWorkerState(worker) } };
+		// Primary deliverable is sole answer/review item. Raw worker responses and
+		// mutable change/status adapters remain evidence, never competing answers.
+		const frozenRefs = new Set(resolved.refs.map((ref) => ref.ref));
+		const supporting = artifacts
+			.filter((artifact) => frozenRefs.has(artifact.ref) && artifact.kind !== "response" && artifact.kind !== "code" && artifact.meta?.workerStatus === undefined && artifact.meta?.workerChangeSet !== true)
+			.map((artifact) => ({ ...artifact, meta: { ...artifact.meta, supportingEvidence: true, workerId: worker.id, workerLabel: workerSourceLabel(worker) } }));
+		return [primary, ...supporting, tail].filter((artifact): artifact is Artifact => artifact !== undefined);
+	}
+	const status = workerStatusArtifact(worker);
+	const changes = worker.state === "ready" || worker.state === "failed" || worker.state === "ended" || worker.state === "needs_input" ? workerChangeSetArtifact(worker) : undefined;
 	return [status, changes, ...artifacts.filter((artifact) => artifact.ref !== status?.ref && artifact.ref !== changes?.ref), tail].filter((artifact): artifact is Artifact => artifact !== undefined);
 }
 
@@ -2295,7 +2354,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 			stopDockAnimation();
 		}
 	};
-	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean } | undefined;
+	let workerResult: { worker: WorkerStatus; artifacts: Artifact[]; expanded: boolean; deliverable?: WorkerDeliverable } | undefined;
 	let explicitlyLoadedWorkerIds = new Set<string>();
 	let pinnedRefs = new Set<string>();
 	let completedRefs = new Set<string>();
@@ -2344,9 +2403,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 			// before the record is gone so /docket log decisions can surface the count.
 			const decisionLog = createDecisionLog();
 			let reviewed: Set<string>;
-			try { reviewed = reviewedWorkerIds(await decisionLog.read()); } catch { return; }
+			let reviewedRefs: Set<string>;
+			try {
+				const events = await decisionLog.read();
+				reviewed = reviewedWorkerIds(events);
+				reviewedRefs = reviewedDeliverableRefs(events);
+			} catch { return; }
 			for (const worker of targets) {
-				if (!reviewed.has(worker.id)) {
+				const reviewedCurrent = worker.deliverable ? reviewedRefs.has(worker.deliverable.ref) : reviewed.has(worker.id);
+				if (!reviewedCurrent) {
 					try {
 						await decisionLog.recordEviction({ workerId: worker.id, workerLabel: workerShortLabel(worker.index), state: worker.state, ...(worker.task ? { task: worker.task } : {}) });
 					} catch {
@@ -2376,8 +2441,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				const warning = (s: string) => theme.fg("warning", s);
 				const errorColor = (s: string) => theme.fg("error", s);
 				const text = (s: string) => theme.fg("text", s);
-				const report = workerResultReport(snapshot.worker, snapshot.artifacts);
-				const headline = workerResultHeadline(snapshot.worker, snapshot.artifacts, 78);
+				const report = workerResultReport(snapshot.worker, snapshot.artifacts, snapshot.deliverable);
+				const headline = workerResultHeadline(snapshot.worker, snapshot.artifacts, 78, snapshot.deliverable);
 				const container = new Container();
 				const stateColor = report.state === "failed" ? errorColor : report.state === "needs_input" ? warning : success;
 				const headerLine = `${accent(theme.bold("docket"))} ${dim("·")} ${accent(report.label)} ${dim("·")} ${stateColor(report.stateLabel)}  ${muted(headline)}`;
@@ -2423,8 +2488,13 @@ export default function docketExtension(pi: ExtensionAPI) {
 	};
 
 	const showWorkerResultWidget = (worker: WorkerStatus, artifacts: Artifact[], expanded: boolean): void => {
-		workerResult = { worker, artifacts, expanded };
-		refreshWorkerResultWidget();
+		void currentWorkerDeliverableForReview(worker, artifacts).then((deliverable) => {
+			workerResult = { worker, artifacts, expanded, ...(deliverable ? { deliverable } : {}) };
+			refreshWorkerResultWidget();
+		}).catch(() => {
+			workerResult = { worker, artifacts, expanded };
+			refreshWorkerResultWidget();
+		});
 	};
 
 	const clearWorkerResultWidget = (): boolean => {
@@ -2581,7 +2651,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		workerDockRunning = true;
 		try {
 			if (!workerDockCache) workerDockCache = new WorkerSnapshotCache(createWorkerStore().root());
-			const { workers: allWorkers, artifactsByWorker, eventsByWorker, newEventsByWorker } = await workerDockCache.snapshot();
+			const { workers: allWorkers, artifactsByWorker, deliverablesByWorker, eventsByWorker, newEventsByWorker } = await workerDockCache.snapshot();
 			// Metadata-only parent flow (#17): ready/blocked events refresh widgets and
 			// extension subscribers only. Worker summaries never enter the parent transcript
 			// (see worker-parent-flow.ts / tests/worker-parent-flow.test.ts).
@@ -2607,7 +2677,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 				ctx.ui.setWidget("docket-workers", undefined);
 				return;
 			}
-			const rows = workerActivityRows(workers, artifactsByWorker, { explicitlyLoadedWorkerIds });
+			const reviewArtifactsByWorker = new Map<string, Artifact[]>();
+			for (const worker of workers) {
+				const raw = artifactsByWorker.get(worker.id) ?? [];
+				const deliverable = deliverablesByWorker.get(worker.id);
+				const frozen = deliverable ? new Set(deliverable.refs.map((ref) => ref.ref)) : undefined;
+				const primary = deliverable ? workerDeliverableArtifact(deliverable) : undefined;
+				reviewArtifactsByWorker.set(worker.id, deliverable ? [{ ...primary!, meta: { ...primary!.meta, workerStatus: deriveWorkerState(worker, now) } }, ...raw.filter((artifact) => frozen!.has(artifact.ref))] : raw);
+			}
+			const rows = workerActivityRows(workers, reviewArtifactsByWorker, { explicitlyLoadedWorkerIds, deliverablesByWorker });
 			const counts = workerActivityTotals(rows);
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
@@ -2676,7 +2754,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const workers = await createWorkerStore().list({ ...(sessionProjectKey ? { projectRoot: sessionProjectKey } : {}) });
 			await Promise.all(workers.map(async (worker) => {
 				loadedArtifacts.unloadSource("worker", worker.id);
-				await loadedArtifacts.loadSource({ kind: "worker", worker });
+				const deliverable = await currentWorkerDeliverableForReview(worker);
+				if (deliverable) await loadedArtifacts.loadDeliverable(worker, deliverable);
+				else await loadedArtifacts.loadSource({ kind: "worker", worker });
 			}));
 		} catch {
 			// best-effort; the inbox should still open for current-session artifacts
@@ -2708,7 +2788,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const applyWorkerState = async (ctx: ExtensionContext, state: WorkerProtocolState, text?: string, doneInput?: WorkerDoneInput, questionMeta?: { risk?: string; options?: string[]; recommend?: string }): Promise<WorkerStatus | undefined> => {
+	const applyWorkerState = async (
+		ctx: ExtensionContext,
+		state: WorkerProtocolState,
+		text?: string,
+		doneInput?: WorkerDoneInput,
+		questionMeta?: { risk?: string; options?: string[]; recommend?: string },
+		toolCallId?: string,
+	): Promise<WorkerStatus | undefined> => {
 		if (!workerId) return undefined;
 		const store = createWorkerStore();
 		const current = await store.find(workerId);
@@ -2716,9 +2803,10 @@ export default function docketExtension(pi: ExtensionAPI) {
 		let nextState = state;
 		let nextText = text;
 		let nextDoneInput = doneInput;
+		let artifacts: Artifact[] = [];
 		if (state === "ready") {
 			const config = await loadConfig(ctx.cwd);
-			const artifacts = createArtifactCatalog(ctx, config, []).list();
+			artifacts = createArtifactCatalog(ctx, config, []).list();
 			const question = workerDoneClarificationQuestion(current, doneInput ?? { summary: text }, { artifactEvidenceCount: artifacts.filter((artifact) => artifact.kind === "command" || artifact.kind === "file" || artifact.kind === "code").length });
 			if (question) {
 				nextState = "needs_input";
@@ -2732,14 +2820,49 @@ export default function docketExtension(pi: ExtensionAPI) {
 			createdAt: new Date().toISOString(),
 			...(nextState === "needs_input" && questionMeta ? questionMeta : {}),
 		};
+		let deliverable: WorkerDeliverable | undefined;
+		let deliverableWasPublished = false;
+		if (nextState === "ready") {
+			const body = extractWorkerDeliverableBody(ctx.sessionManager.getBranch(), toolCallId, nextDoneInput?.summary ?? nextText);
+			const published = await publishWorkerDeliverable({
+				root: store.root(),
+				worker: current,
+				...(toolCallId ? { toolCallId } : {}),
+				body,
+				done: nextDoneInput ?? { summary: nextText },
+				refs: artifacts.map((artifact) => ({
+					displayId: artifact.displayId,
+					ref: artifact.ref,
+					kind: artifact.kind,
+					title: artifact.title,
+					subtitle: artifact.subtitle,
+					...(artifact.timestamp !== undefined ? { timestamp: artifact.timestamp } : {}),
+				})),
+				captureChangeSet: (version) => freezeWorkerChangeSet(current, version),
+			});
+			deliverable = published.deliverable;
+			deliverableWasPublished = !published.idempotent;
+		}
+		const pointer = deliverable ? workerDeliverablePointer(deliverable) : undefined;
 		const transition = nextState === "needs_input"
 			? waitTransition(nextText ?? "", question)
-			: protocolTransition(nextState, nextText, nextDoneInput);
+			: (latest: WorkerStatus) => {
+				if (pointer && latest.deliverable && latest.deliverable.version > pointer.version) return undefined;
+				if (pointer && !deliverableWasPublished && sameWorkerDeliverablePointer(latest.deliverable, pointer)) return undefined;
+				return protocolTransition(nextState, nextText, nextDoneInput, pointer)(latest);
+			};
 		const update = await store.updateStatus(workerId, transition);
 		const updated = update.after;
 		if (update.changed) {
 			emitWorkerStateArtifact(ctx, nextState, nextText);
-			appendWorkerEventSync(store.root(), workerId, { kind: "state", payload: { state: nextState, ...(nextText ? { text: nextText } : {}) } });
+			appendWorkerEventSync(store.root(), workerId, {
+				kind: "state",
+				payload: {
+					state: nextState,
+					...(nextText ? { text: nextText } : {}),
+					...(updated?.deliverable ? { deliverableId: updated.deliverable.id, deliverableVersion: updated.deliverable.version, deliverableRef: updated.deliverable.ref } : {}),
+				},
+			});
 		}
 		await writeWorkerHeartbeat(ctx);
 		return updated;
@@ -2865,17 +2988,29 @@ export default function docketExtension(pi: ExtensionAPI) {
 				recommended: Type.Optional(Type.Array(Type.String({ description: "Short action-oriented recommendation for the parent card" }))),
 				scopeConfidence: Type.Optional(StringEnum(["clear", "unclear"] as const, { description: "Whether the original task scope was clear enough to finish without more parent input" })),
 			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 				markWorkerProtocolCalled();
 				const done = params as WorkerDoneInput;
-				const updated = await applyWorkerState(ctx, "ready", done.summary, done);
+				const updated = await applyWorkerState(ctx, "ready", done.summary, done, undefined, toolCallId);
 				const progress = updated ? workerTodoProgress(updated) : { completed: 0, total: 0 };
 				const open = Math.max(0, progress.total - progress.completed);
 				if (updated?.state === "needs_input") {
 					return { content: [{ type: "text", text: "Docket did not accept done; marked waiting. Stop now and wait for parent reply." }], details: { state: "needs_input", question: updated.question } };
 				}
 				const progressNote = open > 0 ? ` Progress board still shows ${progress.completed}/${progress.total}; parent will treat it as informational.` : "";
-				return { content: [{ type: "text", text: `${workerProtocolResultText("ready")}${progressNote}` }], details: { state: "ready", summary: updated?.summary ?? done.summary, outcome: done.outcome, evidence: done.evidence, recommended: done.recommended, todoCount: progress.total, todoOpenCount: open } };
+				return {
+					content: [{ type: "text", text: `${workerProtocolResultText("ready")}${progressNote}` }],
+					details: {
+						state: "ready",
+						summary: updated?.summary ?? done.summary,
+						outcome: done.outcome,
+						evidence: done.evidence,
+						recommended: done.recommended,
+						todoCount: progress.total,
+						todoOpenCount: open,
+						...(updated?.deliverable ? { deliverableId: updated.deliverable.id, deliverableVersion: updated.deliverable.version, deliverableRef: updated.deliverable.ref } : {}),
+					},
+				};
 			},
 		});
 
@@ -3215,18 +3350,24 @@ export default function docketExtension(pi: ExtensionAPI) {
 						const ok = await ctx.ui.confirm("Promote despite worker overlap?", `${overlap}\n\n${artifact.title}`);
 						if (!ok) return false;
 					}
-					let result = promoteWorkerChangeSet(worker, ctx.cwd);
+					const frozen = workerChangeSetFromArtifact(artifact);
+					let result = frozen
+						? promoteWorkerChangeSet(worker, ctx.cwd, { changeSet: frozen })
+						: promoteWorkerChangeSet(worker, ctx.cwd);
 					if (!result.ok && result.needsConfirmation && ctx.hasUI) {
 						const ok = await ctx.ui.confirm("Promote worker changes?", `${result.message}\n\n${artifact.title}`);
 						if (!ok) return false;
-						result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true });
+						result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true, ...(frozen ? { changeSet: frozen } : {}) });
 					}
 					notifyDocket(pi, ctx, result.ok ? `${result.message} Stop the worker to free its workspace.` : result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
 					if (result.ok) await refreshWorkerDockWidget();
 					return result.ok;
 				},
 				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({
-					showBuiltinDiff: (reviewWorker, reviewChangeSet) => showTextViewer(ctx, `${workerSourceLabel(reviewWorker)} · full diff`, formatArtifact(reviewChangeSet), "diff"),
+					showBuiltinDiff: (reviewWorker, reviewChangeSet) => {
+						const patch = typeof reviewChangeSet.meta?.patch === "string" ? reviewChangeSet.meta.patch : undefined;
+						return showTextViewer(ctx, `${workerSourceLabel(reviewWorker)} · full diff`, patch ?? formatArtifact(reviewChangeSet), "diff");
+					},
 					reviewInHunk: (reviewWorker, reviewChangeSet) => reviewWorkerChangeSetInHunkFromTui(ctx, reviewWorker, reviewChangeSet),
 					chooseAction: (reviewWorker, comments) => chooseHunkReviewAction(ctx, reviewWorker, comments),
 					sendToWorker: (reviewWorker, text) => workerCommands.tell(workerSourceLabel(reviewWorker), text),
@@ -3252,7 +3393,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
 				showVerdict: (worker, remaining) => showWorkerVerdict(ctx, worker, remaining),
-				showReport: (worker) => showWorkerReport(ctx, worker),
+				showReport: (worker, deliverable) => showWorkerReport(ctx, worker, deliverable),
 				showArtifact: (catalog, artifact) => showArtifactViewer(ctx, catalog, artifact),
 				openFileOrArtifact: async (catalog, artifact) => {
 					const filePath = artifactFilePath(artifact, ctx.cwd);
@@ -3260,6 +3401,84 @@ export default function docketExtension(pi: ExtensionAPI) {
 					else await showArtifactViewer(ctx, catalog, artifact);
 				},
 				input: (title, placeholder) => ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined),
+				reviewNote: (title, _prefill) => ctx.hasUI ? ctx.ui.editor(title, "") : Promise.resolve(undefined),
+				isDeliverableApproved: async (deliverable) => {
+					try { return isDeliverableApproved(await createDecisionLog().read(), workerDeliverablePointer(deliverable)); }
+					catch { return false; }
+				},
+				useDeliverable: async (sourceWorker, deliverable) => {
+					if (!ctx.hasUI) return;
+					const currentApproval = async () => {
+						const current = await workerStore.find(sourceWorker.id);
+						if (!current || !sameWorkerDeliverablePointer(current.deliverable, workerDeliverablePointer(deliverable))) return undefined;
+						const judgment = latestDeliverableJudgment(await createDecisionLog().read(), workerDeliverablePointer(deliverable));
+						return judgment?.verb === "accept" && (judgment.state === "ready" || judgment.state === "ready_open_todos") ? judgment : undefined;
+					};
+					let judgment: ReturnType<typeof latestDeliverableJudgment>;
+					try { judgment = await currentApproval(); }
+					catch {
+						notifyDocket(pi, ctx, "Docket could not verify deliverable approval.", "error");
+						return;
+					}
+					if (!judgment) {
+						notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
+						return;
+					}
+					const destination = await ctx.ui.select(`Use ${deliverable.ref}`, ["Parent", "Worker"]);
+					if (!destination) return;
+					if (destination === "Parent") {
+						try { judgment = await currentApproval(); } catch { judgment = undefined; }
+						if (!judgment) {
+							notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
+							return;
+						}
+						const slot = await loadedArtifacts.loadDeliverable(sourceWorker, deliverable);
+						explicitlyLoadedWorkerIds.add(sourceWorker.id);
+						const artifact = slot.artifacts.find((item) => item.ref === deliverable.ref);
+						if (!artifact) return;
+						const queued = loadedArtifacts.chips().find((chip) => chip.ref === artifact.ref);
+						if (queued?.mode === "full") {
+							notifyDocket(pi, ctx, `Docket ${artifact.displayId} already queued for next prompt.`, "info");
+							return;
+						}
+						const result = loadedArtifacts.toggleChip(artifact, "full");
+						refreshChipWidget();
+						announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, result);
+						return;
+					}
+					const task = (await ctx.ui.editor(`Handoff task · ${deliverable.ref}`, ""))?.trim();
+					if (!task) return;
+					const models = availableHandoffModels(ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })));
+					if (models.length === 0) {
+						notifyDocket(pi, ctx, "Docket handoff found no available model.", "error");
+						return;
+					}
+					const modelLabels = models.map((model) => `${handoffModelRef(model)}${model.name ? ` · ${model.name}` : ""}`);
+					const pickedLabel = await ctx.ui.select("Handoff model", modelLabels);
+					const modelIndex = pickedLabel ? modelLabels.indexOf(pickedLabel) : -1;
+					const model = models[modelIndex];
+					if (!model) return;
+					const thinkingChoices = handoffThinkingChoices(model);
+					const thinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
+					if (!thinking || !thinkingChoices.includes(thinking as typeof thinkingChoices[number])) return;
+					const kind = kindRegistry.defaultKind(docketConfig?.worker?.defaultKind).name;
+					const modelRef = handoffModelRef(model);
+					const confirmed = await ctx.ui.confirm("Start reviewed handoff worker?", formatWorkerHandoffConfirmation({ task, kind, model: modelRef, thinking: thinking as typeof thinkingChoices[number], sourceRef: deliverable.ref }));
+					if (!confirmed) return;
+					try { judgment = await currentApproval(); } catch { judgment = undefined; }
+					if (!judgment) {
+						notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
+						return;
+					}
+					const provenance = createWorkerHandoffProvenance(deliverable, { id: judgment.id, timestamp: judgment.timestamp });
+					const spawned = await workerCommands.spawn(task, {
+						fresh: true,
+						model: modelRef,
+						thinking: thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+						sourceDeliverable: { body: deliverable.body, provenance },
+					});
+					if (spawned) await refreshWorkerDockWidget();
+				},
 				confirmDeleteWorker: (worker) => ctx.hasUI ? ctx.ui.confirm("Stop Docket worker?", `Stop ${workerSourceLabel(worker)} and remove its workspace? This cannot be undone.`) : Promise.resolve(true),
 				copyText: copyToClipboard,
 				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),

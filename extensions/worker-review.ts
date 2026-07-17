@@ -1,5 +1,6 @@
 import { deriveWorkerState, workerDisplayName, workerQuestions, workerSourceLabel, workerStatusArtifact, workerTodoSummary, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
+import { workerDeliverableArtifact, workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
 const BULLET_PREFIX = /^\s*(?:[-*•]|\d+[.)])\s+/;
 const RECOMMENDATION_HEADING = /^(recommended|recommendations?|suggested|suggestions?):?$/i;
@@ -9,6 +10,7 @@ export type WorkerReviewProjection = {
 	label: string;
 	state: WorkerDerivedState;
 	questions: WorkerQuestion[];
+	deliverable?: WorkerDeliverable;
 	result?: Artifact;
 	resultIsStatus: boolean;
 	summary: string;
@@ -90,7 +92,8 @@ export function workerSummaryHeadline(worker: WorkerStatus): string | undefined 
 	return firstWorkerReviewLine(prelude) ?? firstWorkerReviewLine(summary);
 }
 
-export function workerResultArtifactFromReview(worker: WorkerStatus, artifacts: Artifact[] = []): Artifact | undefined {
+export function workerResultArtifactFromReview(worker: WorkerStatus, artifacts: Artifact[] = [], deliverable?: WorkerDeliverable): Artifact | undefined {
+	if (deliverable) return artifacts.find((artifact) => artifact.ref === deliverable.ref) ?? workerDeliverableArtifact(deliverable);
 	const label = workerSourceLabel(worker);
 	const answer = latestArtifact(workerAnswerArtifacts(artifacts), ["response", "code", "error"]);
 	const status = artifacts.find((artifact) => artifact.meta?.workerId === worker.id && artifact.meta?.workerStatus)
@@ -99,34 +102,55 @@ export function workerResultArtifactFromReview(worker: WorkerStatus, artifacts: 
 	return answer ?? status;
 }
 
-export function projectWorkerReview(worker: WorkerStatus, artifacts: Artifact[] = [], now = Date.now()): WorkerReviewProjection {
+export function projectWorkerReview(worker: WorkerStatus, artifacts?: Artifact[], now?: number, deliverable?: WorkerDeliverable): WorkerReviewProjection;
+export function projectWorkerReview(worker: WorkerStatus, deliverable: WorkerDeliverable, artifacts?: Artifact[], now?: number): WorkerReviewProjection;
+export function projectWorkerReview(
+	worker: WorkerStatus,
+	artifactsOrDeliverable: Artifact[] | WorkerDeliverable = [],
+	nowOrArtifacts: number | Artifact[] = Date.now(),
+	deliverableOrNow?: WorkerDeliverable | number,
+): WorkerReviewProjection {
+	const explicitDeliverable = Array.isArray(artifactsOrDeliverable)
+		? (typeof deliverableOrNow === "object" ? deliverableOrNow : undefined)
+		: artifactsOrDeliverable;
+	const artifacts = Array.isArray(artifactsOrDeliverable)
+		? artifactsOrDeliverable
+		: Array.isArray(nowOrArtifacts) ? nowOrArtifacts : [];
+	const now = Array.isArray(artifactsOrDeliverable)
+		? typeof nowOrArtifacts === "number" ? nowOrArtifacts : Date.now()
+		: typeof deliverableOrNow === "number" ? deliverableOrNow : Date.now();
+	const deliverable = explicitDeliverable ?? artifacts.map((artifact) => workerDeliverableFromArtifact(artifact)).find((item): item is WorkerDeliverable => item !== undefined);
 	const label = workerSourceLabel(worker);
 	const state = deriveWorkerState(worker, now);
 	const questions = workerQuestions(worker);
 	const questionText = questions.map((item, index) => `${index + 1}. ${item.text}`).join(" ");
 	const answer = latestArtifact(workerAnswerArtifacts(artifacts), ["response", "code"]);
 	const failure = latestArtifact(workerAnswerArtifacts(artifacts), ["error"]);
-	const result = workerResultArtifactFromReview(worker, artifacts);
+	const result = workerResultArtifactFromReview(worker, artifacts, deliverable);
 	const resultIsStatus = isWorkerStatusArtifact(result);
 	const summary = firstWorkerReviewLine(
 		state === "needs_input" ? questionText :
 		state === "failed" ? worker.lastError ?? failure?.title ?? failure?.body :
-		worker.summary ?? answer?.title ?? answer?.body ?? workerTodoSummary(worker) ?? workerDisplayName(worker),
+		deliverable?.summary ?? worker.summary ?? answer?.title ?? answer?.body ?? workerTodoSummary(worker) ?? workerDisplayName(worker),
 	) ?? workerDisplayName(worker);
 	const summaryParts: string[] = [];
-	if (typeof worker.summary === "string" && worker.summary.length > 0) summaryParts.push(worker.summary);
-	if (result && !resultIsStatus) summaryParts.push(`${result.title}\n${result.body}`);
+	if (deliverable) summaryParts.push(deliverable.body);
+	else {
+		if (typeof worker.summary === "string" && worker.summary.length > 0) summaryParts.push(worker.summary);
+		if (result && !resultIsStatus) summaryParts.push(`${result.title}\n${result.body}`);
+	}
 	const summarySource = summaryParts.length ? summaryParts.join("\n") : undefined;
 	return {
 		worker,
 		label,
 		state,
 		questions,
+		...(deliverable ? { deliverable } : {}),
 		...(result ? { result } : {}),
 		resultIsStatus,
 		summary,
 		...(summarySource ? { summarySource } : {}),
-		recommendations: workerRecommendedItems(worker),
+		recommendations: deliverable?.recommendations ?? workerRecommendedItems(worker),
 	};
 }
 
@@ -141,7 +165,8 @@ function metaString(artifact: Artifact, key: string): string | undefined {
 
 export function artifactWorkerStatus(artifact: Artifact): WorkerDerivedState | undefined {
 	const status = artifactMeta(artifact).workerStatus;
-	if (status === "needs_input" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle") return status;
+	if (status === "needs_input" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle" || status === "reviewed") return status;
+	if (artifactMeta(artifact).workerDeliverable === true) return "ready";
 	return undefined;
 }
 
@@ -173,6 +198,7 @@ function bodyMessageSection(body: string | undefined): string | undefined {
 }
 
 export function workerArtifactSummaryText(artifact: Artifact): string | undefined {
+	if (artifactMeta(artifact).workerDeliverable === true) return metaString(artifact, "summary") ?? firstWorkerReviewLine(artifact.body);
 	const status = artifactWorkerStatus(artifact);
 	if (status === "needs_input") return metaString(artifact, "question") ?? bodyMessageSection(artifact.body);
 	if (status === "ready" || status === "ready_open_todos") return metaString(artifact, "summary") ?? bodyMessageSection(artifact.body);

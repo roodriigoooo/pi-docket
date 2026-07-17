@@ -70,3 +70,17 @@ test("qualifiedModelRef preserves provider identity for ambiguous model ids", ()
 	assert.equal(qualifiedModelRef({ provider: "azure-openai-responses", id: "gpt-5.6-sol" }), "azure-openai-responses/gpt-5.6-sol");
 	assert.equal(qualifiedModelRef(undefined), undefined);
 });
+
+test("handoff model and thinking overrides beat kind and parent defaults", () => {
+	const policy = resolveWorkerSpawnPolicy({
+		kinds: registerPlanner(),
+		options: { as: "planner", fresh: true, model: "openai/gpt-5", thinking: "low" },
+		parentSession: "/parent/session.json",
+		parentModel: "google/gemini",
+	});
+	assert.equal(policy.freshLaunch, true);
+	assert.equal(policy.seedSource, undefined);
+	assert.equal(policy.model, "openai/gpt-5");
+	assert.equal(policy.thinking, "low");
+	assert.deepEqual(policy.launchArgs, ["--model", "openai/gpt-5", "--thinking", "low"]);
+});

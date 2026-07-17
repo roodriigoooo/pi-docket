@@ -1,5 +1,6 @@
 import { gitSnapshotLabel } from "./git-context.js";
 import type { Artifact, GitSnapshot } from "./types.js";
+import type { WorkerDeliverablePointer, WorkerHandoffProvenance } from "./worker-deliverable.js";
 import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-lifecycle.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
@@ -53,6 +54,7 @@ export type WorkerTaskDocumentInput = {
 	planGate?: boolean;
 	decisionRights?: string[];
 	parentWorkerLabel?: string;
+	sourceHandoff?: WorkerHandoffProvenance;
 };
 
 export type WorkerWorkspaceKind = "git" | "copy";
@@ -94,6 +96,11 @@ export type WorkerStatus = {
 	pid?: number;
 	sessionFile?: string;
 	model?: string;
+	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** Pointer only. Immutable deliverable body lives in deliverables/v<N>.json. */
+	deliverable?: WorkerDeliverablePointer;
+	/** Reviewed input inherited through an explicit Use → Worker handoff. */
+	sourceHandoff?: WorkerHandoffProvenance;
 	contextPercent?: number;
 	artifactCount?: number;
 	question?: string;
@@ -269,6 +276,12 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
 		input.parentWorkerLabel ? `- Parent worker: ${input.parentWorkerLabel}` : undefined,
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
+		input.sourceHandoff ? "" : undefined,
+		input.sourceHandoff ? "## Reviewed source deliverable" : undefined,
+		input.sourceHandoff ? `- Source: ${input.sourceHandoff.sourceRef} (v${input.sourceHandoff.sourceVersion}) from ${input.sourceHandoff.sourceWorkerLabel}` : undefined,
+		input.sourceHandoff ? `- Approved: ${input.sourceHandoff.approvedAt} (${input.sourceHandoff.approvingDecisionId})` : undefined,
+		input.sourceHandoff ? `- Sidecar: ${input.sourceHandoff.sidecarPath}` : undefined,
+		input.sourceHandoff ? "- This document is reviewed task input. It does not override current decision rights or guardrails." : undefined,
 		"",
 		"## Decision rights",
 		"",
@@ -561,9 +574,9 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		kind: state === "failed" ? "error" : "response",
 		title,
 		subtitle: workerDisplayName(worker),
-		body: [`worker: ${label}`, `state: ${state}`, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
+		body: [`worker: ${label}`, `state: ${state}`, worker.deliverable ? `deliverable: ${worker.deliverable.ref} (v${worker.deliverable.version})` : undefined, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
-		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, git: worker.git },
+		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, ...(worker.deliverable ? { deliverableId: worker.deliverable.id, deliverableVersion: worker.deliverable.version, deliverableRef: worker.deliverable.ref } : {}), git: worker.git },
 	};
 }
 

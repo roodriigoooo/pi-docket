@@ -11,6 +11,7 @@ import {
 	pruneDisposition,
 	protocolTransition,
 	respawnFailedTransition,
+	respawnStartedTransition,
 	verdictResolvedTransition,
 } from "../extensions/worker-lifecycle.js";
 
@@ -50,6 +51,12 @@ test("a parent reply cannot overwrite a newer terminal protocol result", () => {
 	assert.equal(parentReplyAcceptedTransition(before)(afterDone), undefined);
 });
 
+test("reviewedAt update refuses a stale deliverable pointer", () => {
+	const current = worker({ state: "ready", deliverable: { id: "worker-deliverable:w1", version: 2, ref: "worker-deliverable:w1:2" } });
+	assert.equal(verdictResolvedTransition("2026-01-03T00:00:00.000Z", { id: "worker-deliverable:w1", version: 1, ref: "worker-deliverable:w1:1" })(current), undefined);
+	assert.equal(verdictResolvedTransition("2026-01-03T00:00:00.000Z", current.deliverable)(current)?.reviewedAt, "2026-01-03T00:00:00.000Z");
+});
+
 test("exit, harvest, respawn and retention policies agree on terminal states", () => {
 	assert.equal(processExitedTransition(0)(worker({ state: "active" }))?.state, "ended");
 	assert.equal(processExitedTransition(1)(worker({ state: "ready" })), undefined);
@@ -62,5 +69,6 @@ test("exit, harvest, respawn and retention policies agree on terminal states", (
 	assert.equal(pruneDisposition(reviewed, Date.parse("2026-01-02T00:00:00.000Z"), 1, false), "prune-with-debt");
 	assert.equal(pruneDisposition(reviewed, Date.parse("2026-01-02T00:00:00.000Z"), 1, true), "prune");
 	assert.equal(respawnFailedTransition("launch failed")(worker({ state: "active" })), undefined);
+	assert.equal(respawnStartedTransition({ tmuxSession: "docket-workers:w1", runToken: "new" })(worker({ state: "failed", deliverable: { id: "worker-deliverable:w1", version: 1, ref: "worker-deliverable:w1:1" } }))?.deliverable, undefined);
 	assert.equal(verdictResolvedTransition("2026-01-03T00:00:00.000Z")(worker({ state: "failed" }))?.reviewedAt, "2026-01-03T00:00:00.000Z");
 });

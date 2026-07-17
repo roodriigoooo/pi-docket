@@ -44,7 +44,21 @@ function changedFilesFromArtifact(artifact: Artifact): string[] {
 		.filter((file): file is string => file !== undefined);
 }
 
+/** Files from an immutable deliverable patch, if present. */
+export function workerFrozenChangedFiles(artifacts: Artifact[]): string[] {
+	const files = new Set<string>();
+	for (const artifact of artifacts) {
+		const frozen = artifact.meta?.workerChangeSet === true
+			&& (typeof artifact.meta?.deliverableRef === "string" || typeof artifact.meta?.deliverableVersion === "number");
+		if (!frozen) continue;
+		for (const changed of changedFilesFromArtifact(artifact)) files.add(changed);
+	}
+	return [...files].sort();
+}
+
 export function workerEditedFiles(artifacts: Artifact[]): string[] {
+	const frozen = workerFrozenChangedFiles(artifacts);
+	if (frozen.length > 0) return frozen;
 	const files = new Set<string>();
 	for (const artifact of artifacts) {
 		const edited = editedFileFromArtifact(artifact);

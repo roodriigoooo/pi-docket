@@ -1,6 +1,7 @@
 import type { WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 import { formatHunkReviewComments, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
+import type { WorkerDeliverable } from "./worker-deliverable.js";
 
 export type WorkerChangeReviewPreference = "builtin" | "hunk";
 
@@ -29,7 +30,7 @@ export async function reviewWorkerChangeSet(
 	deps: WorkerChangeReviewDeps,
 	worker: WorkerStatus,
 	changeSet: Artifact,
-	options: { preferred: WorkerChangeReviewPreference },
+	options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> },
 ): Promise<WorkerChangeReviewOutcome> {
 	if (options.preferred === "builtin") {
 		await deps.showBuiltinDiff(worker, changeSet);
@@ -47,7 +48,7 @@ export async function reviewWorkerChangeSet(
 		return { kind: "returned" };
 	}
 
-	const text = formatHunkReviewComments(review.comments);
+	const text = formatHunkReviewComments(review.comments, options.deliverable);
 	const action = await deps.chooseAction(worker, review.comments);
 	if (action === "send") {
 		await deps.sendToWorker(worker, text);

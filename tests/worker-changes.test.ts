@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
+import { freezeWorkerChangeSet, promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import { createWorkerWorkspace } from "../extensions/worker-store.js";
 
@@ -128,5 +128,24 @@ test("promote does not warn when parent still matches dirty spawn snapshot", asy
 	} finally {
 		spawnSync("git", ["worktree", "remove", "--force", workspace], { cwd: root, stdio: "ignore" });
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("frozen change set promotes reviewed bytes and preserves later worker edits", async () => {
+	const repo = await makeRepo();
+	try {
+		const status = worker(repo.root, repo.workerPath, repo.head);
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\nv1\n", "utf8");
+		const frozen = freezeWorkerChangeSet(status, 1);
+		assert.ok(frozen);
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\nv2\n", "utf8");
+
+		const result = promoteWorkerChangeSet(status, repo.root, { changeSet: frozen! });
+
+		assert.equal(result.ok, true, result.message);
+		assert.equal(await readFile(path.join(repo.root, "app.txt"), "utf8"), "one\nv1\n");
+		assert.equal(await readFile(path.join(repo.workerPath, "app.txt"), "utf8"), "one\nv2\n");
+	} finally {
+		await repo.cleanup();
 	}
 });

@@ -49,6 +49,8 @@ test("verdictVerbs adapts labels and semantics by state", () => {
 	assert.equal(verdictVerbs("ready", true)[0]?.label, "Promote");
 	assert.equal(verdictVerbs("ready", true)[1]?.label, "Discard");
 	assert.equal(verdictVerbs("ready", false)[0]?.label, "Acknowledge");
+	assert.equal(verdictVerbs("ready", false, [], false, true)[0]?.label, "Approve");
+	assert.deepEqual(verdictVerbs("reviewed", false, [], true, true).map((verb) => verb.id), ["use", "report"]);
 });
 
 test("diffBar clamps width and proportions", () => {

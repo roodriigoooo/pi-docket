@@ -238,3 +238,22 @@ test("Background Work builds a terminal-tail evidence artifact that stays out of
 	assert.equal(artifact?.meta?.paneTail, true);
 	assert.equal(workerPaneTailArtifact(worker(), "   \n  \n"), undefined);
 });
+
+test("Background Work task doc names reviewed handoff source without changing authority", () => {
+	const doc = buildWorkerTaskDocument({
+		task: "Implement reviewed plan",
+		sourceHandoff: {
+			sourceDeliverableId: "worker-deliverable:w1",
+			sourceVersion: 2,
+			sourceRef: "worker-deliverable:w1:2",
+			sourceWorkerId: "worker-1",
+			sourceWorkerLabel: "w1",
+			approvingDecisionId: "d1",
+			approvedAt: "2026-01-01T00:00:00.000Z",
+			sidecarPath: "/tmp/source-deliverable.md",
+		},
+	});
+	assert.match(doc, /Reviewed source deliverable/);
+	assert.match(doc, /worker-deliverable:w1:2/);
+	assert.match(doc, /does not override current decision rights or guardrails/);
+});

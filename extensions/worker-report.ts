@@ -7,8 +7,9 @@ import {
 	type WorkerDerivedState,
 	type WorkerStatus,
 } from "./background-work.js";
-import type { Artifact } from "./types.js";
+import type { Artifact, ArtifactSummary } from "./types.js";
 import { workerChangeSetArtifact } from "./worker-changes.js";
+import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 import {
 	extractWorkerRecommendations,
 	firstWorkerReviewLine,
@@ -77,6 +78,10 @@ export type WorkerReport = {
 	refs: WorkerReportRef[];
 	primarySection: "outcome" | "question" | "failure";
 	primaryBody: string;
+	deliverableId?: string;
+	deliverableVersion?: number;
+	deliverableRef?: string;
+	sourceHandoff?: WorkerDeliverable["sourceHandoff"];
 };
 
 const VERDICT_FILE_CAP = 5;
@@ -159,8 +164,8 @@ function collectCommands(artifacts: Artifact[]): WorkerReportCommand[] {
 		}));
 }
 
-function collectRefs(label: string, artifacts: Artifact[], changeSet: Artifact | undefined, max: number): WorkerReportRef[] {
-	const useful = workerAnswerArtifacts(artifacts).filter((a) => a.kind === "response" || a.kind === "code" || a.kind === "error" || a.kind === "file");
+function collectRefs(label: string, artifacts: Artifact[], changeSet: Artifact | undefined, max: number, frozenRefs: ArtifactSummary[] = []): WorkerReportRef[] {
+	const useful = workerAnswerArtifacts(artifacts).filter((a) => a.meta?.workerDeliverable !== true && (a.kind === "response" || a.kind === "code" || a.kind === "error" || a.kind === "file"));
 	const order: Artifact["kind"][] = ["response", "code", "error", "file"];
 	const grouped = order.flatMap((kind) => useful.filter((a) => a.kind === kind));
 	const seen = new Set<string>();
@@ -173,6 +178,12 @@ function collectRefs(label: string, artifacts: Artifact[], changeSet: Artifact |
 			label: firstWorkerReviewLine(changeSet.title) ?? "change set",
 			ref: changeSet.ref,
 		});
+	}
+	for (const artifact of frozenRefs) {
+		if (seen.has(artifact.ref)) continue;
+		seen.add(artifact.ref);
+		refs.push({ displayId: `${label}.${artifact.displayId}`, kind: artifact.kind, label: firstWorkerReviewLine(artifact.title) ?? artifact.kind, ref: artifact.ref });
+		if (refs.length >= max) return refs;
 	}
 	for (const artifact of grouped) {
 		if (seen.has(artifact.ref)) continue;
@@ -191,22 +202,25 @@ function collectRefs(label: string, artifacts: Artifact[], changeSet: Artifact |
 export function projectWorkerReport(
 	worker: WorkerStatus,
 	artifacts: Artifact[] = [],
-	changeSet: Artifact | undefined = workerChangeSetArtifact(worker),
+	changeSet?: Artifact,
+	deliverable?: WorkerDeliverable,
 ): WorkerReport {
+	const resolvedDeliverable = deliverable ?? artifacts.map((artifact) => workerDeliverableFromArtifact(artifact)).find((item): item is WorkerDeliverable => item !== undefined);
+	const resolvedChangeSet = changeSet ?? workerChangeSetArtifact(worker, resolvedDeliverable);
 	const label = workerSourceLabel(worker);
 	const state = deriveWorkerState(worker);
 	const stateLabel = state === "ready_open_todos" ? "ready · progress" : state === "needs_input" ? "needs reply" : state.replace(/_/g, " ");
-	const summary = displayWorkerSummary(worker);
-	const fromSummary = workerSummaryHeadline(worker) ?? firstWorkerReviewLine(summary);
+	const summary = resolvedDeliverable ? resolvedDeliverable.body : displayWorkerSummary(worker);
+	const fromSummary = resolvedDeliverable ? firstWorkerReviewLine(resolvedDeliverable.summary) ?? firstWorkerReviewLine(resolvedDeliverable.body) : workerSummaryHeadline(worker) ?? firstWorkerReviewLine(summary);
 	const headline = fromSummary ?? (state === "failed" ? worker.lastError : undefined) ?? worker.task;
-	const recommendations = workerRecommendedItems(worker, Number.POSITIVE_INFINITY);
-	const evidence = Array.isArray(worker.evidence) ? worker.evidence.map((item) => String(item).trim()).filter(Boolean) : [];
+	const recommendations = resolvedDeliverable?.recommendations ?? workerRecommendedItems(worker, Number.POSITIVE_INFINITY);
+	const evidence = resolvedDeliverable?.evidence ?? (Array.isArray(worker.evidence) ? worker.evidence.map((item) => String(item).trim()).filter(Boolean) : []);
 
-	const fromChangeSet = changeFilesFromArtifact(changeSet);
+	const fromChangeSet = changeFilesFromArtifact(resolvedChangeSet);
 	const changedFiles = fromChangeSet.length > 0 ? fromChangeSet : fallbackEditedFiles(artifacts);
 	const additions = changedFiles.reduce((sum, file) => sum + (file.additions ?? 0), 0);
 	const deletions = changedFiles.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
-	const hunkCount = typeof changeSet?.meta?.hunkCount === "number" ? changeSet.meta.hunkCount : undefined;
+	const hunkCount = typeof resolvedChangeSet?.meta?.hunkCount === "number" ? resolvedChangeSet.meta.hunkCount : undefined;
 
 	const allCommands = collectCommands(artifacts);
 	const checks: WorkerReportCheckCounts = { ok: 0, failed: 0, unknown: 0, total: allCommands.length };
@@ -216,7 +230,7 @@ export function projectWorkerReport(
 		else checks.unknown++;
 	}
 	const recentCommands = allCommands.slice(0, REPORT_COMMAND_CAP);
-	const refs = collectRefs(label, artifacts, changeSet, REPORT_REF_CAP);
+	const refs = collectRefs(label, artifacts, resolvedChangeSet, REPORT_REF_CAP, resolvedDeliverable?.refs);
 
 	const questions = workerQuestions(worker);
 	const primarySection: WorkerReport["primarySection"] =
@@ -236,8 +250,8 @@ export function projectWorkerReport(
 		...(kind ? { kind } : {}),
 		state,
 		stateLabel,
-		...(worker.outcome ? { outcome: worker.outcome } : {}),
-		updatedAt: worker.updatedAt,
+		...(resolvedDeliverable?.outcome ?? worker.outcome ? { outcome: resolvedDeliverable?.outcome ?? worker.outcome } : {}),
+		updatedAt: resolvedDeliverable?.createdAt ?? worker.updatedAt,
 		...(worker.scopeConfidence ? { scopeConfidence: worker.scopeConfidence } : {}),
 		progressLine: progressLine(worker),
 		summary,
@@ -251,13 +265,15 @@ export function projectWorkerReport(
 			...(hunkCount !== undefined ? { hunkCount } : {}),
 		},
 		changedFiles,
-		...(changeSet?.ref ? { changeSetRef: changeSet.ref } : {}),
+		...(resolvedChangeSet?.ref ? { changeSetRef: resolvedChangeSet.ref } : {}),
 		checks,
 		recentCommands,
 		commandsOverflow: Math.max(0, allCommands.length - recentCommands.length),
 		refs,
 		primarySection,
 		primaryBody,
+		...(resolvedDeliverable ? { deliverableId: resolvedDeliverable.id, deliverableVersion: resolvedDeliverable.version, deliverableRef: resolvedDeliverable.ref } : {}),
+		...(resolvedDeliverable?.sourceHandoff ? { sourceHandoff: resolvedDeliverable.sourceHandoff } : {}),
 	};
 }
 
@@ -324,11 +340,13 @@ export function verdictReadyPreview(report: WorkerReport): {
 export function formatWorkerReportText(report: WorkerReport): string {
 	const lines: string[] = [];
 	lines.push(`Task: ${report.task}`);
+	if (report.deliverableRef) lines.push(`Deliverable: ${report.deliverableRef} (v${report.deliverableVersion})`);
 	if (report.kind) lines.push(`Kind: ${report.kind}`);
 	lines.push(`State: ${report.stateLabel}${report.outcome ? ` · ${report.outcome}` : ""}`);
 	lines.push(`Updated: ${report.updatedAt}`);
 	if (report.scopeConfidence) lines.push(`Scope confidence: ${report.scopeConfidence}`);
 	lines.push(`Progress: ${report.progressLine}`);
+	if (report.sourceHandoff) lines.push(`Handoff source: ${report.sourceHandoff.sourceRef} from ${report.sourceHandoff.sourceWorkerLabel} · approved ${report.sourceHandoff.approvedAt} (${report.sourceHandoff.approvingDecisionId})`);
 	lines.push("");
 	lines.push("Evidence");
 	if (report.changeTotals.files > 0) {
@@ -371,7 +389,7 @@ export function formatWorkerReportText(report: WorkerReport): string {
 		for (const ref of report.refs) lines.push(`  @${ref.displayId} /${ref.kind}  ${ref.label}`);
 	}
 	lines.push("");
-	lines.push("Worker says");
+	lines.push(report.deliverableRef ? "Deliverable" : "Worker says");
 	lines.push(report.summary || report.summaryHeadline || "(no summary)");
 	if (report.recommendations.length > 0) {
 		lines.push("");

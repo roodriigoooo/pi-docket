@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Artifact } from "./types.js";
 import type { WorkerStatus } from "./background-work.js";
 import { tailWorkerEvents, type WorkerEvent } from "./worker-events.js";
+import { readWorkerDeliverable, workerDeliverableFile, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export const DOCK_RECENT_EVENT_CAP = 16;
 
@@ -13,6 +14,9 @@ type Entry = {
 	artifactsMtime: number;
 	status: WorkerStatus | undefined;
 	artifacts: Artifact[];
+	deliverableFile?: string;
+	deliverableMtime: number;
+	deliverable?: WorkerDeliverable;
 	eventOffset: number;
 	recentEvents: WorkerEvent[];
 };
@@ -20,6 +24,8 @@ type Entry = {
 export type WorkerSnapshot = {
 	workers: WorkerStatus[];
 	artifactsByWorker: Map<string, Artifact[]>;
+	/** Current immutable deliverable per worker, when published. */
+	deliverablesByWorker: Map<string, WorkerDeliverable>;
 	/** Sticky ring of the last DOCK_RECENT_EVENT_CAP events per worker; safe to render. */
 	eventsByWorker: Map<string, WorkerEvent[]>;
 	/** Only events read this tick. Use for one-shot emit/subscribe; rendering should use eventsByWorker. */
@@ -45,13 +51,14 @@ export class WorkerSnapshotCache {
 			names = await fs.readdir(this.root);
 		} catch {
 			this.entries.clear();
-			return { workers: [], artifactsByWorker: new Map(), eventsByWorker: new Map(), newEventsByWorker: new Map() };
+			return { workers: [], artifactsByWorker: new Map(), deliverablesByWorker: new Map(), eventsByWorker: new Map(), newEventsByWorker: new Map() };
 		}
 		const active = new Set(names);
 		for (const id of [...this.entries.keys()]) if (!active.has(id)) this.entries.delete(id);
 
 		const workers: WorkerStatus[] = [];
 		const artifactsByWorker = new Map<string, Artifact[]>();
+		const deliverablesByWorker = new Map<string, WorkerDeliverable>();
 		const eventsByWorker = new Map<string, WorkerEvent[]>();
 		const newEventsByWorker = new Map<string, WorkerEvent[]>();
 		await Promise.all(names.map(async (id) => {
@@ -64,7 +71,7 @@ export class WorkerSnapshotCache {
 				return;
 			}
 			const existing = this.entries.get(id);
-			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [], eventOffset: 0, recentEvents: [] };
+			const entry: Entry = existing ?? { id, statusMtime: -1, artifactsMtime: -1, status: undefined, artifacts: [], deliverableMtime: -1, eventOffset: 0, recentEvents: [] };
 			if (entry.statusMtime !== statusStat.mtimeMs) {
 				try {
 					entry.status = JSON.parse(await fs.readFile(statusFile, "utf8")) as WorkerStatus;
@@ -86,6 +93,18 @@ export class WorkerSnapshotCache {
 				entry.artifacts = [];
 				entry.artifactsMtime = -1;
 			}
+			const pointer = entry.status?.deliverable;
+			const deliverableFile = pointer ? workerDeliverableFile(this.root, id, pointer.version) : undefined;
+			const deliverableStat = deliverableFile ? await safeStat(deliverableFile) : undefined;
+			if (!pointer || !deliverableFile || !deliverableStat) {
+				entry.deliverable = undefined;
+				entry.deliverableFile = undefined;
+				entry.deliverableMtime = -1;
+			} else if (entry.deliverableFile !== deliverableFile || entry.deliverableMtime !== deliverableStat.mtimeMs) {
+				entry.deliverable = await readWorkerDeliverable(this.root, id, pointer.version);
+				entry.deliverableFile = deliverableFile;
+				entry.deliverableMtime = deliverableStat.mtimeMs;
+			}
 			const tail = await tailWorkerEvents(this.root, id, { offset: entry.eventOffset });
 			entry.eventOffset = tail.offset;
 			if (tail.rotated) entry.recentEvents = [];
@@ -96,12 +115,13 @@ export class WorkerSnapshotCache {
 			if (entry.status) {
 				workers.push(entry.status);
 				artifactsByWorker.set(entry.status.id, entry.artifacts);
+				if (entry.deliverable) deliverablesByWorker.set(entry.status.id, entry.deliverable);
 				if (entry.recentEvents.length) eventsByWorker.set(entry.status.id, entry.recentEvents);
 				if (tail.events.length) newEventsByWorker.set(entry.status.id, tail.events);
 			}
 		}));
 		workers.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-		return { workers, artifactsByWorker, eventsByWorker, newEventsByWorker };
+		return { workers, artifactsByWorker, deliverablesByWorker, eventsByWorker, newEventsByWorker };
 	}
 
 	invalidate(id?: string): void {

@@ -3,20 +3,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { workerSourceLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
+import type { WorkerDeliverable, WorkerDeliverableChangeSet, WorkerChangedFile } from "./worker-deliverable.js";
 
-export type WorkerChangedFile = {
-	path: string;
-	additions?: number;
-	deletions?: number;
-};
+export type { WorkerChangedFile } from "./worker-deliverable.js";
 
 export type WorkerChangeSet = {
 	workerId: string;
 	workerLabel: string;
+	ref: string;
 	files: WorkerChangedFile[];
 	stat: string;
 	patch: string;
 	hunkCount: number;
+	deliverableId?: string;
+	deliverableVersion?: number;
+	deliverableRef?: string;
 };
 
 export type PromoteWorkerChangeSetResult =
@@ -71,7 +72,12 @@ function changeFileLine(file: WorkerChangedFile): string {
 	return `${file.path} ${stats}`;
 }
 
-export function readWorkerChangeSet(worker: WorkerStatus): WorkerChangeSet | undefined {
+export function workerChangeSetRef(workerId: string, version = 0): string {
+	return `worker-changes:${workerId}:${version}`;
+}
+
+/** Capture the staged workspace once. Call only while publishing a deliverable. */
+export function readWorkerChangeSet(worker: WorkerStatus, options: { version?: number } = {}): WorkerChangeSet | undefined {
 	const workspace = stageWorkerWorkspace(worker);
 	if (!workspace) return undefined;
 	const patch = gitOutput(workspace, ["diff", "--cached", "--binary", "HEAD"]);
@@ -79,18 +85,45 @@ export function readWorkerChangeSet(worker: WorkerStatus): WorkerChangeSet | und
 	const stat = gitOutput(workspace, ["diff", "--cached", "--stat", "--compact-summary", "HEAD"])?.trimEnd() ?? "";
 	const files = parseNumstat(gitOutput(workspace, ["diff", "--cached", "--numstat", "HEAD"])?.trimEnd() ?? "");
 	const hunkCount = patch.match(/^@@ /gm)?.length ?? 0;
-	return { workerId: worker.id, workerLabel: workerSourceLabel(worker), files, stat, patch, hunkCount };
+	return {
+		workerId: worker.id,
+		workerLabel: workerSourceLabel(worker),
+		ref: workerChangeSetRef(worker.id, options.version ?? 0),
+		files,
+		stat,
+		patch,
+		hunkCount,
+	};
 }
 
-export function workerChangeSetArtifact(worker: WorkerStatus): Artifact | undefined {
-	const changeSet = readWorkerChangeSet(worker);
+export function freezeWorkerChangeSet(worker: WorkerStatus, version: number): WorkerDeliverableChangeSet | undefined {
+	const changeSet = readWorkerChangeSet(worker, { version });
 	if (!changeSet) return undefined;
-	const label = workerSourceLabel(worker);
+	return { ref: changeSet.ref, files: changeSet.files, stat: changeSet.stat, patch: changeSet.patch, hunkCount: changeSet.hunkCount };
+}
+
+export function workerChangeSetFromDeliverable(deliverable: WorkerDeliverable | undefined): WorkerChangeSet | undefined {
+	if (!deliverable?.changeSet) return undefined;
+	return {
+		workerId: deliverable.source.workerId,
+		workerLabel: deliverable.source.workerLabel,
+		ref: deliverable.changeSet.ref,
+		files: deliverable.changeSet.files,
+		stat: deliverable.changeSet.stat,
+		patch: deliverable.changeSet.patch,
+		hunkCount: deliverable.changeSet.hunkCount,
+		deliverableId: deliverable.id,
+		deliverableVersion: deliverable.version,
+		deliverableRef: deliverable.ref,
+	};
+}
+
+function changeSetBody(worker: Pick<WorkerStatus, "task">, changeSet: WorkerChangeSet): string {
 	const fileCount = changeSet.files.length;
 	const fileLines = changeSet.files.slice(0, 12).map((file) => `- ${changeFileLine(file)}`);
 	if (changeSet.files.length > fileLines.length) fileLines.push(`- … ${changeSet.files.length - fileLines.length} more`);
-	const body = [
-		`worker: ${label}`,
+	return [
+		`worker: ${changeSet.workerLabel}`,
 		`task: ${worker.task}`,
 		`changes: ${fileCount} file${fileCount === 1 ? "" : "s"}`,
 		"",
@@ -101,31 +134,93 @@ export function workerChangeSetArtifact(worker: WorkerStatus): Artifact | undefi
 		"\nPatch:",
 		changeSet.patch,
 	].filter((line): line is string => line !== undefined).join("\n");
+}
+
+/**
+ * Adapt a frozen deliverable change set. Without a deliverable this preserves the
+ * legacy live-workspace behavior for old workers only.
+ */
+export function workerChangeSetArtifact(worker: WorkerStatus, deliverable?: WorkerDeliverable): Artifact | undefined {
+	const changeSet = deliverable ? workerChangeSetFromDeliverable(deliverable) : readWorkerChangeSet(worker);
+	if (!changeSet) return undefined;
+	const fileCount = changeSet.files.length;
 	return {
 		id: "changes",
 		displayId: "changes",
-		ref: `worker-changes:${worker.id}:0`,
+		ref: changeSet.ref,
 		kind: "response",
-		title: `${label} change set · ${fileCount} file${fileCount === 1 ? "" : "s"}`,
+		title: `${changeSet.workerLabel} change set · ${fileCount} file${fileCount === 1 ? "" : "s"}`,
 		subtitle: workerSummaryName(worker),
-		body,
-		timestamp: Date.parse(worker.updatedAt),
+		body: changeSetBody(worker, changeSet),
+		timestamp: deliverable ? Date.parse(deliverable.createdAt) : Date.parse(worker.updatedAt),
 		meta: {
 			workerChangeSet: true,
-			workerId: worker.id,
-			workerLabel: label,
+			workerId: changeSet.workerId,
+			workerLabel: changeSet.workerLabel,
 			workerStatus: "ready",
 			changedFiles: changeSet.files,
 			diffStat: changeSet.stat,
 			hunkCount: changeSet.hunkCount,
+			patch: changeSet.patch,
+			...(changeSet.deliverableId ? {
+				deliverableId: changeSet.deliverableId,
+				deliverableVersion: changeSet.deliverableVersion,
+				deliverableRef: changeSet.deliverableRef,
+			} : {}),
 		},
 	};
 }
 
-function markWorkspacePromoted(worker: WorkerStatus): void {
+export function workerChangeSetFromArtifact(artifact: Artifact): WorkerChangeSet | undefined {
+	if (artifact.meta?.workerChangeSet !== true) return undefined;
+	const workerId = typeof artifact.meta.workerId === "string" ? artifact.meta.workerId : undefined;
+	const workerLabel = typeof artifact.meta.workerLabel === "string" ? artifact.meta.workerLabel : undefined;
+	const patch = typeof artifact.meta.patch === "string" ? artifact.meta.patch : patchFromBody(artifact.body);
+	if (!workerId || !workerLabel || !patch?.trim()) return undefined;
+	const rawFiles = artifact.meta.changedFiles;
+	const files = Array.isArray(rawFiles) ? rawFiles.map((entry) => {
+		if (!entry || typeof entry !== "object") return undefined;
+		const file = entry as { path?: unknown; additions?: unknown; deletions?: unknown };
+		if (typeof file.path !== "string" || !file.path) return undefined;
+		return {
+			path: file.path,
+			...(typeof file.additions === "number" ? { additions: file.additions } : {}),
+			...(typeof file.deletions === "number" ? { deletions: file.deletions } : {}),
+		};
+	}).filter((file): file is WorkerChangedFile => file !== undefined) : [];
+	return {
+		workerId,
+		workerLabel,
+		ref: typeof artifact.meta.changeSetRef === "string" ? artifact.meta.changeSetRef : artifact.ref,
+		files,
+		stat: typeof artifact.meta.diffStat === "string" ? artifact.meta.diffStat : "",
+		patch,
+		hunkCount: typeof artifact.meta.hunkCount === "number" ? artifact.meta.hunkCount : patch.match(/^@@ /gm)?.length ?? 0,
+		...(typeof artifact.meta.deliverableId === "string" ? { deliverableId: artifact.meta.deliverableId } : {}),
+		...(typeof artifact.meta.deliverableVersion === "number" ? { deliverableVersion: artifact.meta.deliverableVersion } : {}),
+		...(typeof artifact.meta.deliverableRef === "string" ? { deliverableRef: artifact.meta.deliverableRef } : {}),
+	};
+}
+
+function patchFromBody(body: string): string | undefined {
+	const marker = "\nPatch:\n";
+	const idx = body.indexOf(marker);
+	if (idx < 0) return undefined;
+	const patch = body.slice(idx + marker.length).trim();
+	return patch || undefined;
+}
+
+function liveWorkspacePatch(worker: WorkerStatus): string | undefined {
+	const workspace = stageWorkerWorkspace(worker);
+	return workspace ? gitOutput(workspace, ["diff", "--cached", "--binary", "HEAD"]) : undefined;
+}
+
+/** Commit/reset only the exact frozen generation. Newer worker edits stay untouched. */
+function markWorkspacePromoted(worker: WorkerStatus, frozenPatch: string): void {
 	const workspace = worker.worktree?.path;
 	if (!workspace || !fs.existsSync(workspace)) return;
-	gitStatus(workspace, ["add", "-A"]);
+	const livePatch = liveWorkspacePatch(worker);
+	if (livePatch !== frozenPatch) return;
 	const tree = gitOutput(workspace, ["write-tree"])?.trim();
 	const parent = gitOutput(workspace, ["rev-parse", "HEAD"])?.trim();
 	if (!tree || !parent) return;
@@ -144,10 +239,11 @@ function markWorkspacePromoted(worker: WorkerStatus): void {
 	if (promotedHead) gitStatus(workspace, ["reset", "--hard", promotedHead]);
 }
 
-function parentChangedSinceSnapshot(worker: WorkerStatus, parentRoot: string): boolean {
+function parentChangedSinceSnapshot(worker: WorkerStatus, parentRoot: string, files: WorkerChangedFile[]): boolean {
 	const snapshot = worker.worktree?.snapshotHead ?? worker.worktree?.baseHead;
 	if (!snapshot) return false;
-	const diff = gitOutput(parentRoot, ["diff", "--name-status", snapshot, "--"])?.trim();
+	const paths = files.map((file) => file.path).filter(Boolean);
+	const diff = gitOutput(parentRoot, ["diff", "--name-status", snapshot, "--", ...(paths.length ? paths : ["."])])?.trim();
 	if (!diff) return false;
 	for (const line of diff.split(/\r?\n/)) {
 		const [status, ...rest] = line.split("\t");
@@ -164,17 +260,40 @@ function parentChangedSinceSnapshot(worker: WorkerStatus, parentRoot: string): b
 	return false;
 }
 
-export function promoteWorkerChangeSet(worker: WorkerStatus, parentCwd: string, options: { force?: boolean } = {}): PromoteWorkerChangeSetResult {
-	const changeSet = readWorkerChangeSet(worker);
+function asFrozenChangeSet(value: WorkerChangeSet | WorkerDeliverableChangeSet | Artifact | undefined, worker: WorkerStatus): WorkerChangeSet | undefined {
+	if (!value) return undefined;
+	if ("kind" in value) return workerChangeSetFromArtifact(value);
+	if ("workerId" in value) return value;
+	return {
+		workerId: worker.id,
+		workerLabel: workerSourceLabel(worker),
+		ref: value.ref,
+		files: value.files,
+		stat: value.stat,
+		patch: value.patch,
+		hunkCount: value.hunkCount,
+	};
+}
+
+/**
+ * Promotion always applies supplied frozen patch. Omit `changeSet` only for a
+ * legacy worker that predates deliverables.
+ */
+export function promoteWorkerChangeSet(
+	worker: WorkerStatus,
+	parentCwd: string,
+	options: { force?: boolean; changeSet?: WorkerChangeSet | WorkerDeliverableChangeSet | Artifact } = {},
+): PromoteWorkerChangeSetResult {
+	const changeSet = asFrozenChangeSet(options.changeSet, worker) ?? readWorkerChangeSet(worker);
 	if (!changeSet) return { ok: false, message: "Worker has no change set to promote." };
 	const parentRoot = repoRoot(parentCwd);
-	if (!options.force && parentChangedSinceSnapshot(worker, parentRoot)) {
-		return { ok: false, needsConfirmation: true, message: "Parent tree changed since this worker started. Review risk before promoting." };
+	if (!options.force && parentChangedSinceSnapshot(worker, parentRoot, changeSet.files)) {
+		return { ok: false, needsConfirmation: true, message: "Parent changed files in this reviewed patch since worker start. Review risk before promoting." };
 	}
 	const check = gitStatus(parentRoot, ["apply", "--check", "--whitespace=nowarn"], changeSet.patch);
 	if (check.status !== 0) return { ok: false, message: check.stderr || "Worker change set does not apply cleanly." };
 	const applied = gitStatus(parentRoot, ["apply", "--whitespace=nowarn"], changeSet.patch);
 	if (applied.status !== 0) return { ok: false, message: applied.stderr || "Worker change set apply failed." };
-	markWorkspacePromoted(worker);
+	markWorkspacePromoted(worker, changeSet.patch);
 	return { ok: true, fileCount: changeSet.files.length, message: `Promoted ${changeSet.files.length} file${changeSet.files.length === 1 ? "" : "s"} from ${workerSourceLabel(worker)}.` };
 }

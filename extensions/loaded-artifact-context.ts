@@ -1,7 +1,8 @@
 import { createArtifactCatalog, type ArtifactCatalog, type DocketRuntimeContext } from "./artifact-catalog.js";
 import { loadConfig, type DocketConfig } from "./docket-config.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
-import { workerShortLabel, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, workerShortLabel, type WorkerStatus } from "./background-work.js";
+import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export type ChipMode = "ref" | "full";
 
@@ -11,6 +12,8 @@ export type Chip = {
 	mode: ChipMode;
 	kind: ArtifactKind;
 	title: string;
+	/** Immutable Deliverable body retained until submit even if current worker version advances. */
+	body?: string;
 };
 
 export type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
@@ -23,11 +26,13 @@ export type CarryoverSlot = {
 	sourceId: string;
 	artifacts: Artifact[];
 	checkpoint?: CheckpointIndexEntry;
+	deliverableRef?: string;
 };
 
 export type LoadableSource =
 	| { kind: "checkpoint"; checkpoint: CheckpointIndexEntry }
-	| { kind: "worker"; worker: WorkerStatus };
+	| { kind: "worker"; worker: WorkerStatus }
+	| { kind: "deliverable"; worker: WorkerStatus; deliverable: WorkerDeliverable };
 
 export type LoadableSourceCandidates = {
 	checkpoints: CheckpointIndexEntry[];
@@ -62,6 +67,8 @@ export type LoadedArtifactContext = {
 	loadSource(source: LoadableSource): Promise<LoadResult>;
 	loadCheckpoint(checkpoint: CheckpointIndexEntry): Promise<CarryoverSlot>;
 	loadWorker(worker: WorkerStatus): Promise<CarryoverSlot>;
+	/** Mount one immutable reviewed generation under its worker slot. */
+	loadDeliverable(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot>;
 	unloadSlot(slot: string): CarryoverSlot | undefined;
 	unloadSource(kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined;
 	queueCheckpointConsume(checkpoint: CheckpointIndexEntry): void;
@@ -123,7 +130,8 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 
 	const loadWorker = async (worker: WorkerStatus): Promise<CarryoverSlot> => {
 		const existing = findSlotForSource("worker", worker.id);
-		if (existing) return existing;
+		if (existing && !existing.deliverableRef) return existing;
+		if (existing) carryover.delete(existing.slot);
 		const raw = await deps.readWorkerArtifacts(worker);
 		const slot = workerShortLabel(worker.index);
 		const entry: CarryoverSlot = { slot, kind: "worker", sourceId: worker.id, artifacts: namespaceCarryover(raw, slot) };
@@ -131,8 +139,31 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		return entry;
 	};
 
+	const loadDeliverable = async (worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("worker", worker.id);
+		if (existing?.deliverableRef === deliverable.ref) return existing;
+		if (existing) {
+			if (existing.deliverableRef) chips = chips.filter((chip) => chip.ref !== existing.deliverableRef);
+			carryover.delete(existing.slot);
+		}
+		const slot = workerShortLabel(worker.index);
+		const baseArtifact = workerDeliverableArtifact(deliverable);
+		const artifact = { ...baseArtifact, meta: { ...baseArtifact.meta, workerStatus: deriveWorkerState(worker) } };
+		const entry: CarryoverSlot = {
+			slot,
+			kind: "worker",
+			sourceId: worker.id,
+			deliverableRef: deliverable.ref,
+			artifacts: namespaceCarryover([artifact], slot),
+		};
+		carryover.set(slot, entry);
+		return entry;
+	};
+
 	const loadSource = async (source: LoadableSource): Promise<LoadResult> => {
-		const slot = source.kind === "checkpoint" ? await loadCheckpoint(source.checkpoint) : await loadWorker(source.worker);
+		const slot = source.kind === "checkpoint"
+			? await loadCheckpoint(source.checkpoint)
+			: source.kind === "deliverable" ? await loadDeliverable(source.worker, source.deliverable) : await loadWorker(source.worker);
 		const queuedConsume = source.kind === "checkpoint" && source.checkpoint.consumeOnUse === true;
 		if (queuedConsume) pendingCheckpointConsumes.set(source.checkpoint.id, source.checkpoint);
 		return { source, slot, queuedConsume };
@@ -165,6 +196,9 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		loadWorker(worker: WorkerStatus): Promise<CarryoverSlot> {
 			return loadSource({ kind: "worker", worker }).then((result) => result.slot);
 		},
+		loadDeliverable(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot> {
+			return loadSource({ kind: "deliverable", worker, deliverable }).then((result) => result.slot);
+		},
 		unloadSlot,
 		unloadSource(kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined {
 			const entry = findSlotForSource(kind, sourceId);
@@ -185,8 +219,9 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		},
 		toggleChip(artifact: Artifact, mode: ChipMode): ChipToggleResult {
 			const idx = chips.findIndex((c) => c.ref === artifact.ref);
+			const body = mode === "full" && artifact.meta?.workerDeliverable === true ? artifact.body : undefined;
 			if (idx === -1) {
-				chips = [...chips, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }];
+				chips = [...chips, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title, ...(body !== undefined ? { body } : {}) }];
 				return "added";
 			}
 			const existing = chips[idx]!;
@@ -194,7 +229,11 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 				chips = chips.filter((_, i) => i !== idx);
 				return "removed";
 			}
-			chips = chips.map((c, i) => (i === idx ? { ...c, mode } : c));
+			chips = chips.map((chip, i) => {
+				if (i !== idx) return chip;
+				const { body: _body, ...rest } = chip;
+				return { ...rest, mode, ...(body !== undefined ? { body } : {}) };
+			});
 			return mode === "full" ? "upgraded" : "downgraded";
 		},
 		clearChips(): boolean {
@@ -210,11 +249,11 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 			const missing: string[] = [];
 			for (const chip of chips) {
 				const artifact = catalog.find(chip.ref) ?? catalog.find(chip.displayId);
-				if (!artifact) {
+				if (!artifact && chip.body === undefined) {
 					missing.push(chip.displayId);
 					continue;
 				}
-				const body = chip.mode === "full" ? catalog.fullText(artifact) : catalog.reference(artifact);
+				const body = chip.body ?? (chip.mode === "full" ? catalog.fullText(artifact!) : catalog.reference(artifact!));
 				blocks.push(renderChipBlock(chip, body));
 			}
 			if (blocks.length === 0) return { text: userText, expanded: 0, missing };

@@ -1,9 +1,10 @@
-import { workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
 import { isReviewableWorker } from "./worker-lifecycle.js";
+import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export type WorkerEvidence = {
 	reads: number;
@@ -357,7 +358,7 @@ export type WorkerActivityActionProjection = {
 
 export function workerActivityActionProjection(row: WorkerActivityRow, now = Date.now()): WorkerActivityActionProjection {
 	return {
-		enter: isReviewableWorker(row.worker, now) ? "verdict" : "details",
+		enter: isReviewableWorker(row.worker, now) || deriveWorkerState(row.worker, now) === "reviewed" ? "verdict" : "details",
 		load: !row.loaded,
 		peek: "peek",
 		tell: "tell",
@@ -365,12 +366,14 @@ export function workerActivityActionProjection(row: WorkerActivityRow, now = Dat
 	};
 }
 
-export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number; explicitlyLoadedWorkerIds?: ReadonlySet<string> } = {}): WorkerActivityRow[] {
+export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]> = new Map(), options: { now?: number; maxTodoItems?: number; explicitlyLoadedWorkerIds?: ReadonlySet<string>; deliverablesByWorker?: ReadonlyMap<string, WorkerDeliverable> } = {}): WorkerActivityRow[] {
 	const now = options.now ?? Date.now();
 	const conflictsByWorker = workerConflictMap(workers, artifactsByWorker);
 	return workers.map((worker) => {
 		const artifacts = artifactsByWorker.get(worker.id) ?? [];
-		const review = projectWorkerReview(worker, artifacts, now);
+		const deliverable = options.deliverablesByWorker?.get(worker.id)
+			?? artifacts.map((artifact) => workerDeliverableFromArtifact(artifact)).find((item): item is WorkerDeliverable => item !== undefined);
+		const review = projectWorkerReview(worker, artifacts, now, deliverable);
 		const state = review.state;
 		const answer = review.result;
 		const answerLine = answer && !review.resultIsStatus ? firstWorkerReviewLine(answer.title) ?? firstWorkerReviewLine(answer.body) : undefined;
@@ -379,7 +382,9 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 		const message = state === "needs_input" && questionText ? questionText : review.summary || workerDisplayName(worker);
 		const summary = review.summarySource;
 		const recommendations = review.recommendations.length || countWorkerRecommendations(summary);
-		const { evidence, filesChanged } = computeEvidence(artifacts);
+		const computedEvidence = computeEvidence(artifacts);
+		const evidence = computedEvidence.evidence;
+		const filesChanged = deliverable?.changeSet?.files.length ?? computedEvidence.filesChanged;
 		const progress = workerTodoProgress(worker);
 		const conflicts = conflictsByWorker.get(worker.id) ?? [];
 		const loaded = options.explicitlyLoadedWorkerIds?.has(worker.id) === true;

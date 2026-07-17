@@ -27,6 +27,10 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		statusFile: (id) => `/tmp/workers/${id}/status.json`,
 		artifactsFile: (id) => `/tmp/workers/${id}/artifacts.json`,
 		taskFile: (id) => `/tmp/workers/${id}/task.md`,
+		deliverablesDir: (id) => `/tmp/workers/${id}/deliverables`,
+		deliverableFile: (id, version) => `/tmp/workers/${id}/deliverables/v${version}.json`,
+		readDeliverable: async () => undefined,
+		readCurrentDeliverable: async () => undefined,
 		list: async () => workers,
 		find: async (id) => workers.find((entry) => entry.id === id || `w${entry.index}` === id),
 		readArtifacts: async () => [] as Artifact[],
@@ -277,6 +281,34 @@ test("Worker Commands inherits parent model when kind has no model override", as
 	await commands.spawn("review", { as: "reviewer" });
 
 	assert.deepEqual(setup.spawned[0]?.extensionArgs, ["--model", "google/gemini-3-pro"]);
+});
+
+test("Worker Commands passes internal reviewed-handoff overrides without exposing spawn grammar", async () => {
+	const { commands, spawned } = deps();
+	await commands.spawn("implement reviewed plan", {
+		fresh: true,
+		model: "openai/gpt-5",
+		thinking: "high",
+		sourceDeliverable: {
+			body: "exact reviewed body",
+			provenance: {
+				sourceDeliverableId: "worker-deliverable:w1",
+				sourceVersion: 2,
+				sourceRef: "worker-deliverable:w1:2",
+				sourceWorkerId: "source",
+				sourceWorkerLabel: "w1",
+				approvingDecisionId: "d1",
+				approvedAt: "2026-01-01T00:00:00.000Z",
+				sidecarPath: "source-deliverable.md",
+			},
+		},
+	});
+	assert.equal(spawned[0]?.fresh, true);
+	assert.equal(spawned[0]?.parentSession, undefined);
+	assert.equal(spawned[0]?.model, "openai/gpt-5");
+	assert.equal(spawned[0]?.thinking, "high");
+	assert.equal(spawned[0]?.sourceDeliverable?.body, "exact reviewed body");
+	assert.deepEqual(spawned[0]?.extensionArgs, ["--model", "openai/gpt-5", "--thinking", "high"]);
 });
 
 test("Worker Commands warns and falls back when configured default kind is missing", async () => {
