@@ -87,13 +87,33 @@ test("worker launch command reuses current pi binary and records process exit", 
 		statusFile: "/tmp/status.json",
 		initialPrompt: "Read task, then say 'done'",
 		extensionArgs: ["--no-extensions", "-e", "./extensions/docket.ts"],
+		agentDir: "/tmp/docket agent",
 		piCommandParts: parts,
 	});
-	assert.match(command, /DOCKET_WORKER_ID='worker-1' '\/usr\/local\/bin\/node' '\/opt\/homebrew\/lib\/node_modules\/\@earendil-works\/pi-coding-agent\/dist\/cli\.js'/);
+	assert.match(command, /DOCKET_WORKER_ID='worker-1' PI_CODING_AGENT_DIR='\/tmp\/docket agent' '\/usr\/local\/bin\/node' '\/opt\/homebrew\/lib\/node_modules\/\@earendil-works\/pi-coding-agent\/dist\/cli\.js'/);
 	assert.match(command, /--session-dir '\/tmp\/session'/);
 	assert.match(command, /'--no-extensions' '-e' '\.\/extensions\/docket\.ts'/);
 	assert.match(command, /; code=\$\?; /);
 	assert.match(command, /worker process exited before reporting ready/);
+});
+
+test("worker launch command preserves agent dir for child process", async () => {
+	const tmp = await mkdtemp(path.join(os.tmpdir(), "docket-worker-agent-dir-"));
+	try {
+		const output = path.join(tmp, "agent-dir.txt");
+		const command = buildWorkerLaunchCommand({
+			id: "worker-1",
+			sessionDir: path.join(tmp, "session"),
+			statusFile: path.join(tmp, "status.json"),
+			initialPrompt: "prompt",
+			agentDir: "/tmp/isolated-agent",
+			piCommandParts: ["sh", "-c", `printf '%s' "$PI_CODING_AGENT_DIR" > ${JSON.stringify(output)}`],
+		});
+		assert.equal(spawnSync("sh", ["-c", command], { encoding: "utf8" }).status, 0);
+		assert.equal(await readFile(output, "utf8"), "/tmp/isolated-agent");
+	} finally {
+		await rm(tmp, { recursive: true, force: true });
+	}
 });
 
 test("explicit extension args preserve no-extension isolation", () => {

@@ -131,6 +131,8 @@ Start isolated parent Pi session:
 pi --no-extensions -e "$ROOT/extensions/docket.ts"
 ```
 
+Docket passes `PI_CODING_AGENT_DIR` explicitly into each tmux worker command. If you update Docket after spawning a worker, delete that worker and restart parent Pi before retrying; an already-running worker keeps its original launch environment.
+
 ## Scenario
 
 **Shipyard** needs a release guard repaired. An expensive planner first proposes exact invariant and tests. Human reviews it, asks one revision, approves that exact version, then explicitly hands it to a fresh implementation worker. Human reviews frozen patch and promotes only after tests pass.

@@ -140,8 +140,12 @@ function workerExitPatchCommand(statusFile: string, runToken?: string): string {
 	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code" ${shellQuote(runToken ?? "")}`;
 }
 
-export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean; runToken?: string }): string {
-	const piParts = [`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
+export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean; runToken?: string; agentDir?: string }): string {
+	const env = [
+		`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`,
+		...(input.agentDir ? [`PI_CODING_AGENT_DIR=${shellQuote(input.agentDir)}`] : []),
+	];
+	const piParts = [...env, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
 	if (input.resumeSeeded) piParts.push("--continue");
 	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
 	piParts.push(shellQuote(input.initialPrompt));
@@ -629,7 +633,7 @@ export function createWorkerStore(): WorkerStore {
 			};
 			await this.writeStatus(status);
 
-			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded, runToken });
+			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded, runToken, agentDir: getAgentDir() });
 			const result = launchSharedWindow({ windowName, cwd: workerCwd, command });
 			if (!result.ok) {
 				if (worktree) removeWorkerWorkspace(worktree);
@@ -709,7 +713,7 @@ export function createWorkerStore(): WorkerStore {
 			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
 			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
 			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
-			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded, runToken });
+			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded, runToken, agentDir: getAgentDir() });
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
 			if (!launch.ok) {
 				await this.updateStatus(status.id, respawnFailedTransition(launch.error));
