@@ -69,7 +69,7 @@ When the decision has discrete answers, pass them as `options` (2–4 concrete c
 - Set `outcome` to one of `completed`, `findings`, `proposal`, or `no_evidence`.
 - Set `scopeConfidence` to `clear` only when the task had enough scope to finish without parent input; otherwise use `unclear` and prefer `docket_wait`.
 - Include short `evidence` entries: searched paths, commands run, files read/changed, artifact refs, or concrete observations.
-- One- or two-sentence `summary` of what you produced. Plain prose. Parent freezes full assistant body from this accepted call as immutable Worker Deliverable version; do not rely on a later mutable workspace or response to change it.
+- Put full plan, findings, or explanation in assistant text in the same response that calls `docket_done`; tool arguments are not a substitute for deliverable body. Keep `summary` to one or two plain-prose sentences. Parent freezes that response body as immutable Worker Deliverable version; do not rely on a later mutable workspace or response to change it.
 - Put action bullets in `recommended` (or under a `Recommended:` heading in `summary` for compatibility). Keep each bullet short, action-oriented, and self-contained.
 - Do not paste full file contents or large code blocks into `summary`; those already live in your artifacts. Reference them by what they are ("see edited src/auth.ts") if needed.
 

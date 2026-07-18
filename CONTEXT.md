@@ -23,7 +23,7 @@ A background Pi process running as one window in the shared `docket-workers` tmu
 _Avoid_: job, agent, subprocess.
 
 **Worker Deliverable**:
-Immutable primary output frozen when a worker's accepted `docket_done` reaches `ready`. Its body, evidence, recommendations, and optional patch live in `deliverables/v<N>.json`; status stores only its `{ id, version, ref }` pointer.
+Immutable primary output frozen when a worker's accepted `docket_done` reaches `ready`. Full body, refs, and optional patch live in `deliverables/v<N>.json`; status keeps its existing lifecycle/result projection plus the current `{ id, version, ref }` pointer.
 _Avoid_: latest answer, worker result, live output.
 
 **Deliverable Version**:

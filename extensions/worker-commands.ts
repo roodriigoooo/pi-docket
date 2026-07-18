@@ -47,7 +47,7 @@ export type WorkerCommands = {
 		thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 		sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
 	}): Promise<WorkerStatus | undefined>;
-	tell(ref: string, text: string): Promise<void>;
+	tell(ref: string, text: string): Promise<boolean | void>;
 	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
@@ -122,6 +122,7 @@ function formatKindList(kinds: WorkerKind[]): string {
 export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	const loadWorker = async (worker: WorkerStatus): Promise<void> => {
 		const deliverable = await deps.store.readCurrentDeliverable?.(worker);
+		if (worker.deliverable && !deliverable) throw new Error(`Worker deliverable ${worker.deliverable.ref} is missing or invalid`);
 		const result = await deps.loadedArtifacts.loadSource(deliverable ? { kind: "deliverable", worker, deliverable } : { kind: "worker", worker });
 		deps.announce(
 			`loaded ${result.slot.slot} · ${result.slot.artifacts.length} artifact${result.slot.artifacts.length === 1 ? "" : "s"}`,
@@ -204,11 +205,11 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				return undefined;
 			}
 		},
-		async tell(ref: string, text: string): Promise<void> {
+		async tell(ref: string, text: string): Promise<boolean> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
 				deps.notify("Docket worker not found", "error");
-				return;
+				return false;
 			}
 			const sent = await deps.store.sendInput(worker.id, formatWorkerTell(worker, text));
 			if (sent) deps.announce(
@@ -218,6 +219,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				{ kind: "prompt", title: `tell ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
 			);
 			else deps.notify(`Docket could not send message to ${workerShortLabel(worker.index)}`, "error");
+			return sent;
 		},
 		async list(options: { allProjects?: boolean } = {}): Promise<void> {
 			const projectRoot = options.allProjects ? undefined : deps.projectRoot;

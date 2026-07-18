@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Artifact } from "./types.js";
 import type { WorkerStatus } from "./background-work.js";
 import { tailWorkerEvents, type WorkerEvent } from "./worker-events.js";
-import { readWorkerDeliverable, workerDeliverableFile, type WorkerDeliverable } from "./worker-deliverable.js";
+import { readCurrentWorkerDeliverable, workerDeliverableFile, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export const DOCK_RECENT_EVENT_CAP = 16;
 
@@ -15,6 +15,7 @@ type Entry = {
 	status: WorkerStatus | undefined;
 	artifacts: Artifact[];
 	deliverableFile?: string;
+	deliverablePointer?: string;
 	deliverableMtime: number;
 	deliverable?: WorkerDeliverable;
 	eventOffset: number;
@@ -94,15 +95,18 @@ export class WorkerSnapshotCache {
 				entry.artifactsMtime = -1;
 			}
 			const pointer = entry.status?.deliverable;
+			const pointerKey = pointer ? JSON.stringify([pointer.id, pointer.version, pointer.ref]) : undefined;
 			const deliverableFile = pointer ? workerDeliverableFile(this.root, id, pointer.version) : undefined;
 			const deliverableStat = deliverableFile ? await safeStat(deliverableFile) : undefined;
 			if (!pointer || !deliverableFile || !deliverableStat) {
 				entry.deliverable = undefined;
 				entry.deliverableFile = undefined;
+				entry.deliverablePointer = undefined;
 				entry.deliverableMtime = -1;
-			} else if (entry.deliverableFile !== deliverableFile || entry.deliverableMtime !== deliverableStat.mtimeMs) {
-				entry.deliverable = await readWorkerDeliverable(this.root, id, pointer.version);
+			} else if (entry.deliverablePointer !== pointerKey || entry.deliverableFile !== deliverableFile || entry.deliverableMtime !== deliverableStat.mtimeMs) {
+				entry.deliverable = entry.status ? await readCurrentWorkerDeliverable(this.root, entry.status) : undefined;
 				entry.deliverableFile = deliverableFile;
+				entry.deliverablePointer = pointerKey;
 				entry.deliverableMtime = deliverableStat.mtimeMs;
 			}
 			const tail = await tailWorkerEvents(this.root, id, { offset: entry.eventOffset });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { WorkerStatus } from "../extensions/background-work.js";
@@ -40,6 +40,20 @@ test("deliverable body comes from exact docket_done assistant message without ar
 	assert.ok(extracted.length > 6_000);
 });
 
+test("deliverable body preserves empty text blocks without adding tool-call newlines", () => {
+	const extracted = extractWorkerDeliverableBody([
+		assistant([
+			{ type: "text", text: "# Plan" },
+			{ type: "text", text: "" },
+			{ type: "thinking", thinking: "hidden" },
+			{ type: "text", text: "Body" },
+			{ type: "toolCall", id: "done-1", name: "docket_done", arguments: {} },
+		]),
+	], "done-1", "summary");
+
+	assert.equal(extracted, "# Plan\n\nBody");
+});
+
 test("deliverable body falls back past protocol-only messages to latest normal assistant response", () => {
 	const extracted = extractWorkerDeliverableBody([
 		assistant([{ type: "text", text: "Useful full answer" }]),
@@ -57,6 +71,45 @@ test("deliverable publication serializes concurrent version allocation", async (
 			publishWorkerDeliverable({ root, worker: worker(), toolCallId: "done-b", body: "b" }),
 		]);
 		assert.deepEqual(published.map((item) => item.deliverable.version).sort((a, b) => a - b), [1, 2]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("deliverable publication rejects malformed sidecars without overwriting claimed versions", async () => {
+	const root = await mkdtemp(path.join(os.tmpdir(), "docket-deliverable-claimed-"));
+	try {
+		const dir = path.join(root, "worker-1", "deliverables");
+		const payload = {
+			schemaVersion: 1,
+			id: "worker-deliverable:worker-1",
+			version: 1,
+			ref: "wrong-ref",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { workerId: "worker-1", workerLabel: "w1", task: "write a durable plan" },
+			body: "claimed bytes",
+			summary: "claimed",
+			outcome: "proposal",
+			evidence: [],
+			recommendations: [],
+			refs: [],
+		};
+		const firstFile = path.join(dir, "v1.json");
+		const secondFile = path.join(dir, "v2.json");
+		const claimed = `${JSON.stringify(payload, null, 2)}\n`;
+		const malformed = `${JSON.stringify({ ...payload, version: 2, ref: "worker-deliverable:worker-1:2", refs: {} }, null, 2)}\n`;
+		await mkdir(dir, { recursive: true });
+		await writeFile(firstFile, claimed, "utf8");
+		await writeFile(secondFile, malformed, "utf8");
+
+		assert.equal(await readWorkerDeliverable(root, "worker-1", 1), undefined, "mismatched identity is rejected");
+		assert.equal(await readWorkerDeliverable(root, "worker-1", 2), undefined, "malformed required fields are rejected");
+		const published = await publishWorkerDeliverable({ root, worker: worker(), toolCallId: "done-2", body: "new body" });
+
+		assert.equal(published.deliverable.version, 3);
+		assert.equal(await readFile(firstFile, "utf8"), claimed);
+		assert.equal(await readFile(secondFile, "utf8"), malformed);
+		assert.equal((await readWorkerDeliverable(root, "worker-1", 3))?.body, "new body");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DocketVerdictView, diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/docket.js";
+import { DocketVerdictView, DocketWorkerReportView, diffBar, verdictVerbs, workerVerdictPayload } from "../extensions/docket.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
 import type { Artifact } from "../extensions/types.js";
+import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
 	return {
@@ -51,6 +52,7 @@ test("verdictVerbs adapts labels and semantics by state", () => {
 	assert.equal(verdictVerbs("ready", false)[0]?.label, "Acknowledge");
 	assert.equal(verdictVerbs("ready", false, [], false, true)[0]?.label, "Approve");
 	assert.deepEqual(verdictVerbs("reviewed", false, [], true, true).map((verb) => verb.id), ["use", "report"]);
+	assert.deepEqual(verdictVerbs("ready", false, [], true, true).map((verb) => verb.id), ["use", "report"], "ledger approval remains usable if reviewedAt persistence failed");
 });
 
 test("diffBar clamps width and proportions", () => {
@@ -162,4 +164,69 @@ test("workerVerdictPayload surfaces structured risk on a waiting worker", () => 
 	const payload = workerVerdictPayload(waiting);
 	assert.equal(payload.risk, "irreversible: drops sessions");
 	assert.deepEqual(payload.lines, ["Drop the sessions table?"]);
+});
+
+test("DocketVerdictView fits terminal height without slicing actions or frame", () => {
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const tui = { terminal: { rows: 80 }, requestRender() {} };
+	const current: WorkerDeliverable = {
+		schemaVersion: 1,
+		id: "worker-deliverable:worker-1",
+		version: 1,
+		ref: "worker-deliverable:worker-1:1",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: "worker-1", workerLabel: "w1", task: "inspect auth" },
+		body: "# Proposal\n\nFull proposal body",
+		summary: "Replace emergency bypass with one disabled-region guard before evaluating maintenance fallback behavior",
+		outcome: "proposal",
+		evidence: [
+			"README.md requires disabled regions to remain unavailable during every release mode",
+			"release-plan.js currently bypasses disabled checks whenever emergency is true",
+			"emergency disabled-region test fails against current implementation",
+		],
+		recommendations: [
+			"Move disabled-region fallback before emergency-specific maintenance handling",
+			"Retain explicit tests for normal, maintenance, emergency, and unknown regions",
+			"Run full release-plan test suite after implementation",
+		],
+		refs: Array.from({ length: 8 }, (_, index) => ({ displayId: `e${index + 1}`, ref: `evidence:${index + 1}`, kind: "file" as const, title: `evidence ${index + 1}`, subtitle: "captured" })),
+	};
+	const view = new DocketVerdictView(tui as never, theme, worker({ state: "ready", deliverable: { id: current.id, version: current.version, ref: current.ref } }), changeSet, () => {}, 0, undefined, [], current);
+
+	view.render(100);
+	tui.terminal.rows = 36;
+	const lines = view.render(100);
+	const rendered = lines.join("\n");
+
+	assert.equal(lines.length, 25, "70% overlay cap is applied inside the component");
+	assert.match(rendered, /preview compacted to fit/);
+	assert.match(rendered, /Actions/);
+	assert.match(rendered, /Request revision/);
+	assert.match(rendered, /r Report/);
+	assert.match(lines.at(-2) ?? "", /╰/, "bottom border remains visible");
+});
+
+test("DocketWorkerReportView keeps final lines reachable inside short overlays", () => {
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const tui = { terminal: { rows: 80 }, requestRender() {} };
+	const body = Array.from({ length: 60 }, (_, index) => `report line ${index + 1}`).join("\n");
+	const view = new DocketWorkerReportView(tui as never, theme, "w1 · Report", body, () => {});
+
+	view.render(100);
+	tui.terminal.rows = 24;
+	const compact = view.render(100);
+	assert.equal(compact.length, 21, "88% overlay cap is applied inside the component");
+	assert.match(compact.at(-2) ?? "", /╰/, "bottom border remains visible");
+
+	view.handleInput("G");
+	const bottom = view.render(100).join("\n");
+	assert.match(bottom, /report line 60/, "last report line remains reachable");
 });

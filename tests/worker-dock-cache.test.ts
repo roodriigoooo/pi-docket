@@ -99,8 +99,15 @@ test("WorkerSnapshotCache reads current immutable deliverable sidecar", async ()
 			evidence: [], recommendations: [], refs: [],
 		})}\n`, "utf8");
 
-		const snapshot = await new WorkerSnapshotCache(root).snapshot();
+		const cache = new WorkerSnapshotCache(root);
+		const snapshot = await cache.snapshot();
 		assert.equal(snapshot.deliverablesByWorker.get("alpha")?.body, "exact body");
+
+		await writeFile(statusFile, `${JSON.stringify({ ...makeStatus({ id: "alpha", index: 1, state: "ready" }), deliverable: { ...pointer, ref: "worker-deliverable:alpha:stale" } })}\n`, "utf8");
+		const changed = new Date(Date.now() + 1_000);
+		await utimes(statusFile, changed, changed);
+		const mismatched = await cache.snapshot();
+		assert.equal(mismatched.deliverablesByWorker.has("alpha"), false, "cached sidecar must be revalidated against changed status pointer");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

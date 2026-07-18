@@ -571,12 +571,12 @@ export function createWorkerStore(): WorkerStore {
 			const dir = workerDir(id);
 			await fs.mkdir(dir, { recursive: true });
 
-			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
-			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
 			const sourceHandoff = input.sourceDeliverable
 				? { ...input.sourceDeliverable.provenance, sidecarPath: path.join(dir, "source-deliverable.md") }
 				: undefined;
 			if (input.sourceDeliverable) await fs.writeFile(sourceHandoff!.sidecarPath, input.sourceDeliverable.body, "utf8");
+			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
+			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
 			if (worktree) await fs.mkdir(workerCwd, { recursive: true });
 
 			const sessionDir = path.join(dir, "session");
@@ -713,7 +713,11 @@ export function createWorkerStore(): WorkerStore {
 			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
 			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
 			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
-			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded, runToken, agentDir: getAgentDir() });
+			const launchOverrides = [
+				...(status.model ? ["--model", status.model] : []),
+				...(status.thinking ? ["--thinking", status.thinking] : []),
+			];
+			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: [...explicitExtensionArgs(), ...launchOverrides], resumeSeeded: seeded, runToken, agentDir: getAgentDir() });
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
 			if (!launch.ok) {
 				await this.updateStatus(status.id, respawnFailedTransition(launch.error));

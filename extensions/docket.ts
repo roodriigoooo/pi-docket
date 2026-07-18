@@ -817,6 +817,22 @@ function coloredDiffBar(theme: any, additions: number, deletions: number, width:
 	return `[${[...bar].map((char) => char === "█" ? theme.fg("success", char) : theme.fg("error", char)).join("")}]`;
 }
 
+// Mirrors card overlay maxHeight/margin. Pi otherwise slices excess lines from bottom.
+function overlayCardMaxHeight(terminalRows: number | undefined, ratio: number): number | undefined {
+	if (terminalRows === undefined || !Number.isFinite(terminalRows)) return undefined;
+	const rows = Math.max(1, Math.floor(terminalRows));
+	return Math.max(1, Math.min(Math.floor(rows * ratio), rows - 2));
+}
+
+function fitVerdictCardLines(lines: string[], maxHeight: number | undefined, footerLines: number, omissionLine: string): string[] {
+	if (maxHeight === undefined || lines.length <= maxHeight) return lines;
+	const limit = Math.max(1, Math.floor(maxHeight));
+	if (limit < 3) return lines.slice(-limit);
+	const tailCount = Math.min(Math.max(1, footerLines), limit - 2);
+	const headCount = limit - tailCount - 1;
+	return [...lines.slice(0, headCount), omissionLine, ...lines.slice(-tailCount)];
+}
+
 export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, options: string[] = [], canUse = false, deliverable = false): VerdictVerb[] {
 	if (state === "needs_input") {
 		if (options.length > 0) return [
@@ -832,7 +848,7 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 			{ id: "chat", label: "Chat", description: "type a reply" },
 		];
 	}
-	if (state === "reviewed" && canUse) return [
+	if (canUse && (state === "reviewed" || state === "ready" || state === "ready_open_todos")) return [
 		{ id: "use", label: "Use", description: "handoff approved deliverable" },
 		{ id: "report", label: "Report", description: "read reviewed deliverable" },
 	];
@@ -900,6 +916,7 @@ export class DocketVerdictView implements Component {
 	private container: Container | Box = new Container();
 	private selected = 0;
 	private cachedWidth?: number;
+	private cachedTerminalRows?: number;
 	private cachedLines?: string[];
 	private readonly changeSet?: Artifact;
 	private readonly artifacts: Artifact[];
@@ -988,6 +1005,7 @@ export class DocketVerdictView implements Component {
 	invalidate(): void {
 		this.container.invalidate();
 		this.cachedWidth = undefined;
+		this.cachedTerminalRows = undefined;
 		this.cachedLines = undefined;
 	}
 
@@ -996,7 +1014,8 @@ export class DocketVerdictView implements Component {
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const terminalRows = Number.isFinite(this.tui.terminal?.rows) ? Math.max(1, Math.floor(this.tui.terminal.rows)) : undefined;
+		if (this.cachedLines && this.cachedWidth === width && this.cachedTerminalRows === terminalRows) return this.cachedLines;
 		this.container = new Box(2, 1, docketCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
 		const listWidth = Math.max(30, innerWidth);
@@ -1125,17 +1144,29 @@ export class DocketVerdictView implements Component {
 		this.container.addChild(new DynamicBorder(divider));
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
 		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse }), "footer");
-		this.container.addChild(new Text(dim(`${hints} · ${exitHint}`), 1, 0));
+		const footer = new Text(dim(`${hints} · ${exitHint}`), 1, 0);
+		this.container.addChild(footer);
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = this.container.render(width);
+		const omission = new Box(2, 0, docketCardBg(this.theme));
+		omission.addChild(new Text(truncateToWidth(` ${muted("… preview compacted to fit · r Report for full detail")}`, listWidth - 2), 1, 0));
+		const omissionLine = omission.render(width)[0] ?? "";
+		const footerLineCount = footer.render(Math.max(1, width - 4)).length;
+		const actionFooterLines = verbs.length + footerLineCount + 5 + (verbs.some((verb) => verb.id === "rejectStop") ? 1 : 0);
+		this.cachedLines = fitVerdictCardLines(this.container.render(width), overlayCardMaxHeight(terminalRows, 0.7), actionFooterLines, omissionLine);
 		this.cachedWidth = width;
+		this.cachedTerminalRows = terminalRows;
 		return this.cachedLines;
 	}
 }
 
 async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus, remaining = 0): Promise<DocketVerdictAction | null> {
 	const state = deriveWorkerState(worker);
-	const deliverable = state === "ready" || state === "ready_open_todos" || state === "reviewed" ? await currentWorkerDeliverableForReview(worker) : undefined;
+	const reviewable = state === "ready" || state === "ready_open_todos" || state === "reviewed";
+	const deliverable = reviewable ? await currentWorkerDeliverableForReview(worker) : undefined;
+	if (reviewable && worker.deliverable && !deliverable) {
+		ctx.ui.notify(`Docket: ${workerSourceLabel(worker)} deliverable ${worker.deliverable.ref} is missing or invalid; restore it or tell worker to publish a new generation.`, "error");
+		return null;
+	}
 	const changeSet = deliverable ? workerChangeSetArtifact(worker, deliverable) : state === "ready" || state === "ready_open_todos" ? workerChangeSetArtifact(worker) : undefined;
 	const paneTail = state === "failed" && worker.paneCapturedAt ? await createWorkerStore().readPaneTail(worker.id) : undefined;
 	const artifacts = state === "ready" || state === "ready_open_todos" || state === "reviewed" ? await readWorkerArtifactsForReview(worker, deliverable) : [];
@@ -1152,6 +1183,10 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStatus, currentDeliverable?: WorkerDeliverable): Promise<void> {
 	if (!ctx.hasUI) return;
 	const deliverable = currentDeliverable ?? await currentWorkerDeliverableForReview(worker);
+	if (worker.deliverable && !deliverable) {
+		ctx.ui.notify(`Docket: ${workerSourceLabel(worker)} deliverable ${worker.deliverable.ref} is missing or invalid; Report blocked.`, "error");
+		return;
+	}
 	const changeSet = workerChangeSetArtifact(worker, deliverable);
 	const artifacts = await readWorkerArtifactsForReview(worker, deliverable);
 	const report = projectWorkerReport(worker, artifacts, changeSet, deliverable);
@@ -1162,9 +1197,10 @@ async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStat
 	});
 }
 
-class DocketWorkerReportView implements Component {
+export class DocketWorkerReportView implements Component {
 	private offset = 0;
 	private cachedWidth?: number;
+	private cachedTerminalRows?: number;
 	private cachedLines?: string[];
 	private wrapped: string[] = [];
 	private viewportHeight = 28;
@@ -1201,11 +1237,13 @@ class DocketWorkerReportView implements Component {
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
+		this.cachedTerminalRows = undefined;
 		this.cachedLines = undefined;
 	}
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		const terminalRows = Number.isFinite(this.tui.terminal?.rows) ? Math.max(1, Math.floor(this.tui.terminal.rows)) : undefined;
+		if (this.cachedLines && this.cachedWidth === width && this.cachedTerminalRows === terminalRows) return this.cachedLines;
 		const container = new Box(2, 1, docketCardBg(this.theme));
 		const innerWidth = Math.max(20, width - 4);
 		const accent = (s: string) => this.theme.fg("accent", s);
@@ -1223,6 +1261,12 @@ class DocketWorkerReportView implements Component {
 			const chunks = wrapPlainText(raw, innerWidth - 2, Number.POSITIVE_INFINITY);
 			for (const chunk of chunks.length ? chunks : [""]) this.wrapped.push(isHeading ? `§${chunk}` : chunk);
 		}
+		const footer = new Text(dim("j/k line · Space/b page · g/G top/bottom · q close · zero context"), 1, 0);
+		const footerLines = footer.render(innerWidth).length;
+		const maxHeight = overlayCardMaxHeight(terminalRows, 0.88);
+		this.viewportHeight = Math.max(1, Math.min(28, maxHeight === undefined ? 28 : maxHeight - footerLines - 4));
+		const maxOffset = Math.max(0, this.wrapped.length - this.viewportHeight);
+		this.offset = Math.min(this.offset, maxOffset);
 		const headerLeft = ` ${accent(this.theme.bold("docket · Report"))} ${dim(this.title)} `;
 		const headerRight = ` ${dim(`${Math.min(this.offset + 1, Math.max(1, this.wrapped.length))}-${Math.min(this.offset + this.viewportHeight, this.wrapped.length)}/${this.wrapped.length}`)} `;
 		container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, outerBorder, TOP_CORNERS), 0, 0));
@@ -1230,10 +1274,11 @@ class DocketWorkerReportView implements Component {
 			if (line.startsWith("§")) container.addChild(new Text(truncateToWidth(muted(this.theme.bold(line.slice(1))), innerWidth - 2), 1, 0));
 			else container.addChild(new Text(truncateToWidth(text(line), innerWidth - 2), 1, 0));
 		}
-		container.addChild(new Text(dim("j/k line · Space/b page · g/G top/bottom · q close · zero context"), 1, 0));
+		container.addChild(footer);
 		container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = container.render(width);
 		this.cachedWidth = width;
+		this.cachedTerminalRows = terminalRows;
 		return this.cachedLines;
 	}
 }
@@ -1612,7 +1657,7 @@ function addWorkerActivityPreview(container: Container | Box, theme: any, row: W
 async function currentWorkerDeliverableForReview(worker: WorkerStatus, artifacts?: Artifact[]): Promise<WorkerDeliverable | undefined> {
 	const store = createWorkerStore();
 	const current = await (store.readCurrentDeliverable?.(worker) ?? readCurrentWorkerDeliverable(store.root(), worker));
-	if (current) return current;
+	if (current || worker.deliverable) return current;
 	const state = deriveWorkerState(worker);
 	const readyGeneration = state === "ready" || state === "ready_open_todos" || (state === "reviewed" && worker.state === "ready");
 	if (!readyGeneration) return undefined;
@@ -1626,8 +1671,9 @@ async function currentWorkerDeliverableForReview(worker: WorkerStatus, artifacts
 		captureChangeSet: (version) => freezeWorkerChangeSet(worker, version),
 	});
 	const pointer = workerDeliverablePointer(publication.deliverable);
-	await store.updateStatus(worker.id, (latest) => latest.deliverable ? undefined : { deliverable: pointer });
-	return publication.deliverable;
+	const update = await store.updateStatus(worker.id, (latest) => latest.deliverable ? undefined : { deliverable: pointer });
+	if (sameWorkerDeliverablePointer(update.after?.deliverable, pointer)) return publication.deliverable;
+	return update.after ? store.readCurrentDeliverable(update.after) : undefined;
 }
 
 async function readWorkerArtifactsForReview(worker: WorkerStatus, deliverable?: WorkerDeliverable): Promise<Artifact[]> {
@@ -1636,6 +1682,7 @@ async function readWorkerArtifactsForReview(worker: WorkerStatus, deliverable?: 
 	const resolved = deliverable ?? await currentWorkerDeliverableForReview(worker, artifacts);
 	const paneTail = worker.paneCapturedAt ? await store.readPaneTail(worker.id) : undefined;
 	const tail = paneTail ? workerPaneTailArtifact(worker, paneTail) : undefined;
+	if (worker.deliverable && !resolved) return [];
 	if (resolved) {
 		const primaryBase = workerDeliverableArtifact(resolved);
 		const primary = { ...primaryBase, meta: { ...primaryBase.meta, workerStatus: deriveWorkerState(worker) } };

@@ -102,23 +102,12 @@ export function workerResultArtifactFromReview(worker: WorkerStatus, artifacts: 
 	return answer ?? status;
 }
 
-export function projectWorkerReview(worker: WorkerStatus, artifacts?: Artifact[], now?: number, deliverable?: WorkerDeliverable): WorkerReviewProjection;
-export function projectWorkerReview(worker: WorkerStatus, deliverable: WorkerDeliverable, artifacts?: Artifact[], now?: number): WorkerReviewProjection;
 export function projectWorkerReview(
 	worker: WorkerStatus,
-	artifactsOrDeliverable: Artifact[] | WorkerDeliverable = [],
-	nowOrArtifacts: number | Artifact[] = Date.now(),
-	deliverableOrNow?: WorkerDeliverable | number,
+	artifacts: Artifact[] = [],
+	now = Date.now(),
+	explicitDeliverable?: WorkerDeliverable,
 ): WorkerReviewProjection {
-	const explicitDeliverable = Array.isArray(artifactsOrDeliverable)
-		? (typeof deliverableOrNow === "object" ? deliverableOrNow : undefined)
-		: artifactsOrDeliverable;
-	const artifacts = Array.isArray(artifactsOrDeliverable)
-		? artifactsOrDeliverable
-		: Array.isArray(nowOrArtifacts) ? nowOrArtifacts : [];
-	const now = Array.isArray(artifactsOrDeliverable)
-		? typeof nowOrArtifacts === "number" ? nowOrArtifacts : Date.now()
-		: typeof deliverableOrNow === "number" ? deliverableOrNow : Date.now();
 	const deliverable = explicitDeliverable ?? artifacts.map((artifact) => workerDeliverableFromArtifact(artifact)).find((item): item is WorkerDeliverable => item !== undefined);
 	const label = workerSourceLabel(worker);
 	const state = deriveWorkerState(worker, now);

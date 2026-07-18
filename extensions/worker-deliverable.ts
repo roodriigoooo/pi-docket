@@ -246,20 +246,63 @@ function versionFromName(name: string): number | undefined {
 function isDeliverable(value: unknown): value is WorkerDeliverable {
 	if (!value || typeof value !== "object") return false;
 	const item = value as Partial<WorkerDeliverable>;
+	const validRefs = Array.isArray(item.refs) && item.refs.every((ref) => ref
+		&& typeof ref.displayId === "string"
+		&& typeof ref.ref === "string"
+		&& typeof ref.kind === "string"
+		&& typeof ref.title === "string"
+		&& typeof ref.subtitle === "string");
+	const validChangeSet = item.changeSet === undefined || (
+		typeof item.changeSet.ref === "string"
+		&& typeof item.changeSet.stat === "string"
+		&& typeof item.changeSet.patch === "string"
+		&& typeof item.changeSet.hunkCount === "number"
+		&& Array.isArray(item.changeSet.files)
+		&& item.changeSet.files.every((file) => file && typeof file.path === "string")
+	);
+	const validSourceHandoff = item.sourceHandoff === undefined || (
+		typeof item.sourceHandoff.sourceDeliverableId === "string"
+		&& typeof item.sourceHandoff.sourceVersion === "number"
+		&& Number.isSafeInteger(item.sourceHandoff.sourceVersion)
+		&& item.sourceHandoff.sourceVersion > 0
+		&& typeof item.sourceHandoff.sourceRef === "string"
+		&& typeof item.sourceHandoff.sourceWorkerId === "string"
+		&& typeof item.sourceHandoff.sourceWorkerLabel === "string"
+		&& typeof item.sourceHandoff.approvingDecisionId === "string"
+		&& typeof item.sourceHandoff.approvedAt === "string"
+		&& typeof item.sourceHandoff.sidecarPath === "string"
+	);
 	return item.schemaVersion === WORKER_DELIVERABLE_SCHEMA_VERSION
 		&& typeof item.id === "string"
 		&& typeof item.version === "number"
+		&& Number.isSafeInteger(item.version)
+		&& item.version > 0
 		&& typeof item.ref === "string"
+		&& typeof item.createdAt === "string"
 		&& typeof item.body === "string"
 		&& typeof item.summary === "string"
-		&& typeof item.source?.workerId === "string";
+		&& ["completed", "findings", "proposal", "no_evidence"].includes(item.outcome ?? "")
+		&& Array.isArray(item.evidence) && item.evidence.every((entry) => typeof entry === "string")
+		&& Array.isArray(item.recommendations) && item.recommendations.every((entry) => typeof entry === "string")
+		&& validRefs
+		&& validChangeSet
+		&& validSourceHandoff
+		&& typeof item.source?.workerId === "string"
+		&& typeof item.source.workerLabel === "string"
+		&& typeof item.source.task === "string";
 }
 
 export async function readWorkerDeliverable(root: string, workerId: string, version: number): Promise<WorkerDeliverable | undefined> {
 	if (!Number.isSafeInteger(version) || version < 1) return undefined;
 	try {
 		const parsed = JSON.parse(await fs.readFile(workerDeliverableFile(root, workerId, version), "utf8")) as unknown;
-		return isDeliverable(parsed) ? parsed : undefined;
+		if (!isDeliverable(parsed)) return undefined;
+		return parsed.source.workerId === workerId
+			&& parsed.id === workerDeliverableId(workerId)
+			&& parsed.version === version
+			&& parsed.ref === workerDeliverableRef(workerId, version)
+			? parsed
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -272,16 +315,16 @@ export async function readCurrentWorkerDeliverable(root: string, worker: Pick<Wo
 	return deliverable && sameWorkerDeliverablePointer(workerDeliverablePointer(deliverable), pointer) ? deliverable : undefined;
 }
 
-async function publishedDeliverables(root: string, workerId: string): Promise<WorkerDeliverable[]> {
+async function publishedDeliverables(root: string, workerId: string): Promise<{ versions: number[]; items: WorkerDeliverable[] }> {
 	let names: string[];
 	try {
 		names = await fs.readdir(workerDeliverablesDir(root, workerId));
 	} catch {
-		return [];
+		return { versions: [], items: [] };
 	}
 	const versions = names.map(versionFromName).filter((version): version is number => version !== undefined).sort((a, b) => a - b);
 	const items = await Promise.all(versions.map((version) => readWorkerDeliverable(root, workerId, version)));
-	return items.filter((item): item is WorkerDeliverable => item !== undefined);
+	return { versions, items: items.filter((item): item is WorkerDeliverable => item !== undefined) };
 }
 
 /**
@@ -291,12 +334,15 @@ async function publishedDeliverables(root: string, workerId: string): Promise<Wo
 export async function publishWorkerDeliverable(input: WorkerDeliverablePublicationInput): Promise<WorkerDeliverablePublication> {
 	const dir = workerDeliverablesDir(input.root, input.worker.id);
 	return withPublicationLock(dir, async () => {
-		const existing = await publishedDeliverables(input.root, input.worker.id);
+		const published = await publishedDeliverables(input.root, input.worker.id);
 		if (input.toolCallId) {
-			const duplicate = existing.find((item) => item.source.toolCallId === input.toolCallId);
+			const duplicate = published.items.find((item) => item.source.toolCallId === input.toolCallId);
 			if (duplicate) return { deliverable: duplicate, idempotent: true };
 		}
-		const version = (existing.at(-1)?.version ?? 0) + 1;
+		// Every claimed vN filename is immutable, even when its contents are corrupt.
+		const latestVersion = published.versions.at(-1) ?? 0;
+		if (latestVersion >= Number.MAX_SAFE_INTEGER) throw new Error(`Worker deliverable version space exhausted for ${input.worker.id}`);
+		const version = latestVersion + 1;
 		const changeSet = input.changeSet ?? await input.captureChangeSet?.(version);
 		const deliverable = normalizeWorkerDeliverable({ ...input, ...(changeSet ? { changeSet } : {}), version });
 		await writeJsonAtomic(workerDeliverableFile(input.root, input.worker.id, version), deliverable);
@@ -314,11 +360,11 @@ function messageFromEntry(entry: unknown): any | undefined {
 function textFromAssistantContent(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	return content.map((part) => {
-		if (!part || typeof part !== "object") return "";
+	return content.flatMap((part) => {
+		if (!part || typeof part !== "object") return [];
 		const block = part as { type?: unknown; text?: unknown };
-		return block.type === "text" && typeof block.text === "string" ? block.text : "";
-	}).filter(Boolean).join("\n");
+		return block.type === "text" && typeof block.text === "string" ? [block.text] : [];
+	}).join("\n");
 }
 
 function toolCalls(content: unknown): Array<{ id: string; name: string }> {

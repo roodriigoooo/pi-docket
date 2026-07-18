@@ -87,6 +87,18 @@ test("send delivers comments only to the reviewed worker", async () => {
 	assert.match(calls[0] ?? "", /^send:worker-1:revise from Hunk review \(1 comment\):/);
 });
 
+test("failed Hunk comment delivery records no sent outcome", async () => {
+	const { deps } = harness({
+		reviewInHunk: async () => ({ available: true, comments: [{ filePath: "x", summary: "tighten this" }] }),
+		chooseAction: async () => "send",
+		sendToWorker: async () => false,
+	});
+
+	const outcome = await reviewWorkerChangeSet(deps, worker, changeSet, { preferred: "hunk" });
+
+	assert.deepEqual(outcome, { kind: "returned" });
+});
+
 test("copy and ignore return to the verdict card without delivery", async () => {
 	for (const action of ["copy", "ignore"] as const) {
 		const { deps, calls } = harness({

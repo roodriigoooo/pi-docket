@@ -13,7 +13,7 @@ A worker's status, artifact snapshot, and workspace are mutable. Selecting lates
 An accepted `docket_done` publishes one immutable **Worker Deliverable Version** before status enters `ready`.
 
 - Sidecars live at `workers/<id>/deliverables/v<N>.json`.
-- `status.json` stores only current `{ id, version, ref }` pointer.
+- `status.json` keeps existing lifecycle/result fields plus current `{ id, version, ref }`; full body and patch remain sidecar-only.
 - Body comes from assistant message containing exact `docket_done` tool call and bypasses artifact body truncation.
 - Repeated tool call id is idempotent; later accepted calls create next version.
 - Patch, file list, stat, and hunk count are captured once with deliverable. Review, Hunk, overlap warnings, conflict checks, and promotion use frozen patch.

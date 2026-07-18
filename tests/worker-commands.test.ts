@@ -369,6 +369,16 @@ test("Worker Commands loads and unloads worker artifacts", async () => {
 	assert.equal(announcements[1]?.subject, "unloaded w2");
 });
 
+test("Worker Commands refuses raw-artifact fallback for an invalid current deliverable", async () => {
+	const pointed = { ...worker, deliverable: { id: "worker-deliverable:worker-1", version: 1, ref: "worker-deliverable:worker-1:1" } };
+	const { commands, loaded, notifications } = deps([pointed]);
+
+	await commands.load("w2");
+
+	assert.deepEqual(loaded, []);
+	assert.match(notifications[0] ?? "", /deliverable .* is missing or invalid/);
+});
+
 test("Worker Commands deletes worker and unloads it first", async () => {
 	const { commands, purged, unloaded, announcements } = deps();
 

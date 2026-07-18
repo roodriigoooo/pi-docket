@@ -177,7 +177,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			continue;
 		}
 		if (result.verb === "send") {
-			if (result.text) await deps.workerCommands.tell(label, result.text);
+			if (!result.text || (await deps.workerCommands.tell(label, result.text)) === false) continue;
 			await recordDecision(deps, latest, "send", result.text, changeSet, deliverable);
 			await deps.refreshWorkerDockWidget();
 			return "advance";
@@ -190,19 +190,20 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			return "advance";
 		}
 		if (result.verb === "chat") {
-			const prefill = deliverable ? `Revision notes for ${deliverable.ref} (v${deliverable.version})` : "message to worker";
+			const prefill = deliverable ? "" : "message to worker";
 			const title = deliverable ? `Request revision · ${label} · ${deliverable.ref}` : `Chat ${label}`;
 			const text = (await (deps.reviewNote?.(title, prefill) ?? deps.input(title, prefill)))?.trim();
 			if (!text) continue;
 			const message = deliverable ? `Request revision for ${deliverable.ref} (version ${deliverable.version}):\n${text}` : changeSet ? `revise: ${text}` : text;
-			await deps.workerCommands.tell(label, message);
+			if ((await deps.workerCommands.tell(label, message)) === false) continue;
 			await recordDecision(deps, latest, "chat", text, changeSet, deliverable, deliverable ? text : undefined);
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}
 		if (result.verb === "accept") {
-			if (state === "needs_input") await deps.workerCommands.tell(label, "Approved. Proceed.");
-			else if (state === "failed") await deps.workerCommands.respawn(label);
+			if (state === "needs_input") {
+				if ((await deps.workerCommands.tell(label, "Approved. Proceed.")) === false) continue;
+			} else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
 				if (await deps.promoteWorkerChangeSet(changeSet)) {
 					deps.markArtifactDone(changeSet);
@@ -233,7 +234,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			if (state === "needs_input") {
 				const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
 				if (!text) continue;
-				await deps.workerCommands.tell(label, text);
+				if ((await deps.workerCommands.tell(label, text)) === false) continue;
 				await recordDecision(deps, latest, "reject", text, changeSet, deliverable);
 			} else {
 				if (changeSet) deps.markArtifactDone(changeSet);

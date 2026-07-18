@@ -30,6 +30,13 @@ function gitOutput(cwd: string, args: string[], input?: string): string | undefi
 	return result.stdout;
 }
 
+function requiredGitOutput(cwd: string, args: string[]): string {
+	const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
+	if (result.error) throw result.error;
+	if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || `exit ${result.status}`}`);
+	return result.stdout;
+}
+
 function gitStatus(cwd: string, args: string[], input?: string): { status: number | null; stderr: string; error?: Error } {
 	const result = spawnSync("git", args, { cwd, input, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 });
 	return { status: result.status, stderr: result.stderr.trim(), ...(result.error ? { error: result.error } : {}) };
@@ -45,10 +52,18 @@ function repoRoot(cwd: string): string {
 	return gitOutput(cwd, ["rev-parse", "--show-toplevel"])?.trim() || cwd;
 }
 
-function stageWorkerWorkspace(worker: WorkerStatus): string | undefined {
+function stageWorkerWorkspace(worker: WorkerStatus, strict = false): string | undefined {
 	const workspace = worker.worktree?.path;
-	if (!workspace || !fs.existsSync(workspace)) return undefined;
-	gitStatus(workspace, ["add", "-A"]);
+	if (!workspace) return undefined;
+	if (!fs.existsSync(workspace)) {
+		if (strict) throw new Error(`Worker workspace missing: ${workspace}`);
+		return undefined;
+	}
+	const staged = gitStatus(workspace, ["add", "-A"]);
+	if (staged.error || staged.status !== 0) {
+		if (strict) throw staged.error ?? new Error(`git add -A failed: ${staged.stderr || `exit ${staged.status}`}`);
+		return undefined;
+	}
 	return workspace;
 }
 
@@ -77,13 +92,14 @@ export function workerChangeSetRef(workerId: string, version = 0): string {
 }
 
 /** Capture the staged workspace once. Call only while publishing a deliverable. */
-export function readWorkerChangeSet(worker: WorkerStatus, options: { version?: number } = {}): WorkerChangeSet | undefined {
-	const workspace = stageWorkerWorkspace(worker);
+export function readWorkerChangeSet(worker: WorkerStatus, options: { version?: number; strict?: boolean } = {}): WorkerChangeSet | undefined {
+	const workspace = stageWorkerWorkspace(worker, options.strict);
 	if (!workspace) return undefined;
-	const patch = gitOutput(workspace, ["diff", "--cached", "--binary", "HEAD"]);
+	const read = options.strict ? (args: string[]) => requiredGitOutput(workspace, args) : (args: string[]) => gitOutput(workspace, args);
+	const patch = read(["diff", "--cached", "--binary", "HEAD"]);
 	if (!patch?.trim()) return undefined;
-	const stat = gitOutput(workspace, ["diff", "--cached", "--stat", "--compact-summary", "HEAD"])?.trimEnd() ?? "";
-	const files = parseNumstat(gitOutput(workspace, ["diff", "--cached", "--numstat", "HEAD"])?.trimEnd() ?? "");
+	const stat = read(["diff", "--cached", "--stat", "--compact-summary", "HEAD"])?.trimEnd() ?? "";
+	const files = parseNumstat(read(["diff", "--cached", "--numstat", "HEAD"])?.trimEnd() ?? "");
 	const hunkCount = patch.match(/^@@ /gm)?.length ?? 0;
 	return {
 		workerId: worker.id,
@@ -97,7 +113,7 @@ export function readWorkerChangeSet(worker: WorkerStatus, options: { version?: n
 }
 
 export function freezeWorkerChangeSet(worker: WorkerStatus, version: number): WorkerDeliverableChangeSet | undefined {
-	const changeSet = readWorkerChangeSet(worker, { version });
+	const changeSet = readWorkerChangeSet(worker, { version, strict: true });
 	if (!changeSet) return undefined;
 	return { ref: changeSet.ref, files: changeSet.files, stat: changeSet.stat, patch: changeSet.patch, hunkCount: changeSet.hunkCount };
 }

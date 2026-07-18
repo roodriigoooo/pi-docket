@@ -21,7 +21,7 @@ export type WorkerChangeReviewDeps = {
 	showBuiltinDiff(worker: WorkerStatus, changeSet: Artifact): Promise<void>;
 	reviewInHunk(worker: WorkerStatus, changeSet: Artifact): Promise<HunkReviewResult>;
 	chooseAction(worker: WorkerStatus, comments: HunkReviewComment[]): Promise<HunkReviewAction>;
-	sendToWorker(worker: WorkerStatus, text: string): Promise<void>;
+	sendToWorker(worker: WorkerStatus, text: string): Promise<boolean | void>;
 	copyText(text: string): Promise<boolean>;
 	notify(text: string, level: NotifyLevel): void;
 };
@@ -51,7 +51,7 @@ export async function reviewWorkerChangeSet(
 	const text = formatHunkReviewComments(review.comments, options.deliverable);
 	const action = await deps.chooseAction(worker, review.comments);
 	if (action === "send") {
-		await deps.sendToWorker(worker, text);
+		if ((await deps.sendToWorker(worker, text)) === false) return { kind: "returned" };
 		return { kind: "comments-sent", commentCount: review.comments.length };
 	}
 	if (action === "copy") {

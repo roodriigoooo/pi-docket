@@ -277,6 +277,46 @@ test("runWorkerVerdict rejects a stale deliverable action and reopens current ve
 	assert.ok(calls.some((call) => call.includes("newer deliverable published")));
 });
 
+test("request revision sends multiline notes without editable placeholder text", async () => {
+	const current = deliverable(1);
+	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	let editor: { title: string; initial: string } | undefined;
+	const notes = "Change section 2.\nKeep worked example.";
+	const { deps, calls, decisions } = depsFor(w, {
+		showVerdict: async () => ({ verb: "chat", worker: w, deliverable: current }),
+		reviewNote: async (title, initial) => {
+			editor = { title, initial };
+			return notes;
+		},
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "advance");
+	assert.deepEqual(editor, { title: `Request revision · w1 · ${current.ref}`, initial: "" });
+	assert.ok(calls.includes(`tell:w1:Request revision for ${current.ref} (version 1):\n${notes}`));
+	assert.equal(decisions[0]?.option, notes);
+	assert.equal(decisions[0]?.reviewNote, notes);
+	assert.equal(current.body, "body v1");
+});
+
+test("failed revision delivery records no decision", async () => {
+	const current = deliverable(1);
+	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	let cards = 0;
+	const { deps, decisions } = depsFor(w, {
+		showVerdict: async () => ++cards === 1 ? { verb: "chat", worker: w, deliverable: current } : null,
+		reviewNote: async () => "revise this",
+	});
+	deps.workerCommands.tell = async () => false;
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "stop");
+	assert.equal(cards, 2);
+	assert.deepEqual(decisions, []);
+});
+
 test("re-approving a reviewed deliverable records its underlying ready state", async () => {
 	const current = deliverable(1);
 	const w = worker({ state: "ready", reviewedAt: "2026-01-01T00:01:00.000Z", deliverable: { id: current.id, version: current.version, ref: current.ref } });

@@ -193,7 +193,7 @@ test("Loaded Artifact context mounts immutable deliverable and queues a full chi
 	assert.equal(loaded.chips()[0]?.mode, "full");
 });
 
-test("loading a newer deliverable removes a queued older version", async () => {
+test("mounting a newer deliverable preserves an already queued approved version", async () => {
 	const loaded = context([]);
 	const v1: WorkerDeliverable = {
 		schemaVersion: 1, id: "worker-deliverable:worker-1", version: 1, ref: "worker-deliverable:worker-1:1", createdAt: "2026-01-01T00:00:00.000Z",
@@ -204,7 +204,8 @@ test("loading a newer deliverable removes a queued older version", async () => {
 	loaded.toggleChip(first.artifacts[0]!, "full");
 	await loaded.loadDeliverable(worker, v2);
 
-	assert.deepEqual(loaded.chips(), []);
+	assert.equal(loaded.chips()[0]?.ref, v1.ref);
+	assert.equal(loaded.chips()[0]?.body, "v1");
 	assert.equal(loaded.carryoverArtifacts()[0]?.ref, v2.ref);
 });
 

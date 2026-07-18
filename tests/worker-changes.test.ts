@@ -66,6 +66,21 @@ test("worker change set artifact summarizes workspace edits", async () => {
 	}
 });
 
+test("freezing a deliverable fails instead of hiding workspace staging errors", async () => {
+	const repo = await makeRepo();
+	try {
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\ntwo\n", "utf8");
+		const index = git(repo.workerPath, ["rev-parse", "--git-path", "index"]);
+		const lock = `${path.isAbsolute(index) ? index : path.join(repo.workerPath, index)}.lock`;
+		await writeFile(lock, "locked", "utf8");
+
+		assert.throws(() => freezeWorkerChangeSet(worker(repo.root, repo.workerPath, repo.head), 1), /git add -A failed/);
+		await rm(lock, { force: true });
+	} finally {
+		await repo.cleanup();
+	}
+});
+
 test("promote worker change set applies whole patch to parent", async () => {
 	const repo = await makeRepo();
 	try {

@@ -142,10 +142,7 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 	const loadDeliverable = async (worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot> => {
 		const existing = findSlotForSource("worker", worker.id);
 		if (existing?.deliverableRef === deliverable.ref) return existing;
-		if (existing) {
-			if (existing.deliverableRef) chips = chips.filter((chip) => chip.ref !== existing.deliverableRef);
-			carryover.delete(existing.slot);
-		}
+		if (existing) carryover.delete(existing.slot);
 		const slot = workerShortLabel(worker.index);
 		const baseArtifact = workerDeliverableArtifact(deliverable);
 		const artifact = { ...baseArtifact, meta: { ...baseArtifact.meta, workerStatus: deriveWorkerState(worker) } };

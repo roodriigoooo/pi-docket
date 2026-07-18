@@ -70,16 +70,9 @@ function sameDeliverable(event: VerdictResolvedEvent, pointer: WorkerDeliverable
 /** Latest terminal judgment for one immutable deliverable generation. */
 export function latestDeliverableJudgment(events: DecisionEvent[], pointer: WorkerDeliverablePointer): VerdictResolvedEvent | undefined {
 	let latest: VerdictResolvedEvent | undefined;
-	let latestTimestamp = Number.NEGATIVE_INFINITY;
 	for (const event of events) {
 		if (event.type !== "verdict_resolved" || !sameDeliverable(event, pointer)) continue;
-		if (event.verb !== "accept" && event.verb !== "reject" && event.verb !== "rejectStop") continue;
-		const timestamp = Date.parse(event.timestamp);
-		// Same-millisecond ledger rows retain append order: later row wins.
-		if (!latest || !Number.isFinite(latestTimestamp) || !Number.isFinite(timestamp) || timestamp >= latestTimestamp) {
-			latest = event;
-			latestTimestamp = timestamp;
-		}
+		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") latest = event;
 	}
 	return latest;
 }
@@ -187,9 +180,11 @@ function formatEventLine(event: DecisionEvent, now: number): string {
 		const task = event.task ? ` · ${event.task}` : "";
 		return `${when}  ${event.workerLabel}  evicted unreviewed (${event.state})${task}`;
 	}
-	const option = event.option ? ` "${event.option}"` : "";
+	const optionText = event.option?.replace(/\s+/g, " ").trim();
+	const option = optionText ? ` "${optionText}"` : "";
 	const risk = event.risk ? `  ⚠ ${event.risk}` : "";
-	const evidence = event.evidenceRefs.length > 0 ? `  [${event.evidenceRefs.join(", ")}]` : "";
+	const supportingRefs = event.evidenceRefs.filter((ref) => ref !== event.deliverableRef);
+	const evidence = supportingRefs.length > 0 ? `  [${supportingRefs.join(", ")}]` : "";
 	const version = event.deliverableRef ? `  [${event.deliverableRef}]` : "";
 	return `${when}  ${event.workerLabel}  ${verbLabel(event.verb)}${option}  (${event.state})${risk}${version}${evidence}`;
 }

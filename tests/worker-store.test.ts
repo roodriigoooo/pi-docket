@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, projectKey, readWorkerStatusSync, workerInProject, workerProjectKey, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
@@ -57,6 +57,7 @@ test("packaged worker guardrails file ships with protocol contract", async () =>
 	assert.match(text, /docket_fail/);
 	assert.match(text, /docket_todos/);
 	assert.match(text, /Recommended:/);
+	assert.match(text, /same response that calls `docket_done`/);
 	assert.match(text, /Do not assume/i);
 	assert.match(text, /Read-only by default/);
 	assert.match(text, /Shared tmux session/);
@@ -114,6 +115,70 @@ test("worker launch command preserves agent dir for child process", async () => 
 	} finally {
 		await rm(tmp, { recursive: true, force: true });
 	}
+});
+
+test("worker handoff writes exact sidecar and retry preserves selected model", async () => {
+	await withTempHome(async () => {
+		const tmp = await mkdtemp(path.join(os.tmpdir(), "docket-worker-handoff-store-"));
+		const bin = path.join(tmp, "bin");
+		const log = path.join(tmp, "tmux.log");
+		const tmux = path.join(bin, "tmux");
+		const oldPath = process.env.PATH;
+		const oldTmux = process.env.TMUX;
+		const oldTmuxLog = process.env.TMUX_LOG;
+		try {
+			await mkdir(bin, { recursive: true });
+			await writeFile(tmux, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$TMUX_LOG"\ncase "$1" in\n  -V) echo 'tmux 3.4'; exit 0 ;;\n  has-session) exit 1 ;;\n  display-message) echo '@7'; exit 0 ;;\n  *) exit 0 ;;\nesac\n`, "utf8");
+			await chmod(tmux, 0o755);
+			process.env.PATH = `${bin}:${oldPath ?? ""}`;
+			process.env.TMUX_LOG = log;
+			delete process.env.TMUX;
+
+			const store = createWorkerStore();
+			const body = "# Approved plan\n\nExact final byte";
+			const spawned = await store.spawn({
+				task: "implement approved plan",
+				cwd: tmp,
+				worktree: false,
+				fresh: true,
+				model: "openai/gpt-5",
+				thinking: "high",
+				extensionArgs: ["--model", "openai/gpt-5", "--thinking", "high"],
+				sourceDeliverable: {
+					body,
+					provenance: {
+						sourceDeliverableId: "worker-deliverable:source",
+						sourceVersion: 2,
+						sourceRef: "worker-deliverable:source:2",
+						sourceWorkerId: "source",
+						sourceWorkerLabel: "w1",
+						approvingDecisionId: "decision-1",
+						approvedAt: "2026-01-01T00:00:00.000Z",
+						sidecarPath: "source-deliverable.md",
+					},
+				},
+			});
+
+			const sidecar = path.join(store.dirFor(spawned.id), "source-deliverable.md");
+			assert.equal(await readFile(sidecar, "utf8"), body);
+			assert.match(await readFile(store.taskFile(spawned.id), "utf8"), /worker-deliverable:source:2[\s\S]*source-deliverable\.md/);
+			assert.equal((await store.find(spawned.id))?.sourceHandoff?.approvingDecisionId, "decision-1");
+
+			await store.patchStatus(spawned.id, { state: "failed" });
+			await writeFile(log, "", "utf8");
+			await store.respawn(spawned.id);
+			const launches = await readFile(log, "utf8");
+			assert.match(launches, /'--model' 'openai\/gpt-5' '--thinking' 'high'/);
+		} finally {
+			if (oldPath === undefined) delete process.env.PATH;
+			else process.env.PATH = oldPath;
+			if (oldTmux === undefined) delete process.env.TMUX;
+			else process.env.TMUX = oldTmux;
+			if (oldTmuxLog === undefined) delete process.env.TMUX_LOG;
+			else process.env.TMUX_LOG = oldTmuxLog;
+			await rm(tmp, { recursive: true, force: true });
+		}
+	});
 });
 
 test("explicit extension args preserve no-extension isolation", () => {
