@@ -61,7 +61,7 @@ export function pruneDisposition(worker: WorkerStatus, now: number, pruneMs: num
 	return hasRecordedVerdict ? "prune" : "prune-with-debt";
 }
 
-export function heartbeatTransition(input: { pid: number; sessionFile?: string; artifactCount: number; model?: string }): WorkerTransition {
+export function heartbeatTransition(input: { pid: number; sessionFile?: string; artifactCount: number; model?: string; thinking?: WorkerStatus["thinking"] }): WorkerTransition {
 	return (current) => {
 		const state = current.state === "starting" || current.state === "active" ? "active" : current.state;
 		return {
@@ -70,6 +70,7 @@ export function heartbeatTransition(input: { pid: number; sessionFile?: string; 
 			sessionFile: input.sessionFile,
 			artifactCount: input.artifactCount,
 			...(input.model ? { model: input.model } : {}),
+			...(input.thinking ? { thinking: input.thinking } : {}),
 		};
 	};
 }

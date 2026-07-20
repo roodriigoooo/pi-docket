@@ -4,6 +4,23 @@ import { createWorkerCommands, workerCompletionCandidates } from "../extensions/
 import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
+import type { WorkerExecutionModel } from "../extensions/worker-spawn-policy.js";
+
+const MODELS: WorkerExecutionModel[] = [
+	{ provider: "anthropic", id: "claude-sonnet", reasoning: true },
+	{ provider: "anthropic", id: "claude-opus-4-7", reasoning: true },
+	{ provider: "google", id: "gemini-3-pro", reasoning: true },
+	{ provider: "openai", id: "gpt-5", reasoning: true },
+	{ provider: "google", id: "flash", reasoning: false },
+];
+
+const defaultExecutionDeps = {
+	parentModel: () => "anthropic/claude-sonnet",
+	parentThinking: () => "high",
+	availableModels: () => MODELS,
+	hasUI: false,
+	confirmSpawn: async () => true,
+};
 
 const worker: WorkerStatus = {
 	id: "worker-1",
@@ -40,7 +57,10 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		writeArtifacts: async () => {},
 		addQuestion: async () => undefined,
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
-		spawn: async (input) => { spawned.push(input); return { ...worker, state: "starting" }; },
+		spawn: async (input) => {
+			spawned.push(input);
+			return { ...worker, state: "starting", kind: input.kind, model: input.model, thinking: input.thinking };
+		},
 		kill: async () => true,
 		purge: async (id) => { purged.push(id); return [id]; },
 		countActive: async () => workers.filter((w) => ["starting", "active", "idle", "needs_input"].includes(w.state)).length,
@@ -51,14 +71,24 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 	return { store, spawned, purged, sent };
 }
 
-function deps(workers = [worker], kinds = createWorkerKindRegistry()) {
+function deps(
+	workers = [worker],
+	kinds = createWorkerKindRegistry(),
+	execution: { parentModel?: string; parentThinking?: string; hasUI?: boolean; confirm?: boolean } = {},
+) {
 	const { store, spawned, purged, sent } = fakeStore(workers);
 	const notifications: string[] = [];
 	const announcements: Array<{ subject: string; detail?: string; kind?: string; meta?: { workerId: string } }> = [];
 	const emitted: string[] = [];
 	const loaded: string[] = [];
 	const unloaded: string[] = [];
+	const confirmations: Array<{ title: string; detail: string }> = [];
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
+		parentModel: () => execution.parentModel ?? "anthropic/claude-sonnet",
+		parentThinking: () => execution.parentThinking ?? "high",
+		hasUI: execution.hasUI === true,
+		confirmSpawn: async (title, detail) => { confirmations.push({ title, detail }); return execution.confirm !== false; },
 		store,
 		loadedArtifacts: {
 			loadSource: async (source) => {
@@ -81,7 +111,7 @@ function deps(workers = [worker], kinds = createWorkerKindRegistry()) {
 		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
 	});
-	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded, kinds };
+	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded, confirmations, kinds };
 }
 
 test("Worker Commands spawns worker with cwd and fresh session by default", async () => {
@@ -94,9 +124,14 @@ test("Worker Commands spawns worker with cwd and fresh session by default", asyn
 	assert.equal(spawned[0]?.cwd, "/repo");
 	assert.equal(spawned[0]?.parentSession, undefined); // default kind = fresh (no parent seed)
 	assert.equal(spawned[0]?.kind, "default");
-	assert.equal(spawned[0]?.worktree, true); // default kind has defaultWorktree=true
+	assert.equal(spawned[0]?.worktree, true); // writable intent derives isolated workspace
+	assert.equal(spawned[0]?.model, "anthropic/claude-sonnet");
+	assert.equal(spawned[0]?.thinking, "high");
+	assert.deepEqual(spawned[0]?.extensionArgs, ["--model", "anthropic/claude-sonnet", "--thinking", "high"]);
 	assert.equal(announcements[0]?.subject, "spawned w2 · starting");
 	assert.match(announcements[0]?.detail ?? "", /status: w2 inspect bug now please/);
+	assert.match(announcements[0]?.detail ?? "", /Model: anthropic\/claude-sonnet/);
+	assert.match(announcements[0]?.detail ?? "", /Thinking: high/);
 	assert.match(announcements[0]?.detail ?? "", /inbox:  \/docket/);
 	assert.match(announcements[0]?.detail ?? "", /debug:  \/docket workers/);
 	assert.deepEqual(announcements[0]?.meta, { workerId: "worker-1" });
@@ -136,6 +171,7 @@ test("Worker Commands --fresh overrides a full kind", async () => {
 	const reg = createWorkerKindRegistry();
 	reg.register({ name: "seedy", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, captureTerminal: () => false, notify: () => {}, announce: () => {}, emitText: () => {},
 	});
 
@@ -162,6 +198,7 @@ test("Worker Commands passes kind decision-rights and plan gate into spawn", asy
 		source: "runtime",
 	});
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -195,6 +232,7 @@ test("Worker Commands uses configured default kind", async () => {
 		source: "runtime",
 	});
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -224,8 +262,10 @@ test("Worker Commands lists explicit worker rights", async () => {
 
 	await setup.commands.listKinds();
 
-	assert.match(setup.emitted[0] ?? "", /default\s+plan-gated\s+fresh\s+no-spawn/);
-	assert.match(setup.emitted[0] ?? "", /writer\s+writable\s+fresh\s+no-spawn/);
+	assert.match(setup.emitted[0] ?? "", /default\s+plan-gated\s+\[builtin\]/);
+	assert.match(setup.emitted[0] ?? "", /writer\s+writable\s+\[runtime\]/);
+	assert.match(setup.emitted[0] ?? "", /warning: deprecated execution frontmatter/);
+	assert.match(setup.emitted[0] ?? "", /can_spawn ignored; worker creation is human-only/);
 });
 
 test("Worker Commands passes kind model and thinking to worker launch", async () => {
@@ -243,6 +283,7 @@ test("Worker Commands passes kind model and thinking to worker launch", async ()
 		source: "runtime",
 	});
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -265,6 +306,7 @@ test("Worker Commands inherits parent model when kind has no model override", as
 	const reg = createWorkerKindRegistry();
 	reg.register({ name: "reviewer", readOnly: true, defaultWorktree: false, parentSeedPolicy: "none", canSpawn: [], layout: "single", source: "runtime" });
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -280,10 +322,10 @@ test("Worker Commands inherits parent model when kind has no model override", as
 
 	await commands.spawn("review", { as: "reviewer" });
 
-	assert.deepEqual(setup.spawned[0]?.extensionArgs, ["--model", "google/gemini-3-pro"]);
+	assert.deepEqual(setup.spawned[0]?.extensionArgs, ["--model", "google/gemini-3-pro", "--thinking", "high"]);
 });
 
-test("Worker Commands passes internal reviewed-handoff overrides without exposing spawn grammar", async () => {
+test("Worker Commands forwards reviewed-handoff execution and exact source", async () => {
 	const { commands, spawned } = deps();
 	await commands.spawn("implement reviewed plan", {
 		fresh: true,
@@ -311,10 +353,108 @@ test("Worker Commands passes internal reviewed-handoff overrides without exposin
 	assert.deepEqual(spawned[0]?.extensionArgs, ["--model", "openai/gpt-5", "--thinking", "high"]);
 });
 
+test("Worker Commands confirms changed execution and cancellation creates nothing", async () => {
+	const setup = deps([worker], createWorkerKindRegistry(), { hasUI: true, confirm: false });
+
+	await setup.commands.spawn("expensive review", { thinking: "xhigh" });
+
+	assert.equal(setup.spawned.length, 0);
+	assert.equal(setup.announcements.length, 0);
+	assert.equal(setup.confirmations.length, 1);
+	assert.match(setup.confirmations[0]?.detail ?? "", /Model: anthropic\/claude-sonnet/);
+	assert.match(setup.confirmations[0]?.detail ?? "", /Thinking: xhigh/);
+});
+
+test("Worker Commands keeps bare same-parent interactive spawn low-friction", async () => {
+	const setup = deps([worker], createWorkerKindRegistry(), { hasUI: true, confirm: false });
+
+	await setup.commands.spawn("plain task");
+
+	assert.equal(setup.confirmations.length, 0);
+	assert.equal(setup.spawned.length, 1);
+});
+
+test("Worker Commands never confirms noninteractive overrides", async () => {
+	const setup = deps();
+
+	await setup.commands.spawn("different spend", { thinking: "low" });
+
+	assert.equal(setup.confirmations.length, 0);
+	assert.equal(setup.spawned[0]?.thinking, "low");
+});
+
+test("Worker Commands aborts invalid models before launch", async () => {
+	const setup = deps();
+
+	await setup.commands.spawn("bad model", { model: "gpt-5" });
+
+	assert.equal(setup.spawned.length, 0);
+	assert.match(setup.notifications[0] ?? "", /must be an exact provider\/model reference/);
+});
+
+test("Worker Commands resolves inherited thinking off for non-reasoning override", async () => {
+	const setup = deps();
+
+	await setup.commands.spawn("fast scan", { model: "google/flash" });
+
+	assert.equal(setup.spawned[0]?.model, "google/flash");
+	assert.equal(setup.spawned[0]?.thinking, "off");
+	assert.match(setup.announcements[0]?.detail ?? "", /Thinking: off/);
+});
+
+test("Worker Commands handoff authorization runs after confirmation", async () => {
+	const setup = deps([worker], createWorkerKindRegistry(), { hasUI: true });
+	let authorized = false;
+	await setup.commands.spawn("reviewed task", {
+		model: "openai/gpt-5",
+		thinking: "high",
+		sourceDeliverable: {
+			body: "reviewed bytes",
+			provenance: {
+				sourceDeliverableId: "worker-deliverable:w1",
+				sourceVersion: 1,
+				sourceRef: "worker-deliverable:w1:1",
+				sourceWorkerId: "source",
+				sourceWorkerLabel: "w1",
+				approvingDecisionId: "d1",
+				approvedAt: "2026-01-01T00:00:00.000Z",
+				sidecarPath: "source-deliverable.md",
+			},
+		},
+		authorizeLaunch: async () => authorized,
+	});
+	assert.equal(setup.confirmations.length, 1);
+	assert.match(setup.confirmations[0]?.detail ?? "", /Reviewed source: worker-deliverable:w1:1/);
+	assert.equal(setup.spawned.length, 0);
+
+	authorized = true;
+	await setup.commands.spawn("reviewed task", {
+		model: "openai/gpt-5",
+		thinking: "high",
+		sourceDeliverable: {
+			body: "reviewed bytes",
+			provenance: {
+				sourceDeliverableId: "worker-deliverable:w1",
+				sourceVersion: 1,
+				sourceRef: "worker-deliverable:w1:1",
+				sourceWorkerId: "source",
+				sourceWorkerLabel: "w1",
+				approvingDecisionId: "d1",
+				approvedAt: "2026-01-01T00:00:00.000Z",
+				sidecarPath: "source-deliverable.md",
+			},
+		},
+		authorizeLaunch: async () => authorized,
+	});
+	assert.equal(setup.spawned.length, 1);
+	assert.equal(setup.spawned[0]?.fresh, true);
+});
+
 test("Worker Commands warns and falls back when configured default kind is missing", async () => {
 	const setup = deps();
 	const notifications: string[] = [];
 	const commands = createWorkerCommands({
+		...defaultExecutionDeps,
 		store: setup.store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -331,7 +471,7 @@ test("Worker Commands warns and falls back when configured default kind is missi
 	await commands.spawn("do work");
 
 	assert.equal(setup.spawned[0]?.kind, "default");
-	assert.deepEqual(notifications, ["Docket: configured default worker kind \"ghost\" not found. Falling back to default."]);
+	assert.deepEqual(notifications, ["Docket: configured default worker kind \"ghost\" not found. Using builtin default."]);
 });
 
 test("Worker Commands sends parent messages to workers", async () => {
@@ -354,6 +494,17 @@ test("Worker Commands lists workers", async () => {
 
 	assert.equal(emitted.length, 1);
 	assert.match(emitted[0]!, /w2\s+active\s+default\s+3 artifacts/);
+});
+
+test("Worker Commands lists legacy hierarchy statuses as flat rows", async () => {
+	const parent = { ...worker, id: "parent", index: 1 };
+	const legacy = { ...worker, id: "legacy", index: 2, parentWorkerId: "parent", depth: 1 } as WorkerStatus & { parentWorkerId: string; depth: number };
+	const { commands, emitted } = deps([parent, legacy]);
+
+	await commands.list();
+
+	assert.match(emitted[0] ?? "", /w1[\s\S]*w2/);
+	assert.doesNotMatch(emitted[0] ?? "", /↳|parent/);
 });
 
 test("Worker Commands loads and unloads worker artifacts", async () => {

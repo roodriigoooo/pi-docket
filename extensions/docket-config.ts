@@ -12,15 +12,13 @@ export type DocketWorkerConfig = {
 	pruneAfterHours?: number;
 	/** Max simultaneously active workers (across the whole tmux session). Excess /docket spawn calls are rejected. */
 	maxActive?: number;
-	/** Max child-spawn depth. Top-level parent is depth 0; its children are depth 1; etc. */
-	maxSpawnDepth?: number;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?: string;
 	/** When true, dock writes a compact worker line to tmux status-right so attached panes still see fleet state. */
 	tmuxStatusLine?: boolean;
 	/** When true, every spawned worker also runs tmux pipe-pane to <worker-dir>/pane.log for post-hoc debug. */
 	captureTerminal?: boolean;
-	/** Default parent-seed policy when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers; `"full"` seeds the worker with the parent session JSONL. */
+	/** Parent-seed policy below per-spawn flags and above legacy kind `parent_seed`. Absence resolves fresh after compatibility checks. */
 	parentSeedPolicy?: "full" | "none";
 };
 
@@ -51,10 +49,8 @@ export const DEFAULT_CONFIG: DocketConfig = {
 		dockIdleHideMinutes: 30,
 		pruneAfterHours: 24,
 		maxActive: 8,
-		maxSpawnDepth: 2,
 		tmuxStatusLine: false,
 		captureTerminal: false,
-		parentSeedPolicy: "none",
 	},
 };
 

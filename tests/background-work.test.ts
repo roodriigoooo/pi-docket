@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerInputAcceptedPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStateRank, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerInitialPrompt, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerInputAcceptedPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStateRank, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -136,7 +136,10 @@ test("Background Work pulse glyph cycles on the dock cadence", () => {
 test("Background Work formats live worker launch banner", () => {
 	assert.equal(workerLaunchSubject(worker({ state: "active" }), { now: Date.parse("2026-01-01T00:00:00.400Z") }), "spawned w2 · thinking");
 	assert.equal(workerLaunchSubject(worker({ state: "ready", summary: "done" })), "spawned w2(^_^) · ready");
-	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done" })), /status: w2\(\^_\^\) done/);
+	assert.match(workerLaunchDetail(worker({ state: "ready", summary: "done", model: "anthropic/claude", thinking: "high" })), /status: w2\(\^_\^\) done/);
+	assert.match(workerLaunchDetail(worker({ model: "anthropic/claude", thinking: "high" })), /model:  anthropic\/claude/);
+	assert.match(workerLaunchDetail(worker({ model: "anthropic/claude", thinking: "high" })), /thinking: high/);
+	assert.match(workerLaunchDetail(worker()), /model:  unknown[\s\S]*thinking: unknown/);
 	assert.match(workerLaunchDetail(worker()), /inbox:  \/docket/);
 });
 
@@ -157,6 +160,13 @@ test("Background Work builds task docs with pre-flight brief and plan gate", () 
 	assert.match(doc, /May edit src\/auth\.ts after approval/);
 	assert.match(doc, /## Plan gate/);
 	assert.match(doc, /After read-only discovery and before the first file edit/);
+});
+
+test("Background Work task and initial prompt contain no worker hierarchy language", () => {
+	const task = buildWorkerTaskDocument({ task: "Inspect auth", kind: "scout", worktree: false });
+	const prompt = buildWorkerInitialPrompt({ label: "w2", id: "worker-2", taskFile: "/tmp/task.md", artifactsFile: "/tmp/artifacts.json", kind: "scout" });
+	assert.doesNotMatch(task, /parent worker|child|depth/i);
+	assert.doesNotMatch(prompt, /parent worker|child|depth|dispatched by/i);
 });
 
 test("Background Work surfaces kind in chip and launch detail", () => {

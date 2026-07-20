@@ -20,21 +20,20 @@ async function withTempHome<T>(fn: () => Promise<T>): Promise<T> {
 	}
 }
 
-async function seedWorker(root: string, partial: Partial<WorkerStatus> & { id: string; index: number }): Promise<void> {
-	const status: WorkerStatus = {
-		id: partial.id,
-		index: partial.index,
-		tmuxSession: `docket-worker-${partial.id}`,
+type LegacyHierarchyFields = { parentWorkerId?: string; depth?: number; canSpawn?: string[] };
+
+async function seedWorker(root: string, partial: Partial<WorkerStatus> & LegacyHierarchyFields & { id: string; index: number }): Promise<void> {
+	const { id, index, ...overrides } = partial;
+	const status: WorkerStatus & LegacyHierarchyFields = {
+		id,
+		index,
+		tmuxSession: partial.tmuxSession ?? `docket-worker-${id}`,
 		task: partial.task ?? "demo task",
 		cwd: partial.cwd ?? "/repo",
 		createdAt: partial.createdAt ?? "2026-05-01T00:00:00.000Z",
 		updatedAt: partial.updatedAt ?? "2026-05-01T00:00:00.000Z",
 		state: partial.state ?? "active",
-		...(partial.projectRoot ? { projectRoot: partial.projectRoot } : {}),
-		...(partial.worktree ? { worktree: partial.worktree } : {}),
-		...(partial.parentWorkerId ? { parentWorkerId: partial.parentWorkerId } : {}),
-		...(typeof partial.depth === "number" ? { depth: partial.depth } : {}),
-		...(partial.kind ? { kind: partial.kind } : {}),
+		...overrides,
 	};
 	const dir = path.join(root, partial.id);
 	await mkdir(dir, { recursive: true });
@@ -164,11 +163,17 @@ test("worker handoff writes exact sidecar and retry preserves selected model", a
 			assert.match(await readFile(store.taskFile(spawned.id), "utf8"), /worker-deliverable:source:2[\s\S]*source-deliverable\.md/);
 			assert.equal((await store.find(spawned.id))?.sourceHandoff?.approvingDecisionId, "decision-1");
 
+			const legacyStatus = JSON.parse(await readFile(store.statusFile(spawned.id), "utf8")) as Record<string, unknown>;
+			legacyStatus.parentWorkerId = "old-parent";
+			legacyStatus.depth = 2;
+			legacyStatus.canSpawn = ["scout"];
+			await writeFile(store.statusFile(spawned.id), `${JSON.stringify(legacyStatus)}\n`, "utf8");
 			await store.patchStatus(spawned.id, { state: "failed" });
 			await writeFile(log, "", "utf8");
 			await store.respawn(spawned.id);
 			const launches = await readFile(log, "utf8");
 			assert.match(launches, /'--model' 'openai\/gpt-5' '--thinking' 'high'/);
+			assert.doesNotMatch(launches, /dispatched by worker|depth 2/);
 		} finally {
 			if (oldPath === undefined) delete process.env.PATH;
 			else process.env.PATH = oldPath;
@@ -451,25 +456,25 @@ test("worker store serializes concurrent status transitions without lost fields"
 	});
 });
 
-test("purge cascades to child workers when requested", async () => {
+test("legacy hierarchy statuses list safely and purge removes only requested worker", async () => {
 	await withTempHome(async () => {
 		const store = createWorkerStore();
 		const root = store.root();
 		await mkdir(root, { recursive: true });
 		await seedWorker(root, { id: "parent", index: 1, state: "ended" });
-		await seedWorker(root, { id: "child-a", index: 2, parentWorkerId: "parent", depth: 1, state: "ended" });
+		await seedWorker(root, { id: "child-a", index: 2, parentWorkerId: "parent", depth: 1, canSpawn: ["scout"], state: "ended" });
 		await seedWorker(root, { id: "child-b", index: 3, parentWorkerId: "parent", depth: 1, state: "ended" });
 		await seedWorker(root, { id: "grandchild", index: 4, parentWorkerId: "child-a", depth: 2, state: "ended" });
 		await seedWorker(root, { id: "unrelated", index: 5, state: "ended" });
 
-		const purged = await store.purge("parent", { cascade: true });
-		const remaining = (await store.list()).map((w) => w.id).sort();
+		const listed = await store.list();
+		assert.equal(listed.length, 5);
+		assert.equal((listed.find((worker) => worker.id === "child-a") as WorkerStatus & LegacyHierarchyFields).depth, 1);
+		const purged = await store.purge("parent");
+		const remaining = (await store.list()).map((worker) => worker.id).sort();
 
-		assert.equal(purged.includes("parent"), true);
-		assert.equal(purged.includes("child-a"), true);
-		assert.equal(purged.includes("child-b"), true);
-		assert.equal(purged.includes("grandchild"), true);
-		assert.deepEqual(remaining, ["unrelated"]);
+		assert.deepEqual(purged, ["parent"]);
+		assert.deepEqual(remaining, ["child-a", "child-b", "grandchild", "unrelated"]);
 	});
 });
 

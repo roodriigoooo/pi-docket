@@ -229,16 +229,31 @@ test("Docket Command Router attaches from worker back to recorded parent target"
 	assert.deepEqual(calls, ["notify:Copied: tmux attach -t parent-session:3.0"]);
 });
 
+test("Docket Command Router ignores legacy parentWorkerId attach fallback", async () => {
+	const currentWorker = { ...worker, id: "legacy-child", index: 3, parentWorkerId: "legacy-parent" } as WorkerStatus & { parentWorkerId: string };
+	const oldParent = { ...worker, id: "legacy-parent", index: 1, tmuxSession: "docket-workers:w1" };
+	const workerStore = {
+		find: async (id: string) => id === currentWorker.id ? currentWorker : id === oldParent.id ? oldParent : undefined,
+		list: async () => [oldParent, currentWorker],
+		readArtifacts: async () => [],
+	} as unknown as WorkerStore;
+	const { calls, router } = harness({ workerId: currentWorker.id, workerStore });
+
+	await router.handle({ kind: "attach", worker: "parent" });
+
+	assert.deepEqual(calls, ["notify:Docket parent tmux target not recorded for this worker"]);
+});
+
 test("Docket Command Router handles artifact ref chips through context", async () => {
 	const { calls, router } = harness();
 	await router.handle({ kind: "artifact", action: "ref", idOrRef: "a1" });
 	assert.deepEqual(calls, ["done:command:1", "toggleChip", "refreshChips", "announceChip"]);
 });
 
-test("Docket Command Router routes spawn intent and forwards seed/fresh flags to worker spawn", async () => {
-	const captured: Array<{ task: string; fresh?: boolean; seed?: boolean; as?: string }> = [];
+test("Docket Command Router forwards spawn execution choices", async () => {
+	const captured: Array<{ task: string; fresh?: boolean; seed?: boolean; as?: string; model?: string; thinking?: string }> = [];
 	const spawnCommands: WorkerCommands = {
-		spawn: async (task, options) => { captured.push({ task, fresh: options?.fresh, seed: options?.seed, as: options?.as }); return undefined; },
+		spawn: async (task, options) => { captured.push({ task, fresh: options?.fresh, seed: options?.seed, as: options?.as, model: options?.model, thinking: options?.thinking }); return undefined; },
 		tell: async () => {},
 		list: async () => {},
 		listKinds: async () => {},
@@ -250,14 +265,14 @@ test("Docket Command Router routes spawn intent and forwards seed/fresh flags to
 	};
 	const { router } = harness({ workerCommands: spawnCommands });
 
-	await router.handle({ kind: "spawn", task: "map callers", seed: true });
+	await router.handle({ kind: "spawn", task: "map callers", seed: true, model: "openai/gpt", thinking: "high" });
 	await router.handle({ kind: "spawn", task: "recon", fresh: true, as: "scout" });
 	await router.handle({ kind: "spawn", task: "plain" });
 
 	assert.deepEqual(captured, [
-		{ task: "map callers", seed: true, fresh: false, as: undefined },
-		{ task: "recon", fresh: true, seed: false, as: "scout" },
-		{ task: "plain", fresh: false, seed: false, as: undefined },
+		{ task: "map callers", seed: true, fresh: undefined, as: undefined, model: "openai/gpt", thinking: "high" },
+		{ task: "recon", fresh: true, seed: undefined, as: "scout", model: undefined, thinking: undefined },
+		{ task: "plain", fresh: undefined, seed: undefined, as: undefined, model: undefined, thinking: undefined },
 	]);
 });
 

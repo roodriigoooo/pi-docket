@@ -46,7 +46,7 @@ import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-stor
 import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./docket-config.js";
-import { parseDocketCommand, parseDocketWorkerShellCommand, docketUsage, DOCKET_COMMANDS } from "./docket-command-grammar.js";
+import { parseDocketCommand, parseDocketWorkerShellCommand, docketUsage, DOCKET_COMMANDS, DOCKET_SPAWN_FLAGS } from "./docket-command-grammar.js";
 import { createDocketCommandRouter, type LoadPickerMode, type LoadPickerSelection, type ParallelWorkAction, type ParallelWorkEntry, type DocketBrowserAction, type DocketVerdictAction } from "./docket-command-router.js";
 import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./docket-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
@@ -58,7 +58,7 @@ import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
 import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
 import { workerSummaryHeadline } from "./worker-review.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
-import { captureWorkerPane, createWorkerStore, explicitExtensionArgs, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
+import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey, readWorkerStatusSync, sharedSessionExists, DOCKET_WORKER_ENV, workerInProject, workerProjectKey } from "./worker-store.js";
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
@@ -67,9 +67,9 @@ import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReview
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
-import { qualifiedModelRef, workerKindLaunchArgs } from "./worker-spawn-policy.js";
+import { qualifiedModelRef, WORKER_THINKING_LEVELS, type WorkerThinking } from "./worker-spawn-policy.js";
 import { classifyWorkerDeliverable, extractWorkerDeliverableBody, legacyWorkerDeliverableInput, publishWorkerDeliverable, readCurrentWorkerDeliverable, sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable } from "./worker-deliverable.js";
-import { availableHandoffModels, createWorkerHandoffProvenance, formatWorkerHandoffConfirmation, handoffModelRef, handoffThinkingChoices } from "./worker-handoff.js";
+import { availableHandoffModels, createWorkerHandoffProvenance, handoffModelRef, handoffThinkingChoices } from "./worker-handoff.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 import { createSharedSessionRuntime } from "./shared-session-runtime.js";
 import { createParentRuntime } from "./parent-runtime.js";
@@ -2829,6 +2829,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				sessionFile: ctx.sessionManager.getSessionFile?.(),
 				artifactCount: fullArtifacts.length,
 				...(model ? { model } : {}),
+				thinking: pi.getThinkingLevel(),
 			}));
 		} catch {
 			// best-effort heartbeat; never crash the worker
@@ -3075,85 +3076,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		// Only expose docket_spawn_child when current worker's kind allows it.
-		// We probe synchronously via status.json + the sync kind-registry fallback so the
-		// tool registration decision happens before the worker's first turn starts.
-		(() => {
-			const status = readWorkerStatusSync(workerId);
-			if (!status) return;
-			const cwd = activeCtx?.cwd ?? process.cwd();
-			const syncReload = (kindRegistry as unknown as { _reloadSync?: (cwd: string) => void })._reloadSync;
-			if (syncReload && !kindRegistryReloaded) syncReload(cwd);
-			const kind = status.kind ? kindRegistry.get(status.kind) : kindRegistry.get(undefined);
-			const allowed = (status.canSpawn ?? kind.canSpawn ?? []).filter((value): value is string => typeof value === "string" && value.length > 0);
-			if (allowed.length === 0) return;
-			const allowedList = allowed.join(", ");
-			pi.registerTool({
-				name: "docket_spawn_child",
-				label: "Docket Spawn Child",
-				description: `Docket worker only: dispatch a child Docket worker. Allowed child kinds for this worker: ${allowedList}. Child runs in a sibling tmux window inside the shared docket-workers session; child docket_done returns here, not to the human user.`,
-				promptSnippet: `Dispatch a child Docket worker (allowed kinds: ${allowedList}).`,
-				promptGuidelines: [
-					"Use child workers sparingly. A child consumes a worker slot and a tmux window.",
-					"Only spawn when the parent's context truly lacks the information you need; otherwise grep/read here.",
-					"Child outcome will arrive in your inbox as a worker artifact under its short label (e.g. wN).",
-				],
-				parameters: Type.Object({
-					kind: StringEnum(allowed as unknown as readonly [string, ...string[]], { description: "Child kind to dispatch" }),
-					task: Type.String({ description: "Concrete task description for the child. Be specific; the child inherits no extra context beyond its kind's system prompt and your seeded parent session." }),
-				}),
-				async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-					markWorkerProtocolCalled();
-					const store = createWorkerStore();
-					const current = await store.find(workerId);
-					if (!current) return { content: [{ type: "text", text: "Docket: cannot spawn child — current worker status missing." }], details: { error: "no-status" } };
-					await ensureKindRegistryLoaded(ctx.cwd);
-					const config = await loadConfig(ctx.cwd).catch(() => undefined);
-					const maxActive = typeof config?.worker?.maxActive === "number" ? config.worker.maxActive : 8;
-					const maxDepth = typeof config?.worker?.maxSpawnDepth === "number" ? config.worker.maxSpawnDepth : 2;
-					const currentDepth = current.depth ?? 0;
-					if (currentDepth + 1 > maxDepth) {
-						return { content: [{ type: "text", text: `Docket: spawn-depth cap reached (${currentDepth + 1} > ${maxDepth}). Use docket_wait to ask the parent to dispatch instead.` }], details: { error: "max-depth", currentDepth, maxDepth } };
-					}
-					if (maxActive > 0) {
-						const active = await store.countActive();
-						if (active >= maxActive) {
-							return { content: [{ type: "text", text: `Docket: fleet cap reached (${active}/${maxActive}). Cannot spawn child right now.` }], details: { error: "max-active", active, maxActive } };
-						}
-					}
-					const requestedKind = (params as { kind: string }).kind;
-					if (!allowed.includes(requestedKind)) {
-						return { content: [{ type: "text", text: `Docket: kind "${requestedKind}" not in allowlist (${allowedList}).` }], details: { error: "not-allowed" } };
-					}
-					const childKind = kindRegistry.get(requestedKind);
-					const childLaunchArgs = workerKindLaunchArgs(childKind, { model: current.model });
-					const taskText = ((params as { task: string }).task ?? "").trim();
-					if (!taskText) return { content: [{ type: "text", text: "Docket: child task is empty." }], details: { error: "empty-task" } };
-					try {
-						const child = await store.spawn({
-							task: taskText,
-							cwd: current.cwd,
-							...(current.sessionFile ? { parentSession: current.sessionFile } : {}),
-							worktree: childKind.defaultWorktree,
-							kind: childKind.name,
-							readOnly: childKind.readOnly,
-							...(childKind.planGate ? { planGate: true } : {}),
-							...(childKind.decisionRights?.length ? { decisionRights: childKind.decisionRights } : {}),
-							...(childKind.canSpawn.length > 0 ? { canSpawn: childKind.canSpawn } : {}),
-							parentWorkerId: current.id,
-							depth: currentDepth + 1,
-							layout: childKind.layout,
-							...(childLaunchArgs.length ? { extensionArgs: [...explicitExtensionArgs(), ...childLaunchArgs] } : {}),
-						});
-						appendWorkerEventSync(store.root(), current.id, { kind: "message", payload: { event: "spawn-child", childId: child.id, childIndex: child.index, kind: childKind.name } });
-						return { content: [{ type: "text", text: `Docket: dispatched child ${workerShortLabel(child.index)} (kind: ${childKind.name}). Their docket_done will surface in your inbox.` }], details: { childId: child.id, childIndex: child.index, kind: childKind.name } };
-					} catch (err) {
-						return { content: [{ type: "text", text: `Docket: child spawn failed: ${String(err)}` }], details: { error: "spawn-failed", message: String(err) } };
-					}
-				},
-			});
-		})();
-
 		pi.on("tool_call", async (event, ctx) => {
 			if (workerId) {
 				const target = toolEventTarget(event);
@@ -3297,6 +3219,28 @@ export default function docketExtension(pi: ExtensionAPI) {
 				const items = matches.map((c) => ({ value: `${subcommand} ${completed}${c.value}`, label: c.label }));
 				return items.length ? items : null;
 			}
+			if (subcommand === "spawn" && !/(^|\s)--(?:\s|$)/.test(rest)) {
+				const valueMatch = rest.match(/^(.*--(thinking|model|as)(?:=|\s))([^\s]*)$/);
+				if (valueMatch) {
+					const [, completed, flag, partial = ""] = valueMatch;
+					const values = flag === "thinking"
+						? [...WORKER_THINKING_LEVELS]
+						: flag === "model"
+							? (activeCtx?.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`) ?? [])
+							: kindRegistry.names();
+					const matches = values.filter((value) => value.toLowerCase().startsWith(partial.toLowerCase()));
+					const items = matches.map((value) => ({ value: `${subcommand} ${completed}${value}`, label: value }));
+					return items.length ? items : null;
+				}
+				const lastSpace = rest.lastIndexOf(" ");
+				const partial = lastSpace === -1 ? rest : rest.slice(lastSpace + 1);
+				const completed = lastSpace === -1 ? "" : rest.slice(0, lastSpace + 1);
+				if (partial === "" || partial.startsWith("-")) {
+					const matches = DOCKET_SPAWN_FLAGS.filter((flag) => flag.startsWith(partial));
+					const items = matches.map((flag) => ({ value: `${subcommand} ${completed}${flag}`, label: flag }));
+					return items.length ? items : null;
+				}
+			}
 			return null;
 		},
 		handler: (args, ctx) => runDocketCommand(args, ctx),
@@ -3331,11 +3275,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 				projectRoot: sessionProjectKey ?? projectKey(ctx.cwd),
 				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
 				parentModel: () => qualifiedModelRef(ctx.model),
+				parentThinking: () => pi.getThinkingLevel(),
+				availableModels: () => ctx.modelRegistry.getAvailable(),
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
 				captureTerminal: () => captureTerminal,
 				defaultKind: () => docketConfig?.worker?.defaultKind,
-				parentSeedPolicy: () => (docketConfig?.worker?.parentSeedPolicy === "full" ? "full" : "none"),
+				parentSeedPolicy: () => docketConfig?.worker?.parentSeedPolicy,
+				hasUI: ctx.hasUI,
+				confirmSpawn: (title, detail) => ctx.hasUI ? ctx.ui.confirm(title, detail) : Promise.resolve(true),
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				announce: (subject, detail, kind, docket, meta) => announceAction(pi, ctx, subject, detail, kind, docket, meta),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
@@ -3508,10 +3456,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					const thinkingChoices = handoffThinkingChoices(model);
 					const thinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
 					if (!thinking || !thinkingChoices.includes(thinking as typeof thinkingChoices[number])) return;
-					const kind = kindRegistry.defaultKind(docketConfig?.worker?.defaultKind).name;
 					const modelRef = handoffModelRef(model);
-					const confirmed = await ctx.ui.confirm("Start reviewed handoff worker?", formatWorkerHandoffConfirmation({ task, kind, model: modelRef, thinking: thinking as typeof thinkingChoices[number], sourceRef: deliverable.ref }));
-					if (!confirmed) return;
 					try { judgment = await currentApproval(); } catch { judgment = undefined; }
 					if (!judgment) {
 						notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
@@ -3519,10 +3464,16 @@ export default function docketExtension(pi: ExtensionAPI) {
 					}
 					const provenance = createWorkerHandoffProvenance(deliverable, { id: judgment.id, timestamp: judgment.timestamp });
 					const spawned = await workerCommands.spawn(task, {
-						fresh: true,
 						model: modelRef,
-						thinking: thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+						thinking: thinking as WorkerThinking,
 						sourceDeliverable: { body: deliverable.body, provenance },
+						authorizeLaunch: async () => {
+							let approval: ReturnType<typeof latestDeliverableJudgment>;
+							try { approval = await currentApproval(); } catch { approval = undefined; }
+							if (approval) return true;
+							notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
+							return false;
+						},
 					});
 					if (spawned) await refreshWorkerDockWidget();
 				},

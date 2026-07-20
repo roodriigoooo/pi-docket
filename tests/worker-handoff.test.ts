@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
 	availableHandoffModels,
 	createWorkerHandoffProvenance,
-	formatWorkerHandoffConfirmation,
+	handoffModelRef,
 	handoffThinkingChoices,
 } from "../extensions/worker-handoff.js";
 import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
@@ -44,11 +44,9 @@ test("handoff model choices dedupe and constrain non-reasoning models", () => {
 	]).map((model) => `${model.provider}/${model.id}`), ["openai/gpt", "anthropic/claude"]);
 	assert.deepEqual(handoffThinkingChoices({ reasoning: false }), ["off"]);
 	assert.ok(handoffThinkingChoices({ reasoning: true }).includes("high"));
+	assert.ok(handoffThinkingChoices({ reasoning: true }).includes("max"));
 });
 
-test("handoff confirmation makes fresh, reviewed source explicit", () => {
-	const text = formatWorkerHandoffConfirmation({ task: "implement plan", kind: "default", model: "openai/gpt", thinking: "high", sourceRef: deliverable.ref });
-	assert.match(text, /Task: implement plan/);
-	assert.match(text, /Reviewed source: worker-deliverable:source:2/);
-	assert.match(text, /fresh worker/);
+test("handoff model refs stay canonical when model ids contain slashes", () => {
+	assert.equal(handoffModelRef({ provider: "openai", id: "team/gpt" }), "openai/team/gpt");
 });

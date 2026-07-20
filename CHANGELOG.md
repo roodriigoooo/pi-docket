@@ -2,9 +2,17 @@
 
 ## Unreleased
 
+## 0.8.0
+
+- **human-started workers only (breaking)**: workers no longer receive `docket_spawn_child`; `can_spawn` is ignored with a migration diagnostic, persisted hierarchy fields are ignored, and `worker.maxSpawnDepth` has no effect. Workers are independent: list/respawn are flat and delete/prune removes only requested worker.
+- **kind intent separated from execution**: public `WorkerKind` now contains authority/output intent only. `/docket spawn` adds `--model <provider/model>` and `--thinking <level>` (including `--flag=value` and `--` delimiter forms). Read-only kinds derive shared workspace; writable kinds derive isolated workspace.
+- **one validated launch policy**: kind, model/thinking, context, workspace, and compatibility layout resolve once with source attribution. Models must exactly match Pi's available `provider/model`; invalid execution aborts, inherited thinking on non-reasoning models resolves visibly to `off`, and launch without any parent/explicit/legacy model aborts.
+- **conditional execution confirmation**: interactive changed spend and contributing legacy kind defaults show one resolved launch summary before any worker files/window are created. Bare same-parent spawn stays low-friction; JSON/print mode never waits. Launch details and heartbeat status record canonical model plus effective thinking.
+- **legacy kind migration**: `model`, `thinking`, `parent_seed`, `default_worktree`, and `layout` remain launch-compatible through next major release but are hidden from normal kind presentation and explicitly deprecated. Use → Worker routes reviewed choices through same resolver, remains always confirmed/fresh, and rechecks exact approval before launch.
 - **immutable Worker Deliverables**: every accepted `docket_done` freezes one versioned primary body, provenance record, evidence/ref projection, and optional patch before `ready`. Verdict, Report, diff/Hunk, overlap checks, promotion, and decision logging bind to that exact generation; revision notes publish later versions without changing earlier sidecars.
 - **explicit approved handoffs**: approval remains separate from use. Reopen an approved deliverable and press `u` to queue its exact body for the parent's next prompt or start one human-confirmed fresh worker with selected model/thinking, byte-exact `source-deliverable.md`, and approving-decision provenance.
 - **handoff and review hardening**: long verdict cards compact their preview instead of clipping actions, queued approved versions survive newer mounts, mismatched sidecars are rejected without overwriting claimed version files, and worker retries preserve selected model/thinking and isolated agent directory.
+- **release notes**: see [docs/releases/0.8.0.md](docs/releases/0.8.0.md).
 
 ## 0.7.3
 

@@ -3,7 +3,8 @@ import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
 import type { WorkerKindRegistry, WorkerKind } from "./worker-kinds.js";
-import { resolveWorkerSpawnPolicy } from "./worker-spawn-policy.js";
+import { workerKindCompatibility } from "./worker-kinds.js";
+import { formatWorkerLaunchSummary, resolveWorkerSpawnPolicy, type WorkerExecutionModel, type WorkerThinking } from "./worker-spawn-policy.js";
 import { explicitExtensionArgs, workerProjectKey, type WorkerStore } from "./worker-store.js";
 import type { WorkerHandoffProvenance } from "./worker-deliverable.js";
 
@@ -18,35 +19,38 @@ type WorkerCommandsDeps = {
 	cwd: string;
 	projectRoot?: string;
 	parentSession?: string;
-	parentModel?(): string | undefined;
+	parentModel(): string | undefined;
+	parentThinking(): string | undefined;
+	availableModels(): readonly WorkerExecutionModel[];
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
 	captureTerminal(): boolean;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?(): string | undefined;
-	/** Default parent-seed policy when neither the spawn flags nor the kind set one. */
-	parentSeedPolicy?(): "full" | "none";
+	/** Default parent-seed policy when neither spawn flags nor legacy kind metadata set one. */
+	parentSeedPolicy?(): "full" | "none" | undefined;
+	hasUI: boolean;
+	confirmSpawn(title: string, detail: string): Promise<boolean>;
 	notify(text: string, level: NotifyLevel): void;
 	announce(subject: string, detail?: string, kind?: DocketMessageKind, docket?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
+export type WorkerCommandSpawnOptions = {
+	worktree?: boolean;
+	fresh?: boolean;
+	seed?: boolean;
+	as?: string;
+	captureTerminal?: boolean;
+	model?: string;
+	thinking?: WorkerThinking;
+	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
+	/** Internal handoff guard checked after confirmation and before filesystem/tmux work. */
+	authorizeLaunch?: () => Promise<boolean>;
+};
+
 export type WorkerCommands = {
-	spawn(task: string, options?: {
-		worktree?: boolean;
-		fresh?: boolean;
-		seed?: boolean;
-		as?: string;
-		parentWorkerId?: string;
-		depth?: number;
-		layout?: "single" | "split-events";
-		captureTerminal?: boolean;
-		/** Internal Use → Worker override. Not parsed from /docket spawn. */
-		model?: string;
-		/** Internal Use → Worker override. Not parsed from /docket spawn. */
-		thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-		sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
-	}): Promise<WorkerStatus | undefined>;
+	spawn(task: string, options?: WorkerCommandSpawnOptions): Promise<WorkerStatus | undefined>;
 	tell(ref: string, text: string): Promise<boolean | void>;
 	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
@@ -95,8 +99,7 @@ function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: b
 		const kind = (w.kind ?? "default").padEnd(8);
 		const artifacts = `${w.artifactCount ?? "?"} artifacts`.padEnd(14);
 		const age = workerAge(w.updatedAt).padEnd(8);
-		const parentTag = w.parentWorkerId ? ` ↳w${workers.find((p) => p.id === w.parentWorkerId)?.index ?? "?"}` : "";
-		return `${label}  ${state}  ${kind}  ${artifacts}  ${age}  ${workerSummaryName(w, 40)}${parentTag}`;
+		return `${label}  ${state}  ${kind}  ${artifacts}  ${age}  ${workerSummaryName(w, 40)}`;
 	};
 	if (!options.groupByProject) return workers.map(lineFor).join("\n");
 	const groups = new Map<string, WorkerStatus[]>();
@@ -109,13 +112,13 @@ function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: b
 
 function formatKindList(kinds: WorkerKind[]): string {
 	if (kinds.length === 0) return "No Docket worker kinds registered";
-	return kinds.map((k) => {
-		const rights = k.readOnly ? "read-only" : k.planGate ? "plan-gated" : "writable";
-		const seed = k.parentSeedPolicy === "none" ? "fresh" : "seeded";
-		const spawn = k.canSpawn.length ? `spawn:${k.canSpawn.join(",")}` : "no-spawn";
-		const src = `[${k.source}]`;
-		const desc = k.description ? ` — ${k.description}` : "";
-		return `${k.name.padEnd(12)} ${rights.padEnd(10)} ${seed} ${spawn} ${src}${desc}`;
+	return kinds.flatMap((kind) => {
+		const rights = kind.readOnly ? "read-only" : kind.planGate ? "plan-gated" : "writable";
+		const src = `[${kind.source}]`;
+		const desc = kind.description ? ` — ${kind.description}` : "";
+		const line = `${kind.name.padEnd(12)} ${rights.padEnd(11)} ${src}${desc}`;
+		const diagnostics = workerKindCompatibility(kind)?.diagnostics.map((message) => `  warning: ${message}`) ?? [];
+		return [line, ...diagnostics];
 	}).join("\n");
 }
 
@@ -132,32 +135,24 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	};
 
 	return {
-		async spawn(task: string, options: {
-			worktree?: boolean;
-			fresh?: boolean;
-			seed?: boolean;
-			as?: string;
-			parentWorkerId?: string;
-			depth?: number;
-			layout?: "single" | "split-events";
-			captureTerminal?: boolean;
-			model?: string;
-			thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-			sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
-		} = {}): Promise<WorkerStatus | undefined> {
+		async spawn(task: string, options: WorkerCommandSpawnOptions = {}): Promise<WorkerStatus | undefined> {
 			try {
+				const handoff = options.sourceDeliverable !== undefined;
 				const policy = resolveWorkerSpawnPolicy({
 					kinds: deps.kinds,
-					options,
+					availableModels: deps.availableModels(),
+					options: { ...options, ...(handoff ? { handoff: true } : {}) },
 					configuredDefaultKind: deps.defaultKind?.(),
 					configuredParentSeedPolicy: deps.parentSeedPolicy?.(),
 					parentSession: deps.parentSession,
-					parentModel: deps.parentModel?.(),
+					parentModel: deps.parentModel(),
+					parentThinking: deps.parentThinking(),
 					captureTerminalDefault: deps.captureTerminal(),
 				});
-				if (policy.unknownRequestedKind) deps.notify(`Docket: unknown worker kind "${policy.unknownRequestedKind}". Try /docket kinds. Falling back to default.`, "warning");
-				if (policy.unknownDefaultKind) deps.notify(`Docket: configured default worker kind "${policy.unknownDefaultKind}" not found. Falling back to default.`, "warning");
-				const kind = policy.kind;
+				if (policy.unknownRequestedKind) deps.notify(`Docket: unknown worker kind "${policy.unknownRequestedKind}". Try /docket kinds. Using ${policy.kind.name}.`, "warning");
+				if (policy.unknownDefaultKind) deps.notify(`Docket: configured default worker kind "${policy.unknownDefaultKind}" not found. Using builtin default.`, "warning");
+				for (const warning of policy.warnings) deps.notify(`Docket: worker kind "${policy.kind.name}": ${warning}`, "warning");
+
 				const max = deps.maxActive();
 				if (max > 0) {
 					const active = await deps.store.countActive();
@@ -166,10 +161,20 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 						return undefined;
 					}
 				}
+
+				const launchSummary = formatWorkerLaunchSummary(policy);
+				if (policy.requiresConfirmation && deps.hasUI) {
+					const reviewedSource = options.sourceDeliverable?.provenance.sourceRef;
+					const detail = [`Task: ${task}`, launchSummary, reviewedSource ? `Reviewed source: ${reviewedSource}` : undefined]
+						.filter((line): line is string => line !== undefined)
+						.join("\n");
+					const confirmed = await deps.confirmSpawn(handoff ? "Start reviewed handoff worker?" : "Start Docket worker?", detail);
+					if (!confirmed) return undefined;
+				}
+				if (options.authorizeLaunch && !(await options.authorizeLaunch())) return undefined;
+
+				const kind = policy.kind;
 				const git = readGitSnapshot(deps.cwd);
-				// When seeding is wanted but no parent session is available (e.g. worker-side
-				// spawns with no parent JSONL), degrade to an explicit fresh launch rather
-				// than silently passing an undefined parentSession.
 				const worker = await deps.store.spawn({
 					task,
 					cwd: deps.cwd,
@@ -177,31 +182,29 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					worktree: policy.useWorktree,
 					...(policy.freshLaunch ? { fresh: true } : {}),
 					...(git ? { git } : {}),
-					...(policy.model ? { model: policy.model } : {}),
-					...(policy.thinking ? { thinking: policy.thinking } : {}),
+					model: policy.model,
+					thinking: policy.thinking,
 					...(options.sourceDeliverable ? { sourceDeliverable: options.sourceDeliverable } : {}),
 					kind: kind.name,
 					readOnly: kind.readOnly,
 					...(kind.planGate ? { planGate: true } : {}),
 					...(kind.decisionRights?.length ? { decisionRights: kind.decisionRights } : {}),
-					...(kind.canSpawn.length > 0 ? { canSpawn: kind.canSpawn } : {}),
-					...(options.parentWorkerId ? { parentWorkerId: options.parentWorkerId } : {}),
-					...(typeof options.depth === "number" ? { depth: options.depth } : {}),
 					layout: policy.layout,
 					...(policy.captureTerminal ? { captureTerminal: true } : {}),
-					...(policy.launchArgs.length ? { extensionArgs: [...explicitExtensionArgs(), ...policy.launchArgs] } : {}),
+					extensionArgs: [...explicitExtensionArgs(), ...policy.launchArgs],
 				});
 				const now = Date.parse(worker.createdAt);
 				deps.announce(
 					workerLaunchSubject(worker, { now }),
-					workerLaunchDetail(worker, { now }),
+					workerLaunchDetail(worker, { now, launchSummary }),
 					"action",
 					undefined,
 					{ workerId: worker.id },
 				);
 				return worker;
 			} catch (err) {
-				deps.notify(`Docket spawn failed: ${String(err)}`, "error");
+				const message = err instanceof Error ? err.message : String(err);
+				deps.notify(`Docket spawn failed: ${message}`, "error");
 				return undefined;
 			}
 		},
@@ -239,10 +242,8 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				return;
 			}
 			deps.loadedArtifacts.unloadSource("worker", worker.id);
-			const purged = await deps.store.purge(worker.id, { cascade: true });
-			const childCount = Math.max(0, purged.length - 1);
-			const cascadeNote = childCount > 0 ? `\ncascade: purged ${childCount} child worker${childCount === 1 ? "" : "s"}` : "";
-			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved workspace: ${worker.worktree.path}` : ""}${cascadeNote}`);
+			await deps.store.purge(worker.id);
+			deps.announce(`worker ${workerShortLabel(worker.index)} killed`, `${workerSummaryName(worker)}\nid: ${worker.id}${worker.worktree ? `\nremoved workspace: ${worker.worktree.path}` : ""}`);
 		},
 		async respawn(target: string): Promise<void> {
 			const ALL = target.toLowerCase() === "all";

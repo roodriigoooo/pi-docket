@@ -44,13 +44,25 @@ test("Docket grammar parses list with --include-consumed, --workers, and --all",
 	assert.deepEqual(parseDocketCommand("list --all"), { ok: true, intent: { kind: "list", includeConsumed: false, workers: true, allProjects: true } });
 });
 
-test("Docket grammar parses spawn", () => {
+test("Docket grammar parses spawn flags in either value form and order", () => {
 	assert.deepEqual(parseDocketCommand("spawn investigate auth bug"), { ok: true, intent: { kind: "spawn", task: "investigate auth bug" } });
 	assert.deepEqual(parseDocketCommand("spawn --worktree edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
 	assert.deepEqual(parseDocketCommand("spawn -w edit auth bug"), { ok: true, intent: { kind: "spawn", task: "edit auth bug", worktree: true } });
+	assert.deepEqual(parseDocketCommand("spawn --model openai/gpt/review audit auth --thinking high"), {
+		ok: true,
+		intent: { kind: "spawn", task: "audit auth", model: "openai/gpt/review", thinking: "high" },
+	});
+	assert.deepEqual(parseDocketCommand("spawn task first --thinking=low --model=anthropic/claude"), {
+		ok: true,
+		intent: { kind: "spawn", task: "task first", model: "anthropic/claude", thinking: "low" },
+	});
+	assert.deepEqual(parseDocketCommand("spawn --thinking max deep audit"), {
+		ok: true,
+		intent: { kind: "spawn", task: "deep audit", thinking: "max" },
+	});
 	const invalid = parseDocketCommand("spawn");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/docket spawn .* <task>/);
+	if (!invalid.ok) assert.match(invalid.usage, /\/docket spawn .* <task>/);
 });
 
 test("Docket grammar parses workers, kinds, and respawn", () => {
@@ -70,10 +82,28 @@ test("Docket grammar parses spawn --as <kind>", () => {
 	assert.equal(parseDocketCommand("spawn --as").ok, false);
 });
 
-test("Docket grammar parses spawn --seed and --fresh", () => {
+test("Docket grammar parses context flags, quotes, and task delimiter", () => {
 	assert.deepEqual(parseDocketCommand("spawn --seed inspect parent"), { ok: true, intent: { kind: "spawn", task: "inspect parent", seed: true } });
 	assert.deepEqual(parseDocketCommand("spawn --fresh inspect parent"), { ok: true, intent: { kind: "spawn", task: "inspect parent", fresh: true } });
-	assert.match(docketUsage(), /\/docket spawn \[--seed\|--fresh\]/);
+	assert.deepEqual(parseDocketCommand("spawn --model 'openai/gpt/review' \"audit auth flow\""), { ok: true, intent: { kind: "spawn", task: "audit auth flow", model: "openai/gpt/review" } });
+	assert.deepEqual(parseDocketCommand("spawn --model openai/gpt -- --thinking turbo -x"), { ok: true, intent: { kind: "spawn", task: "--thinking turbo -x", model: "openai/gpt" } });
+	assert.match(docketUsage(), /--model <provider\/model> --thinking <level>/);
+});
+
+test("Docket grammar rejects malformed spawn flags before task delimiter", () => {
+	for (const input of ["spawn --model task", "spawn --thinking task", "spawn --as task"]) {
+		const parsed = parseDocketCommand(input);
+		assert.equal(parsed.ok, false, input);
+	}
+	const invalidThinking = parseDocketCommand("spawn --thinking turbo task");
+	assert.equal(invalidThinking.ok, false);
+	if (!invalidThinking.ok) assert.match(invalidThinking.message, /Invalid thinking level/);
+	const unknown = parseDocketCommand("spawn --think high task");
+	assert.equal(unknown.ok, false);
+	if (!unknown.ok) assert.match(unknown.message, /Unknown spawn flag: --think/);
+	assert.equal(parseDocketCommand("spawn -x task").ok, false);
+	assert.equal(parseDocketCommand("spawn --model= task").ok, false);
+	assert.equal(parseDocketCommand("spawn --thinking= task").ok, false);
 });
 
 test("Docket grammar parses worker tell, verdict, and protocol fallbacks", () => {

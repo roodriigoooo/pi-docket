@@ -2,6 +2,7 @@ import { gitSnapshotLabel } from "./git-context.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 import type { WorkerDeliverablePointer, WorkerHandoffProvenance } from "./worker-deliverable.js";
 import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-lifecycle.js";
+import type { WorkerThinking } from "./worker-spawn-policy.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
 export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
@@ -53,7 +54,6 @@ export type WorkerTaskDocumentInput = {
 	worktree?: boolean;
 	planGate?: boolean;
 	decisionRights?: string[];
-	parentWorkerLabel?: string;
 	sourceHandoff?: WorkerHandoffProvenance;
 };
 
@@ -81,11 +81,8 @@ export type WorkerStatus = {
 	/** Canonical project root (git toplevel realpath, or cwd realpath for non-repos) that launched this worker. */
 	projectRoot?: string;
 	kind?: string;
-	parentWorkerId?: string;
-	/** tmux target for the direct parent session/window, used by `/docket attach parent` from a worker. */
+	/** tmux target for the human session/window that spawned this worker, used by `/docket attach parent`. */
 	parentTmuxTarget?: string;
-	depth?: number;
-	canSpawn?: string[];
 	git?: GitSnapshot;
 	worktree?: WorkerWorktree;
 	createdAt: string;
@@ -96,7 +93,7 @@ export type WorkerStatus = {
 	pid?: number;
 	sessionFile?: string;
 	model?: string;
-	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	thinking?: WorkerThinking;
 	/** Pointer only. Immutable deliverable body lives in deliverables/v<N>.json. */
 	deliverable?: WorkerDeliverablePointer;
 	/** Reviewed input inherited through an explicit Use → Worker handoff. */
@@ -215,13 +212,18 @@ export function workerLaunchSubject(worker: WorkerStatus, options: { now?: numbe
 	return `spawned ${workerActivityChip(worker, options)} · ${deriveWorkerState(worker, options.now)}`;
 }
 
-export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number } = {}): string {
+export function workerLaunchDetail(worker: WorkerStatus, options: { now?: number; launchSummary?: string } = {}): string {
 	const git = gitSnapshotLabel(worker.git);
 	const todos = workerTodoSummary(worker);
 	const kindLine = worker.kind && worker.kind !== "default" ? `kind:   ${worker.kind}` : undefined;
+	const executionLines = options.launchSummary?.split("\n") ?? [
+		kindLine,
+		`model:  ${worker.model ?? "unknown"}`,
+		`thinking: ${worker.thinking ?? "unknown"}`,
+	];
 	return [
 		`status: ${workerActivityChip(worker, { verbose: true, now: options.now })}`,
-		kindLine,
+		...executionLines,
 		todos ? `progress: ${todos}` : undefined,
 		git ? `git:    ${git}` : undefined,
 		worker.worktree ? `space:  ${worker.worktree.path}` : undefined,
@@ -274,7 +276,6 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		"",
 		`- Kind: ${kind}`,
 		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
-		input.parentWorkerLabel ? `- Parent worker: ${input.parentWorkerLabel}` : undefined,
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
 		input.sourceHandoff ? "" : undefined,
 		input.sourceHandoff ? "## Reviewed source deliverable" : undefined,
@@ -460,16 +461,14 @@ export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): bool
 	return deriveWorkerState(worker, now) !== "empty";
 }
 
-export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string; kind?: string; depth?: number; parentWorkerLabel?: string }): string {
+export function buildWorkerInitialPrompt(input: { label: string; id: string; taskFile: string; artifactsFile: string; worktreePath?: string; kind?: string }): string {
 	const kindLine = input.kind && input.kind !== "default" ? `You are operating under worker kind \`${input.kind}\`. Kind-specific rules are in <docket_worker_guardrails>.` : undefined;
-	const parentLine = input.parentWorkerLabel ? `You were dispatched by worker ${input.parentWorkerLabel} (depth ${input.depth ?? 1}). Your docket_done returns to that worker, not directly to the human user.` : undefined;
 	return [
 		`You are Docket worker ${input.label} (${input.id}).`,
 		`Your task is in ${input.taskFile}. Read it, then begin.`,
 		`Artifacts are auto-snapshotted to ${input.artifactsFile}.`,
 		input.worktreePath ? `Worker workspace: ${input.worktreePath}` : undefined,
 		kindLine,
-		parentLine,
 		"Operating rules and tool contracts live in <docket_worker_guardrails> in your system prompt. Follow them; do not skip the protocol tools (`docket_wait`, `docket_done`, `docket_fail`, `docket_todos`).",
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -497,13 +496,15 @@ export function heartbeatArtifactSignature(artifacts: Artifact[]): string {
 	return `${artifacts.length}:${last.ref}:${ts}`;
 }
 
-export function workerHeartbeatPatch(current: WorkerStatus | undefined, input: { pid: number; sessionFile?: string; artifactCount: number }): Partial<WorkerStatus> {
+export function workerHeartbeatPatch(current: WorkerStatus | undefined, input: { pid: number; sessionFile?: string; artifactCount: number; model?: string; thinking?: WorkerStatus["thinking"] }): Partial<WorkerStatus> {
 	const stickyState = current?.state === "needs_input" || current?.state === "ready" || current?.state === "failed" || current?.state === "idle";
 	return {
 		state: stickyState ? current.state : "active",
 		pid: input.pid,
 		sessionFile: input.sessionFile,
 		artifactCount: input.artifactCount,
+		...(input.model ? { model: input.model } : {}),
+		...(input.thinking ? { thinking: input.thinking } : {}),
 	};
 }
 

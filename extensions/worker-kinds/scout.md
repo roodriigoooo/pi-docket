@@ -2,8 +2,6 @@
 name: scout
 description: Fast read-only recon. Use for grep/find/ls style investigations.
 read_only: true
-default_worktree: false
-parent_seed: full
 max_artifacts: 80
 max_duration_sec: 120
 ---

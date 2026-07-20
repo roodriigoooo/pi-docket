@@ -100,17 +100,25 @@ The built-in default uses an isolated worktree and asks before the first mutatio
 /docket spawn --as scout map auth call sites
 ```
 
-Choose the plan-gated patcher when you want scoped edits and child-scout rights:
+Choose plan-gated patcher when you want scoped edits in isolated workspace:
 
 ```text
 /docket spawn --as patcher fix failing auth test
 ```
 
-Workers start fresh by default, without parent-session context. Add `--seed` only when the worker needs the current conversation:
+Workers start fresh by default, without parent-session context. Add `--seed` only when worker needs current conversation:
 
 ```text
 /docket spawn --seed --as patcher fix the failing auth test, but ask before edits
 ```
+
+Model and thinking inherit current parent. Override spend explicitly when needed:
+
+```text
+/docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth
+```
+
+Interactive changed spend asks for confirmation. Bare same-parent spawn stays low-friction; noninteractive mode never waits for UI.
 
 Open worker progress:
 
@@ -189,7 +197,7 @@ Docket opens the exact worker patch in `hunk patch`. If you leave Hunk comments,
 
 ## Workers
 
-Workers are explicit and user-initiated. Docket does not silently spawn them, and it does not suggest spawn forms or wizards.
+Workers are explicit, human-started, and independent. Docket does not silently spawn them; workers have no spawn tool, and deleting one never deletes another.
 
 Focused examples:
 

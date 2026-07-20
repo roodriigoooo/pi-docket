@@ -8,56 +8,74 @@ export const DEFAULT_KIND_NAME = "default";
 
 export type WorkerParentSeedPolicy = "full" | "none";
 export type WorkerLayout = "single" | "split-events";
-export type WorkerThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+/** Public kind shape: task intent and authority only. */
 export type WorkerKind = {
 	name: string;
 	description?: string;
-	model?: string;
-	thinking?: WorkerThinking;
 	readOnly: boolean;
-	defaultWorktree: boolean;
-	parentSeedPolicy: WorkerParentSeedPolicy;
-	maxArtifacts?: number;
-	maxDurationSec?: number;
-	canSpawn: string[];
 	/** Opt-in gate: worker must ask the parent to approve its plan before first edit/mutating command. */
 	planGate?: boolean;
 	/** Scope-specific rights surfaced in task.md and guardrails. */
 	decisionRights?: string[];
+	maxArtifacts?: number;
+	maxDurationSec?: number;
 	guardrailsAppend?: string;
 	systemPrompt?: string;
-	layout: WorkerLayout;
 	source: "builtin" | "user" | "runtime";
 	sourcePath?: string;
+};
+
+/** Execution keys accepted only while migrating pre-0.8 kinds. */
+export type WorkerLegacyExecution = {
+	model?: string;
+	thinking?: string;
+	parentSeedPolicy?: WorkerParentSeedPolicy;
+	defaultWorktree?: boolean;
+	layout?: WorkerLayout;
+};
+
+export type WorkerKindCompatibility = {
+	legacyExecution?: WorkerLegacyExecution;
+	legacyExecutionFields: string[];
+	diagnostics: string[];
+};
+
+export type WorkerKindRegistration = Omit<WorkerKind, "source"> & {
+	source?: WorkerKind["source"];
+	/** @deprecated Use per-spawn --model. */
+	model?: string;
+	/** @deprecated Use per-spawn --thinking. */
+	thinking?: string;
+	/** @deprecated Use worker.parentSeedPolicy or per-spawn context flags. */
+	parentSeedPolicy?: WorkerParentSeedPolicy;
+	/** @deprecated Workspace now derives from readOnly intent. */
+	defaultWorktree?: boolean;
+	/** @deprecated Compatibility-only until tmux layout work lands. */
+	layout?: WorkerLayout;
+	/** @deprecated Ignored. Worker creation is human-only. */
+	canSpawn?: string[];
 };
 
 export type WorkerKindRegistry = {
 	get(name: string | undefined): WorkerKind;
 	list(): WorkerKind[];
 	names(): string[];
-	register(kind: WorkerKind): () => void;
+	register(kind: WorkerKindRegistration): () => void;
 	unregister(name: string): boolean;
 	reload(cwd: string): Promise<void>;
 	defaultKind(projectDefault?: string): WorkerKind;
 };
 
+const compatibilityByKind = new WeakMap<WorkerKind, WorkerKindCompatibility>();
+
 const BUILTIN_DEFAULT: WorkerKind = {
 	name: DEFAULT_KIND_NAME,
 	description: "General work: inspect freely; ask before the first mutation.",
 	readOnly: false,
-	defaultWorktree: true,
-	parentSeedPolicy: "none",
-	canSpawn: [],
 	planGate: true,
-	layout: "single",
 	source: "builtin",
 };
-
-function csv(value: string | undefined): string[] {
-	if (!value) return [];
-	return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
 
 function asBool(value: unknown, fallback: boolean): boolean {
 	if (typeof value === "boolean") return value;
@@ -75,9 +93,6 @@ function asInt(value: unknown): number | undefined {
 	return Number.isFinite(parsed) ? Math.floor(parsed) : undefined;
 }
 
-// Default is "none" (fresh worker) so spawned workers do not inherit the parent
-// session's full context. Kinds that want parent-context seeding opt in with
-// `parent_seed: full`; callers can force it per-spawn with `--seed`.
 function asSeedPolicy(value: unknown): WorkerParentSeedPolicy {
 	if (typeof value === "string") {
 		const lowered = value.trim().toLowerCase();
@@ -91,17 +106,108 @@ function asLayout(value: unknown): WorkerLayout {
 	return "single";
 }
 
-function asThinking(value: unknown): WorkerThinking | undefined {
-	if (typeof value !== "string") return undefined;
-	const lowered = value.trim().toLowerCase();
-	if (["off", "minimal", "low", "medium", "high", "xhigh"].includes(lowered)) return lowered as WorkerThinking;
-	return undefined;
-}
-
 function asStringList(value: unknown): string[] | undefined {
 	const raw = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(/\r?\n|;/) : [];
 	const cleaned = raw.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 8);
 	return cleaned.length ? cleaned : undefined;
+}
+
+function firstPresent(record: Record<string, unknown>, keys: string[]): { present: boolean; value?: unknown } {
+	for (const key of keys) {
+		if (Object.prototype.hasOwnProperty.call(record, key)) return { present: true, value: record[key] };
+	}
+	return { present: false };
+}
+
+function compatibilityDiagnostics(executionFields: string[], canSpawnPresent: boolean): string[] {
+	const diagnostics: string[] = [];
+	if (executionFields.length > 0) {
+		diagnostics.push(`deprecated execution frontmatter (${executionFields.join(", ")}); move execution choices to /docket spawn flags or worker config before the next major release.`);
+	}
+	if (canSpawnPresent) diagnostics.push("can_spawn ignored; worker creation is human-only.");
+	return diagnostics;
+}
+
+function attachCompatibility(kind: WorkerKind, compatibility: WorkerKindCompatibility | undefined): WorkerKind {
+	if (compatibility) compatibilityByKind.set(kind, compatibility);
+	return kind;
+}
+
+function frontmatterCompatibility(fm: Record<string, unknown>): WorkerKindCompatibility | undefined {
+	const legacyExecution: WorkerLegacyExecution = {};
+	const legacyExecutionFields: string[] = [];
+
+	const model = firstPresent(fm, ["model"]);
+	if (model.present) {
+		legacyExecution.model = typeof model.value === "string" ? model.value.trim() : String(model.value ?? "");
+		legacyExecutionFields.push("model");
+	}
+	const thinking = firstPresent(fm, ["thinking"]);
+	if (thinking.present) {
+		legacyExecution.thinking = typeof thinking.value === "string" ? thinking.value.trim().toLowerCase() : String(thinking.value ?? "");
+		legacyExecutionFields.push("thinking");
+	}
+	const parentSeed = firstPresent(fm, ["parent_seed", "parentSeedPolicy", "seed"]);
+	if (parentSeed.present) {
+		legacyExecution.parentSeedPolicy = asSeedPolicy(parentSeed.value);
+		legacyExecutionFields.push("parent_seed");
+	}
+	const defaultWorktree = firstPresent(fm, ["default_worktree", "defaultWorktree", "worktree"]);
+	if (defaultWorktree.present) {
+		legacyExecution.defaultWorktree = asBool(defaultWorktree.value, true);
+		legacyExecutionFields.push("default_worktree");
+	}
+	const layout = firstPresent(fm, ["layout"]);
+	if (layout.present) {
+		legacyExecution.layout = asLayout(layout.value);
+		legacyExecutionFields.push("layout");
+	}
+	const canSpawn = firstPresent(fm, ["can_spawn", "canSpawn", "spawn_kinds", "subagent_agents"]);
+	const diagnostics = compatibilityDiagnostics(legacyExecutionFields, canSpawn.present);
+	if (diagnostics.length === 0) return undefined;
+	return {
+		...(legacyExecutionFields.length > 0 ? { legacyExecution } : {}),
+		legacyExecutionFields,
+		diagnostics,
+	};
+}
+
+function registrationCompatibility(input: WorkerKindRegistration): WorkerKindCompatibility | undefined {
+	const record = input as WorkerKindRegistration & Record<string, unknown>;
+	const legacyExecution: WorkerLegacyExecution = {};
+	const legacyExecutionFields: string[] = [];
+	if (Object.prototype.hasOwnProperty.call(record, "model")) {
+		legacyExecution.model = typeof record.model === "string" ? record.model.trim() : String(record.model ?? "");
+		legacyExecutionFields.push("model");
+	}
+	if (Object.prototype.hasOwnProperty.call(record, "thinking")) {
+		legacyExecution.thinking = typeof record.thinking === "string" ? record.thinking.trim().toLowerCase() : String(record.thinking ?? "");
+		legacyExecutionFields.push("thinking");
+	}
+	if (Object.prototype.hasOwnProperty.call(record, "parentSeedPolicy")) {
+		legacyExecution.parentSeedPolicy = asSeedPolicy(record.parentSeedPolicy);
+		legacyExecutionFields.push("parent_seed");
+	}
+	if (Object.prototype.hasOwnProperty.call(record, "defaultWorktree")) {
+		legacyExecution.defaultWorktree = asBool(record.defaultWorktree, true);
+		legacyExecutionFields.push("default_worktree");
+	}
+	if (Object.prototype.hasOwnProperty.call(record, "layout")) {
+		legacyExecution.layout = asLayout(record.layout);
+		legacyExecutionFields.push("layout");
+	}
+	const canSpawnPresent = Object.prototype.hasOwnProperty.call(record, "canSpawn");
+	const diagnostics = compatibilityDiagnostics(legacyExecutionFields, canSpawnPresent);
+	if (diagnostics.length === 0) return undefined;
+	return {
+		...(legacyExecutionFields.length > 0 ? { legacyExecution } : {}),
+		legacyExecutionFields,
+		diagnostics,
+	};
+}
+
+export function workerKindCompatibility(kind: WorkerKind): WorkerKindCompatibility | undefined {
+	return compatibilityByKind.get(kind);
 }
 
 export function normalizeWorkerKindName(value: string | undefined): string | undefined {
@@ -117,38 +223,43 @@ export function parseWorkerKindMarkdown(text: string, source: WorkerKind["source
 	if (!name || name === DEFAULT_KIND_NAME) return undefined;
 	const body = (parsed.body ?? "").trim();
 	const description = typeof fm.description === "string" ? fm.description.trim() : undefined;
-	const model = typeof fm.model === "string" ? fm.model.trim() : undefined;
-	const thinking = asThinking(fm.thinking);
 	const readOnly = asBool(fm.read_only ?? fm.readonly ?? fm.readOnly, false);
-	const defaultWorktree = asBool(fm.default_worktree ?? fm.defaultWorktree ?? fm.worktree, true);
-	const parentSeedPolicy = asSeedPolicy(fm.parent_seed ?? fm.parentSeedPolicy ?? fm.seed);
 	const maxArtifacts = asInt(fm.max_artifacts ?? fm.maxArtifacts);
 	const maxDurationSec = asInt(fm.max_duration_sec ?? fm.maxDurationSec ?? fm.timeout);
-	const canSpawnRaw = fm.can_spawn ?? fm.canSpawn ?? fm.spawn_kinds ?? fm.subagent_agents;
-	const canSpawn = Array.isArray(canSpawnRaw) ? canSpawnRaw.map(String) : csv(typeof canSpawnRaw === "string" ? canSpawnRaw : undefined);
 	const planGate = asBool(fm.plan_gate ?? fm.planGate, false);
 	const decisionRights = asStringList(fm.decision_rights ?? fm.decisionRights ?? fm.rights);
 	const guardrailsAppend = typeof fm.guardrails_append === "string" ? fm.guardrails_append : undefined;
-	const layout = asLayout(fm.layout);
-	return {
+	const kind: WorkerKind = {
 		name,
 		...(description ? { description } : {}),
-		...(model ? { model } : {}),
-		...(thinking ? { thinking } : {}),
 		readOnly,
-		defaultWorktree,
-		parentSeedPolicy,
-		...(maxArtifacts !== undefined ? { maxArtifacts } : {}),
-		...(maxDurationSec !== undefined ? { maxDurationSec } : {}),
-		canSpawn: canSpawn.map(normalizeWorkerKindName).filter((value): value is string => typeof value === "string"),
 		...(planGate ? { planGate } : {}),
 		...(decisionRights ? { decisionRights } : {}),
+		...(maxArtifacts !== undefined ? { maxArtifacts } : {}),
+		...(maxDurationSec !== undefined ? { maxDurationSec } : {}),
 		...(guardrailsAppend ? { guardrailsAppend } : {}),
 		...(body.length > 0 ? { systemPrompt: body } : {}),
-		layout,
 		source,
 		...(sourcePath ? { sourcePath } : {}),
 	};
+	return attachCompatibility(kind, frontmatterCompatibility(fm));
+}
+
+function normalizeRegistration(input: WorkerKindRegistration, name: string): WorkerKind {
+	const kind: WorkerKind = {
+		name,
+		...(input.description?.trim() ? { description: input.description.trim() } : {}),
+		readOnly: input.readOnly === true,
+		...(input.planGate ? { planGate: true } : {}),
+		...(input.decisionRights?.length ? { decisionRights: [...input.decisionRights] } : {}),
+		...(input.maxArtifacts !== undefined ? { maxArtifacts: input.maxArtifacts } : {}),
+		...(input.maxDurationSec !== undefined ? { maxDurationSec: input.maxDurationSec } : {}),
+		...(input.guardrailsAppend ? { guardrailsAppend: input.guardrailsAppend } : {}),
+		...(input.systemPrompt ? { systemPrompt: input.systemPrompt } : {}),
+		source: input.source ?? "runtime",
+		...(input.sourcePath ? { sourcePath: input.sourcePath } : {}),
+	};
+	return attachCompatibility(kind, registrationCompatibility(input));
 }
 
 function bundledKindsDir(): string {
@@ -157,10 +268,10 @@ function bundledKindsDir(): string {
 }
 
 function userKindsDir(cwd: string): string[] {
-	const out: string[] = [];
-	out.push(path.join(getAgentDir(), "docket", "worker-kinds"));
-	out.push(path.join(cwd, ".pi", "docket", "worker-kinds"));
-	return out;
+	return [
+		path.join(getAgentDir(), "docket", "worker-kinds"),
+		path.join(cwd, ".pi", "docket", "worker-kinds"),
+	];
 }
 
 async function readKindFiles(dir: string, source: WorkerKind["source"]): Promise<WorkerKind[]> {
@@ -196,21 +307,20 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 	const reload = async (cwd: string): Promise<void> => {
 		// Preserve runtime-registered kinds across reload; refresh builtin + user kinds from disk.
 		const preservedRuntime: WorkerKind[] = [];
-		for (const k of kinds.values()) if (k.source === "runtime") preservedRuntime.push(k);
+		for (const kind of kinds.values()) if (kind.source === "runtime") preservedRuntime.push(kind);
 		kinds.clear();
 		kinds.set(BUILTIN_DEFAULT.name, BUILTIN_DEFAULT);
 		const bundled = await readKindFiles(bundledKindsDir(), "builtin");
-		for (const k of bundled) set(k);
+		for (const kind of bundled) set(kind);
 		for (const dir of userKindsDir(cwd)) {
 			const userKinds = await readKindFiles(dir, "user");
-			for (const k of userKinds) set(k);
+			for (const kind of userKinds) set(kind);
 		}
-		for (const k of preservedRuntime) set(k);
+		for (const kind of preservedRuntime) set(kind);
 	};
 
 	const reloadSync = (cwd: string): void => {
-		// Only used as a best-effort sync fallback. Reads bundled MDs from disk so the
-		// worker-side, which doesn't await config load, can still resolve its kind.
+		// Best-effort worker-side fallback used before async config load completes.
 		try {
 			const entries = fsSync.readdirSync(bundledKindsDir());
 			for (const entry of entries) {
@@ -241,8 +351,8 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 
 	return {
 		get(name: string | undefined): WorkerKind {
-			if (!name) return BUILTIN_DEFAULT;
-			return kinds.get(name) ?? BUILTIN_DEFAULT;
+			const normalized = normalizeWorkerKindName(name);
+			return normalized ? kinds.get(normalized) ?? BUILTIN_DEFAULT : BUILTIN_DEFAULT;
 		},
 		list(): WorkerKind[] {
 			return Array.from(kinds.values()).sort((a, b) => {
@@ -254,16 +364,16 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 		names(): string[] {
 			return Array.from(kinds.keys()).sort();
 		},
-		register(kind: WorkerKind): () => void {
-			const normalized = normalizeWorkerKindName(kind.name);
+		register(input: WorkerKindRegistration): () => void {
+			const normalized = normalizeWorkerKindName(input.name);
 			if (!normalized || normalized === DEFAULT_KIND_NAME) {
-				throw new Error(`Docket: invalid worker kind name "${kind.name}"`);
+				throw new Error(`Docket: invalid worker kind name "${input.name}"`);
 			}
-			const normalizedKind: WorkerKind = { ...kind, name: normalized, source: kind.source ?? "runtime" };
+			const normalizedKind = normalizeRegistration(input, normalized);
 			set(normalizedKind);
 			return () => {
 				const current = kinds.get(normalized);
-				if (current && current === normalizedKind) kinds.delete(normalized);
+				if (current === normalizedKind) kinds.delete(normalized);
 			};
 		},
 		unregister(name: string): boolean {
@@ -279,8 +389,7 @@ export function createWorkerKindRegistry(): WorkerKindRegistry {
 			}
 			return BUILTIN_DEFAULT;
 		},
-		// Expose sync fallback for the worker-side path that runs before config loads.
-		// Not part of the public type to avoid leaking blocking I/O affordances.
+		// Sync fallback remains internal to the worker bootstrap path.
 		...({ _reloadSync: reloadSync } as Record<string, unknown>),
 	};
 }
@@ -292,7 +401,6 @@ export function workerKindGuardrailsAppendix(kind: WorkerKind): string {
 	if (kind.planGate) parts.push("- Plan gate required: before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with a concise plan, concrete options, and your recommendation. Wait for the parent reply before crossing that boundary. Read-only discovery and harmless checks are allowed before the gate.");
 	if (kind.maxArtifacts !== undefined) parts.push(`- Artifact cap for this kind: ${kind.maxArtifacts}. Stay focused.`);
 	if (kind.maxDurationSec !== undefined) parts.push(`- Soft time budget for this kind: ${kind.maxDurationSec}s. If you exceed it, call \`docket_done\` with partial findings rather than continuing silently.`);
-	if (kind.canSpawn.length > 0) parts.push(`- You may dispatch child workers via \`docket_spawn_child\` using only these kinds: ${kind.canSpawn.join(", ")}. Children inherit fleet/depth caps. Children's results return to you, not to the human user.`);
 	if (kind.guardrailsAppend) parts.push(kind.guardrailsAppend.trim());
 	if (kind.systemPrompt) parts.push(`\n${kind.systemPrompt.trim()}`);
 	if (parts.length === 0) return "";

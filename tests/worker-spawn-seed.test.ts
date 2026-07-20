@@ -5,6 +5,14 @@ import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry, type WorkerKindRegistry } from "../extensions/worker-kinds.js";
 
+const executionDeps = {
+	parentModel: () => "anthropic/claude-sonnet",
+	parentThinking: () => "high",
+	availableModels: () => [{ provider: "anthropic", id: "claude-sonnet", reasoning: true }],
+	hasUI: false,
+	confirmSpawn: async () => true,
+};
+
 /**
  * End-to-end matrix for the spawn seed-decision: the only behavior that matters at
  * this layer is whether `parentSession` reaches `store.spawn` (seeding) and whether
@@ -62,6 +70,7 @@ function fakeStore(): { store: WorkerStore; spawned: SpawnInput[] } {
 
 function buildCommands(store: WorkerStore, kinds: WorkerKindRegistry) {
 	return createWorkerCommands({
+		...executionDeps,
 		store,
 		loadedArtifacts: {
 			loadSource: async () => { throw new Error("unused"); },
@@ -151,6 +160,7 @@ test("spawn seed-decision: --fresh wins over --seed when both passed", async () 
 test("spawn seed-decision: missing parent session still degrades to fresh safely", async () => {
 	const { store, spawned } = fakeStore();
 	const commands = createWorkerCommands({
+		...executionDeps,
 		store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
@@ -171,6 +181,7 @@ test("spawn seed-decision: config parentSeedPolicy=full seeds default kind", asy
 	const { store, spawned } = fakeStore();
 	const commands = buildCommands(store, createWorkerKindRegistry());
 	const commandsSeeded = createWorkerCommands({
+		...executionDeps,
 		store,
 		loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined },
 		cwd: "/repo",
