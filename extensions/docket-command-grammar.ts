@@ -1,3 +1,5 @@
+import { isWorkerThinking, type WorkerThinking } from "./worker-spawn-policy.js";
+
 export type CheckpointCreateOptions = {
 	note: string;
 	consumeOnUse: boolean;
@@ -17,7 +19,7 @@ export type DocketIntent =
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean; allProjects?: boolean }
 	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
 	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
-	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string }
+	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; model?: string; thinking?: WorkerThinking }
 	| { kind: "kinds" }
 	| { kind: "respawn"; target: string }
 	| { kind: "workers"; allProjects?: boolean }
@@ -34,6 +36,7 @@ export type ParseResult =
 	| { ok: false; message: string; usage: string };
 
 export const DOCKET_COMMANDS = ["answers", "attach", "clear", "copy", "decisions", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
+export const DOCKET_SPAWN_FLAGS = ["--as", "--model", "--thinking", "--seed", "--fresh", "--worktree", "--"] as const;
 
 const WORKER_PREFIX = "w:";
 const WORKER_SHORT = /^w(\d+)$/i;
@@ -45,6 +48,7 @@ function stripWorkerPrefix(value: string): { id: string; isWorker: boolean } {
 }
 
 const SAVE_USAGE = "/docket save [--once] [--summarize [--model <provider/model>] [--max-output <tokens>]] [--] [note]";
+const SPAWN_USAGE = "/docket spawn [--model <provider/model>] [--thinking <level>] [--seed|--fresh] [--as <kind>] [--worktree] [--] <task>";
 const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--summarize"]);
 const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
@@ -53,9 +57,10 @@ export function docketUsage(advanced = false): string {
 		"Docket · delegate safely without losing control:",
 		"/docket                         open decision docket",
 		"f8                              open worker progress lens",
-		"/docket spawn [--seed|--fresh] [--as <kind>] <task>  start explicit background worker",
+		"/docket spawn [flags] <task>     start explicit background worker",
+		"  flags: --model <provider/model> --thinking <level> --seed|--fresh --as <kind> --worktree",
 		"  e.g. /docket spawn --as scout map auth call sites",
-		"  e.g. /docket spawn --as patcher fix failing auth test",
+		"  e.g. /docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth",
 		"/docket tell w<N> [text]        reply to a worker",
 		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
 		"/docket load [id|last|w<N>]     mount bundle/worker artifacts without model tokens",
@@ -188,6 +193,80 @@ function parseSave(tokens: string[]): ParseResult {
 	return { ok: true, intent: { kind: "save", options: { note: noteParts.join(" "), consumeOnUse, summarize, model, maxOutputTokens } } };
 }
 
+function parseSpawn(tokens: string[]): ParseResult {
+	let worktree = false;
+	let fresh = false;
+	let seed = false;
+	let as: string | undefined;
+	let model: string | undefined;
+	let thinking: WorkerThinking | undefined;
+	const taskParts: string[] = [];
+
+	const takeValue = (tokens: string[], index: number, flag: string): { value?: string; next: number; error?: ParseResult } => {
+		const value = tokens[index + 1];
+		if (!value || value.startsWith("-")) return { next: index, error: parseError(`Missing value for ${flag}`, SPAWN_USAGE) };
+		return { value, next: index + 1 };
+	};
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if (token === "--") {
+			taskParts.push(...tokens.slice(i + 1));
+			break;
+		}
+		if (token === "--worktree" || token === "-w") {
+			worktree = true;
+			continue;
+		}
+		if (token === "--fresh") {
+			fresh = true;
+			continue;
+		}
+		if (token === "--seed") {
+			seed = true;
+			continue;
+		}
+		if (token === "--as" || token === "-a" || token === "--model" || token === "--thinking") {
+			const result = takeValue(tokens, i, token);
+			if (result.error) return result.error;
+			i = result.next;
+			if (token === "--as" || token === "-a") as = result.value;
+			else if (token === "--model") model = result.value;
+			else if (isWorkerThinking(result.value)) thinking = result.value;
+			else return parseError(`Invalid thinking level "${result.value}"`, SPAWN_USAGE);
+			continue;
+		}
+		if (token.startsWith("--as=") || token.startsWith("--model=") || token.startsWith("--thinking=")) {
+			const split = token.indexOf("=");
+			const flag = token.slice(0, split);
+			const value = token.slice(split + 1);
+			if (!value) return parseError(`Missing value for ${flag}`, SPAWN_USAGE);
+			if (flag === "--as") as = value;
+			else if (flag === "--model") model = value;
+			else if (isWorkerThinking(value)) thinking = value;
+			else return parseError(`Invalid thinking level "${value}"`, SPAWN_USAGE);
+			continue;
+		}
+		if (token.startsWith("-")) return parseError(`Unknown spawn flag: ${token}`, SPAWN_USAGE);
+		taskParts.push(token);
+	}
+
+	if (taskParts.length === 0) return parseError("Missing spawn task", SPAWN_USAGE);
+	return {
+		ok: true,
+		intent: {
+			kind: "spawn",
+			task: taskParts.join(" "),
+			...(worktree ? { worktree } : {}),
+			...(fresh ? { fresh } : {}),
+			...(seed ? { seed } : {}),
+			...(as ? { as } : {}),
+			...(model ? { model } : {}),
+			...(thinking ? { thinking } : {}),
+		},
+	};
+}
+
 export function parseDocketWorkerShellCommand(command: string): Extract<DocketIntent, { kind: "worker-state" }> | undefined {
 	const lines = command.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
 	if (lines.length !== 1) return undefined;
@@ -254,30 +333,7 @@ export function parseDocketCommand(args: string): ParseResult {
 		const { id, isWorker } = stripWorkerPrefix(raw);
 		return { ok: true, intent: { kind: "unload", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
 	}
-	if (command === "spawn") {
-		let worktree = false;
-		let fresh = false;
-		let seed = false;
-		let as: string | undefined;
-		const taskParts: string[] = [];
-		for (let i = 0; i < rest.length; i++) {
-			const token = rest[i]!;
-			if (token === "--worktree" || token === "-w") worktree = true;
-			else if (token === "--fresh") fresh = true;
-			else if (token === "--seed") seed = true;
-			else if (token === "--as" || token === "-a") {
-				const value = rest[++i];
-				if (!value) return parseError("Usage: /docket spawn [--seed|--fresh] [--as <kind>] <task>");
-				as = value;
-			} else if (token.startsWith("--as=")) {
-				as = token.slice("--as=".length);
-			} else {
-				taskParts.push(token);
-			}
-		}
-		if (taskParts.length === 0) return parseError("Usage: /docket spawn [--seed|--fresh] [--as <kind>] <task>");
-		return { ok: true, intent: { kind: "spawn", task: taskParts.join(" "), ...(worktree ? { worktree } : {}), ...(fresh ? { fresh } : {}), ...(seed ? { seed } : {}), ...(as ? { as } : {}) } };
-	}
+	if (command === "spawn") return parseSpawn(rest);
 	if (command === "workers") {
 		let allProjects = false;
 		const extras: string[] = [];

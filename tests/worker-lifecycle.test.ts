@@ -38,6 +38,12 @@ test("heartbeat preserves terminal attention and reviewed state", () => {
 	}
 });
 
+test("heartbeat records canonical model and effective thinking", () => {
+	const patch = heartbeatTransition({ pid: 42, artifactCount: 3, model: "openai/gpt", thinking: "max" })(worker())!;
+	assert.equal(patch.model, "openai/gpt");
+	assert.equal(patch.thinking, "max");
+});
+
 test("protocol and reply transitions resurface reviewed workers, heartbeat does not", () => {
 	const reviewed = worker({ state: "ready", reviewedAt: "2026-01-02T00:00:00.000Z" });
 	assert.equal(heartbeatTransition({ pid: 1, artifactCount: 0 })(reviewed)?.reviewedAt, undefined);

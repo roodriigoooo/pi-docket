@@ -1,4 +1,5 @@
 import type { WorkerHandoffProvenance, WorkerDeliverable } from "./worker-deliverable.js";
+import { WORKER_THINKING_LEVELS, type WorkerThinking } from "./worker-spawn-policy.js";
 
 export type WorkerHandoffModel = {
 	provider: string;
@@ -7,15 +8,7 @@ export type WorkerHandoffModel = {
 	reasoning?: boolean;
 };
 
-export type WorkerHandoffChoice = {
-	task: string;
-	kind: string;
-	model: string;
-	thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-	sourceRef: string;
-};
-
-export const HANDOFF_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const HANDOFF_THINKING_LEVELS = WORKER_THINKING_LEVELS;
 
 export function handoffModelRef(model: Pick<WorkerHandoffModel, "provider" | "id">): string {
 	return `${model.provider}/${model.id}`;
@@ -32,7 +25,7 @@ export function availableHandoffModels(models: readonly WorkerHandoffModel[]): W
 	});
 }
 
-export function handoffThinkingChoices(model: Pick<WorkerHandoffModel, "reasoning"> | undefined): Array<(typeof HANDOFF_THINKING_LEVELS)[number]> {
+export function handoffThinkingChoices(model: Pick<WorkerHandoffModel, "reasoning"> | undefined): WorkerThinking[] {
 	return model?.reasoning === false ? ["off"] : [...HANDOFF_THINKING_LEVELS];
 }
 
@@ -51,15 +44,4 @@ export function createWorkerHandoffProvenance(
 		approvedAt: decision.timestamp,
 		sidecarPath: options.sidecarPath ?? "source-deliverable.md",
 	};
-}
-
-export function formatWorkerHandoffConfirmation(choice: WorkerHandoffChoice): string {
-	return [
-		`Task: ${choice.task}`,
-		`Kind: ${choice.kind}`,
-		`Model: ${choice.model}`,
-		`Thinking: ${choice.thinking}`,
-		`Reviewed source: ${choice.sourceRef}`,
-		"Starts one fresh worker. Parent transcript is not seeded.",
-	].join("\n");
 }

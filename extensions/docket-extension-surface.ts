@@ -1,8 +1,8 @@
 import type { WorkerEvent } from "./worker-events.js";
-import type { WorkerKind, WorkerKindRegistry } from "./worker-kinds.js";
+import type { WorkerKind, WorkerKindRegistry, WorkerKindRegistration } from "./worker-kinds.js";
 
 export type DocketExtensionSurface = {
-	registerWorkerKind(kind: Omit<WorkerKind, "source"> & { source?: WorkerKind["source"] }): () => void;
+	registerWorkerKind(kind: WorkerKindRegistration): () => void;
 	listWorkerKinds(): WorkerKind[];
 	onWorkerEvent(handler: (event: { workerId: string; event: WorkerEvent }) => void): () => void;
 };

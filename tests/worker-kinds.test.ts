@@ -1,12 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWorkerKindRegistry, parseWorkerKindMarkdown, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME } from "../extensions/worker-kinds.js";
+import {
+	createWorkerKindRegistry,
+	parseWorkerKindMarkdown,
+	workerKindCompatibility,
+	workerKindGuardrailsAppendix,
+	DEFAULT_KIND_NAME,
+} from "../extensions/worker-kinds.js";
 
-test("parseWorkerKindMarkdown reads frontmatter + body", () => {
+test("parseWorkerKindMarkdown exposes intent-only kind and keeps legacy execution internal", () => {
 	const md = [
 		"---",
 		"name: scout",
 		"description: Fast read-only recon",
+		"model: openai/gpt/review",
+		"thinking: high",
 		"read_only: true",
 		"default_worktree: false",
 		"parent_seed: full",
@@ -24,101 +32,127 @@ test("parseWorkerKindMarkdown reads frontmatter + body", () => {
 	].join("\n");
 	const kind = parseWorkerKindMarkdown(md, "user", "/path/scout.md");
 	assert.ok(kind);
-	assert.equal(kind?.name, "scout");
-	assert.equal(kind?.description, "Fast read-only recon");
-	assert.equal(kind?.readOnly, true);
-	assert.equal(kind?.defaultWorktree, false);
-	assert.equal(kind?.parentSeedPolicy, "full");
-	assert.equal(kind?.maxArtifacts, 50);
-	assert.deepEqual(kind?.canSpawn, ["researcher", "writer"]);
-	assert.equal(kind?.layout, "split-events");
-	assert.equal(kind?.planGate, true);
-	assert.deepEqual(kind?.decisionRights, ["May edit docs after approval", "May run npm test"]);
-	assert.equal(kind?.systemPrompt, "You are a scout.");
-	assert.equal(kind?.source, "user");
-	assert.equal(kind?.sourcePath, "/path/scout.md");
+	assert.deepEqual(kind, {
+		name: "scout",
+		description: "Fast read-only recon",
+		readOnly: true,
+		planGate: true,
+		decisionRights: ["May edit docs after approval", "May run npm test"],
+		maxArtifacts: 50,
+		systemPrompt: "You are a scout.",
+		source: "user",
+		sourcePath: "/path/scout.md",
+	});
+	assert.deepEqual(workerKindCompatibility(kind!), {
+		legacyExecution: {
+			model: "openai/gpt/review",
+			thinking: "high",
+			parentSeedPolicy: "full",
+			defaultWorktree: false,
+			layout: "split-events",
+		},
+		legacyExecutionFields: ["model", "thinking", "parent_seed", "default_worktree", "layout"],
+		diagnostics: [
+			"deprecated execution frontmatter (model, thinking, parent_seed, default_worktree, layout); move execution choices to /docket spawn flags or worker config before the next major release.",
+			"can_spawn ignored; worker creation is human-only.",
+		],
+	});
 });
 
-test("parseWorkerKindMarkdown rejects missing name or 'default'", () => {
+test("can_spawn is ignored immediately and diagnosed", () => {
+	const kind = parseWorkerKindMarkdown("---\nname: dispatcher\ncan_spawn: scout\n---\n", "user");
+	assert.ok(kind);
+	assert.equal("canSpawn" in kind!, false);
+	assert.deepEqual(workerKindCompatibility(kind!)?.legacyExecution, undefined);
+	assert.match(workerKindCompatibility(kind!)?.diagnostics.join("\n") ?? "", /can_spawn ignored; worker creation is human-only/);
+});
+
+test("invalid legacy thinking remains visible for execution validation", () => {
+	const kind = parseWorkerKindMarkdown("---\nname: old\nthinking: turbo\n---\n", "user");
+	assert.equal(workerKindCompatibility(kind!)?.legacyExecution?.thinking, "turbo");
+});
+
+test("parseWorkerKindMarkdown rejects missing name or default and normalizes names", () => {
 	assert.equal(parseWorkerKindMarkdown("---\ndescription: nope\n---\n", "user"), undefined);
 	assert.equal(parseWorkerKindMarkdown("---\nname: default\n---\n", "user"), undefined);
+	assert.equal(parseWorkerKindMarkdown("---\nname: My Helper Bot!\n---\n", "user")?.name, "my-helper-bot");
 });
 
-test("parseWorkerKindMarkdown normalises name to safe slug", () => {
-	const md = "---\nname: My Helper Bot!\n---\n";
-	const kind = parseWorkerKindMarkdown(md, "user");
-	assert.equal(kind?.name, "my-helper-bot");
-});
-
-test("default kind is fresh, isolated, and plan-gated", () => {
-	const reg = createWorkerKindRegistry();
-	assert.equal(reg.get(undefined).parentSeedPolicy, "none");
-	assert.equal(reg.get(undefined).defaultWorktree, true);
-	assert.equal(reg.get(undefined).readOnly, false);
-	assert.equal(reg.get(undefined).planGate, true);
-	assert.equal(reg.get(undefined).description, "General work: inspect freely; ask before the first mutation.");
-	const unset = parseWorkerKindMarkdown("---\nname: probe\n---\n", "user");
-	assert.equal(unset?.parentSeedPolicy, "none");
-	const explicitFull = parseWorkerKindMarkdown("---\nname: probe\nparent_seed: full\n---\n", "user");
-	assert.equal(explicitFull?.parentSeedPolicy, "full");
-});
-
-test("registry returns the builtin default for unknown names", () => {
-	const reg = createWorkerKindRegistry();
-	assert.equal(reg.get(undefined).name, DEFAULT_KIND_NAME);
-	assert.equal(reg.get("nonexistent").name, DEFAULT_KIND_NAME);
-});
-
-test("registry.register + unregister round-trip works", () => {
-	const reg = createWorkerKindRegistry();
-	const unregister = reg.register({
-		name: "researcher",
-		readOnly: true,
-		defaultWorktree: false,
-		parentSeedPolicy: "full",
-		canSpawn: [],
-		layout: "single",
-		source: "runtime",
-	});
-	assert.equal(reg.get("researcher").name, "researcher");
-	assert.ok(reg.names().includes("researcher"));
-	unregister();
-	assert.equal(reg.get("researcher").name, DEFAULT_KIND_NAME);
-});
-
-test("registry refuses to overwrite 'default'", () => {
-	const reg = createWorkerKindRegistry();
-	assert.throws(() => reg.register({
+test("builtin default contains authority intent only", () => {
+	const kind = createWorkerKindRegistry().get(undefined);
+	assert.deepEqual(kind, {
 		name: "default",
-		readOnly: true,
-		defaultWorktree: false,
+		description: "General work: inspect freely; ask before the first mutation.",
+		readOnly: false,
+		planGate: true,
+		source: "builtin",
+	});
+	assert.equal(workerKindCompatibility(kind), undefined);
+});
+
+test("registry returns builtin default for unknown names", () => {
+	const registry = createWorkerKindRegistry();
+	assert.equal(registry.get(undefined).name, DEFAULT_KIND_NAME);
+	assert.equal(registry.get("nonexistent").name, DEFAULT_KIND_NAME);
+});
+
+test("registry intent-only registration round-trips", () => {
+	const registry = createWorkerKindRegistry();
+	const unregister = registry.register({ name: "researcher", readOnly: true, source: "runtime" });
+	assert.deepEqual(registry.get("researcher"), { name: "researcher", readOnly: true, source: "runtime" });
+	unregister();
+	assert.equal(registry.get("researcher").name, DEFAULT_KIND_NAME);
+});
+
+test("registry normalizes legacy runtime shape without presenting execution fields", () => {
+	const registry = createWorkerKindRegistry();
+	registry.register({
+		name: "legacy-runtime",
+		readOnly: false,
+		model: "anthropic/claude",
+		thinking: "high",
 		parentSeedPolicy: "full",
-		canSpawn: [],
-		layout: "single",
-		source: "runtime",
-	}));
+		defaultWorktree: false,
+		layout: "split-events",
+		canSpawn: ["scout"],
+	});
+	const kind = registry.get("legacy-runtime");
+	assert.deepEqual(kind, { name: "legacy-runtime", readOnly: false, source: "runtime" });
+	assert.deepEqual(workerKindCompatibility(kind)?.legacyExecution, {
+		model: "anthropic/claude",
+		thinking: "high",
+		parentSeedPolicy: "full",
+		defaultWorktree: false,
+		layout: "split-events",
+	});
+	assert.match(workerKindCompatibility(kind)?.diagnostics.join("\n") ?? "", /can_spawn ignored/);
 });
 
-test("registry.list sorts default first", () => {
-	const reg = createWorkerKindRegistry();
-	reg.register({ name: "zzzz", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
-	reg.register({ name: "aaaa", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
-	const names = reg.list().map((k) => k.name);
-	assert.equal(names[0], DEFAULT_KIND_NAME);
-	assert.deepEqual(names.slice(1), ["aaaa", "zzzz"]);
+test("registry refuses default overwrite and sorts default first", () => {
+	const registry = createWorkerKindRegistry();
+	assert.throws(() => registry.register({ name: "default", readOnly: true }));
+	registry.register({ name: "zzzz", readOnly: false });
+	registry.register({ name: "aaaa", readOnly: false });
+	assert.deepEqual(registry.list().map((kind) => kind.name), ["default", "aaaa", "zzzz"]);
 });
 
-test("workerKindGuardrailsAppendix only emits sections when kind has bespoke rules", () => {
-	const empty = workerKindGuardrailsAppendix({ name: "default", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "builtin" });
-	assert.equal(empty, "");
-	const rich = workerKindGuardrailsAppendix({ name: "scout", readOnly: true, defaultWorktree: false, parentSeedPolicy: "full", canSpawn: ["researcher"], planGate: true, decisionRights: ["May run read-only shell commands"], maxArtifacts: 50, maxDurationSec: 60, layout: "single", source: "user", systemPrompt: "Be brief." });
+test("workerKindGuardrailsAppendix emits authority rules without child dispatch", () => {
+	assert.equal(workerKindGuardrailsAppendix({ name: "default", readOnly: false, source: "builtin" }), "");
+	const rich = workerKindGuardrailsAppendix({
+		name: "scout",
+		readOnly: true,
+		planGate: true,
+		decisionRights: ["May run read-only shell commands"],
+		maxArtifacts: 50,
+		maxDurationSec: 60,
+		source: "user",
+		systemPrompt: "Be brief.",
+	});
 	assert.match(rich, /read-only/);
 	assert.match(rich, /Decision rights/);
-	assert.match(rich, /May run read-only shell commands/);
 	assert.match(rich, /Plan gate required/);
 	assert.match(rich, /Artifact cap for this kind: 50/);
 	assert.match(rich, /time budget for this kind: 60s/);
-	assert.match(rich, /docket_spawn_child/);
-	assert.match(rich, /researcher/);
+	assert.doesNotMatch(rich, /docket_spawn_child|dispatch child/i);
 	assert.match(rich, /Be brief\./);
 });

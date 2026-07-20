@@ -292,8 +292,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 						return;
 					}
 					const worker = await deps.workerStore.find(deps.workerId);
-					const parent = worker?.parentWorkerId ? await deps.workerStore.find(worker.parentWorkerId) : undefined;
-					const parentTarget = worker?.parentTmuxTarget ?? parent?.tmuxSession;
+					const parentTarget = worker?.parentTmuxTarget;
 					if (!parentTarget) {
 						deps.notify("Docket parent tmux target not recorded for this worker", "warning");
 						return;
@@ -340,7 +339,14 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			}
 
 			if (intent.kind === "spawn") {
-				await deps.workerCommands.spawn(intent.task, { worktree: intent.worktree === true, fresh: intent.fresh === true, seed: intent.seed === true, ...(intent.as ? { as: intent.as } : {}) });
+				await deps.workerCommands.spawn(intent.task, {
+					...(intent.worktree ? { worktree: true } : {}),
+					...(intent.fresh ? { fresh: true } : {}),
+					...(intent.seed ? { seed: true } : {}),
+					...(intent.as ? { as: intent.as } : {}),
+					...(intent.model ? { model: intent.model } : {}),
+					...(intent.thinking ? { thinking: intent.thinking } : {}),
+				});
 				await deps.refreshWorkerDockWidget();
 				return;
 			}

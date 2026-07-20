@@ -46,7 +46,7 @@ export type WorkerStore = {
 	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
-	purge(id: string, options?: { cascade?: boolean }): Promise<string[]>;
+	purge(id: string): Promise<string[]>;
 	countActive(): Promise<number>;
 	/** Re-launch a worker whose tmux window died. Reuses the worker dir + seeded session. */
 	respawn(id: string): Promise<WorkerStatus | undefined>;
@@ -82,20 +82,14 @@ export type SpawnInput = {
 	planGate?: boolean;
 	/** Scope-specific authority lines surfaced in task.md. */
 	decisionRights?: string[];
-	/** Child workers this worker is allowed to spawn (resolved kind names). */
-	canSpawn?: string[];
-	/** Parent worker id when this is a child spawn. */
-	parentWorkerId?: string;
-	/** Spawn depth. Top-level (parent assistant) = 0. */
-	depth?: number;
 	/** Optional tmux layout. */
 	layout?: "single" | "split-events";
 	/** When true, run tmux pipe-pane to capture terminal output to pane.log. */
 	captureTerminal?: boolean;
-	/** Internal launch override used only by reviewed-deliverable handoff. */
+	/** Canonical resolved provider/model persisted for visibility and exact respawn. */
 	model?: string;
-	/** Internal launch override used only by reviewed-deliverable handoff. */
-	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** Resolved effective thinking persisted for visibility and exact respawn. */
+	thinking?: WorkerStatus["thinking"];
 	/** Exact reviewed body and provenance for a human-started handoff worker. */
 	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
 };
@@ -413,7 +407,7 @@ export function seedWorkerSession(parentSessionFile: string, workerCwd: string, 
 	}
 }
 
-export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string; kind?: string; depth?: number; parentWorkerLabel?: string }): string {
+export function buildWorkerInitialPrompt(input: { index: number; id: string; dir: string; worktreePath?: string; kind?: string }): string {
 	return buildBackgroundWorkerInitialPrompt({
 		label: workerShortLabel(input.index),
 		id: input.id,
@@ -421,8 +415,6 @@ export function buildWorkerInitialPrompt(input: { index: number; id: string; dir
 		artifactsFile: path.join(input.dir, "artifacts.json"),
 		worktreePath: input.worktreePath,
 		kind: input.kind,
-		depth: input.depth,
-		parentWorkerLabel: input.parentWorkerLabel,
 	});
 }
 
@@ -590,10 +582,7 @@ export function createWorkerStore(): WorkerStore {
 			const index = existing.reduce((max, entry) => Math.max(max, entry.index ?? 0), 0) + 1;
 			const target = workerWindowTarget(index);
 			const windowName = `w${index}`;
-			const parentWorker = input.parentWorkerId ? await this.find(input.parentWorkerId) : undefined;
-			const parentLabel = parentWorker ? workerShortLabel(parentWorker.index) : undefined;
-			const parentTmuxTarget = parentWorker ? parentWorker.tmuxSession : currentTmuxTarget();
-			const depth = typeof input.depth === "number" ? input.depth : (parentWorker?.depth ?? 0) + (parentWorker ? 1 : 0);
+			const parentTmuxTarget = currentTmuxTarget();
 			await fs.writeFile(path.join(dir, "task.md"), buildWorkerTaskDocument({
 				task: input.task,
 				...(input.kind ? { kind: input.kind } : {}),
@@ -601,11 +590,10 @@ export function createWorkerStore(): WorkerStore {
 				worktree: input.worktree !== false,
 				...(input.planGate ? { planGate: true } : {}),
 				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
-				...(parentLabel ? { parentWorkerLabel: parentLabel } : {}),
 				...(sourceHandoff ? { sourceHandoff } : {}),
 			}), "utf8");
 
-			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
+			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind });
 
 			const now = new Date().toISOString();
 			const runToken = randomBytes(8).toString("hex");
@@ -626,10 +614,7 @@ export function createWorkerStore(): WorkerStore {
 				...(input.model ? { model: input.model } : {}),
 				...(input.thinking ? { thinking: input.thinking } : {}),
 				...(sourceHandoff ? { sourceHandoff } : {}),
-				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
 				...(parentTmuxTarget ? { parentTmuxTarget } : {}),
-				...(depth ? { depth } : {}),
-				...(input.canSpawn && input.canSpawn.length > 0 ? { canSpawn: input.canSpawn } : {}),
 			};
 			await this.writeStatus(status);
 
@@ -710,9 +695,7 @@ export function createWorkerStore(): WorkerStore {
 			const starting = await this.updateStatus(status.id, respawnStartedTransition({ tmuxSession: target, runToken }));
 			if (!starting.after) return undefined;
 			const seeded = fsSync.existsSync(sessionDir) && fsSync.readdirSync(sessionDir).length > 0;
-			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
-			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
-			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
+			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}) });
 			const launchOverrides = [
 				...(status.model ? ["--model", status.model] : []),
 				...(status.thinking ? ["--thinking", status.thinking] : []),
@@ -730,23 +713,13 @@ export function createWorkerStore(): WorkerStore {
 			return launched.after;
 		},
 
-		async purge(id: string, options: { cascade?: boolean } = {}): Promise<string[]> {
+		async purge(id: string): Promise<string[]> {
 			const status = await this.find(id);
 			if (!status) return [];
-			const purged: string[] = [];
-			if (options.cascade !== false) {
-				const all = await this.list();
-				const children = all.filter((entry) => entry.parentWorkerId === status.id);
-				for (const child of children) {
-					const childPurged = await this.purge(child.id, { cascade: true });
-					purged.push(...childPurged);
-				}
-			}
 			killTmux(status.tmuxSession, status.tmuxWindowId);
 			if (status.worktree) removeWorkerWorkspace(status.worktree);
 			await fs.rm(workerDir(status.id), { recursive: true, force: true });
-			purged.push(status.id);
-			return purged;
+			return [status.id];
 		},
 	};
 }
