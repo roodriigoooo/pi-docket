@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **immutable Worker Deliverables**: every accepted `docket_done` freezes one versioned primary body, provenance record, evidence/ref projection, and optional patch before `ready`. Verdict, Report, diff/Hunk, overlap checks, promotion, and decision logging bind to that exact generation; revision notes publish later versions without changing earlier sidecars.
+- **explicit approved handoffs**: approval remains separate from use. Reopen an approved deliverable and press `u` to queue its exact body for the parent's next prompt or start one human-confirmed fresh worker with selected model/thinking, byte-exact `source-deliverable.md`, and approving-decision provenance.
+- **handoff and review hardening**: long verdict cards compact their preview instead of clipping actions, queued approved versions survive newer mounts, mismatched sidecars are rejected without overwriting claimed version files, and worker retries preserve selected model/thinking and isolated agent directory.
+
 ## 0.7.3
 
 - **provider-safe worker model inheritance**: workers now receive the parent's canonical `provider/model` reference instead of a bare model id, preventing newly ambiguous ids from resolving to an unauthenticated provider. Nested worker spawns preserve the same provider identity.

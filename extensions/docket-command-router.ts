@@ -12,6 +12,7 @@ import type { CheckpointCreateOptions, DocketIntent } from "./docket-command-gra
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
+import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
 
@@ -64,7 +65,7 @@ export type DocketCommandRouterDeps = {
 	markWorkerUnloaded(worker: WorkerStatus): void;
 	markAllWorkersUnloaded(): void;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
-	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference }): Promise<WorkerChangeReviewOutcome>;
+	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
 	createHandoffCheckpoint(): Promise<void>;
@@ -75,10 +76,13 @@ export type DocketCommandRouterDeps = {
 	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	showDocketBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<DocketBrowserAction | null>;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
-	showReport(worker: WorkerStatus): Promise<void>;
+	showReport(worker: WorkerStatus, deliverable?: WorkerDeliverable): Promise<void>;
 	showArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	openFileOrArtifact(catalog: ArtifactCatalog, artifact: Artifact): Promise<void>;
 	input(title: string, placeholder: string): Promise<string | undefined>;
+	reviewNote?(title: string, prefill: string): Promise<string | undefined>;
+	useDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
+	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	confirmDeleteWorker(worker: WorkerStatus): Promise<boolean>;
 	copyText(text: string): Promise<boolean>;
 	announceChipChange(artifact: Artifact, mode: "ref" | "full", result: ReturnType<LoadedArtifactContext["toggleChip"]>): void;
@@ -162,6 +166,7 @@ function loadResultSubject(result: LoadResult): string {
 function loadResultDetail(result: LoadResult): string {
 	const slot = result.slot;
 	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`;
+	if (result.source.kind === "deliverable") return `${result.source.deliverable.ref}\nreviewed deliverable\nrefs: @${slot.slot}.<id>`;
 	const checkpoint = result.source.checkpoint;
 	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} bundle`;
 	return `${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`;
@@ -170,7 +175,8 @@ function loadResultDetail(result: LoadResult): string {
 export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 	const announceLoadResult = (result: LoadResult): void => deps.announce(loadResultSubject(result), loadResultDetail(result), "success");
 	const explicitlyLoadWorker = async (worker: WorkerStatus): Promise<LoadResult> => {
-		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
+		const deliverable = await deps.workerStore.readCurrentDeliverable?.(worker);
+		const result = await deps.loadedArtifacts.loadSource(deliverable ? { kind: "deliverable", worker, deliverable } : { kind: "worker", worker });
 		deps.markWorkerLoaded(worker);
 		announceLoadResult(result);
 		await deps.refreshWorkerDockWidget();
@@ -200,9 +206,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			return;
 		}
 		if (action === "show") {
-			const artifacts = await deps.workerStore.readArtifacts(worker.id);
+			const deliverable = await deps.workerStore.readCurrentDeliverable?.(worker);
+			const artifacts = deliverable ? [workerDeliverableArtifact(deliverable)] : await deps.workerStore.readArtifacts(worker.id);
 			if (deps.hasUI) deps.showWorkerResult(worker, artifacts, true);
-			else deps.emitText(workerResultText(worker, artifacts), "list", `docket · ${workerSourceLabel(worker)}`);
+			else deps.emitText(workerResultText(worker, artifacts, 8, deliverable), "list", `docket · ${workerSourceLabel(worker)}`);
 			return;
 		}
 		const result = await explicitlyLoadWorker(worker);

@@ -7,6 +7,7 @@ import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, buildWorkerTaskDocument, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
 import { paneHarvestedTransition, parentReplyAcceptedTransition, respawnFailedTransition, respawnStartedTransition, type WorkerTransition } from "./worker-lifecycle.js";
 import type { Artifact, GitSnapshot } from "./types.js";
+import { readCurrentWorkerDeliverable, readWorkerDeliverable, workerDeliverableFile, workerDeliverablesDir, type WorkerDeliverable, type WorkerHandoffProvenance } from "./worker-deliverable.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
@@ -30,6 +31,10 @@ export type WorkerStore = {
 	statusFile(id: string): string;
 	artifactsFile(id: string): string;
 	taskFile(id: string): string;
+	deliverablesDir(id: string): string;
+	deliverableFile(id: string, version: number): string;
+	readDeliverable(id: string, version: number): Promise<WorkerDeliverable | undefined>;
+	readCurrentDeliverable(worker: WorkerStatus | string): Promise<WorkerDeliverable | undefined>;
 	list(options?: { projectRoot?: string }): Promise<WorkerStatus[]>;
 	find(id: string): Promise<WorkerStatus | undefined>;
 	readArtifacts(id: string): Promise<Artifact[]>;
@@ -87,6 +92,12 @@ export type SpawnInput = {
 	layout?: "single" | "split-events";
 	/** When true, run tmux pipe-pane to capture terminal output to pane.log. */
 	captureTerminal?: boolean;
+	/** Internal launch override used only by reviewed-deliverable handoff. */
+	model?: string;
+	/** Internal launch override used only by reviewed-deliverable handoff. */
+	thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** Exact reviewed body and provenance for a human-started handoff worker. */
+	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
 };
 
 function workersRoot(): string {
@@ -129,8 +140,12 @@ function workerExitPatchCommand(statusFile: string, runToken?: string): string {
 	return `${shellQuote(process.execPath)} -e ${shellQuote(WORKER_EXIT_PATCH_SCRIPT)} ${shellQuote(statusFile)} "$code" ${shellQuote(runToken ?? "")}`;
 }
 
-export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean; runToken?: string }): string {
-	const piParts = [`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
+export function buildWorkerLaunchCommand(input: { id: string; sessionDir: string; statusFile: string; initialPrompt: string; extensionArgs?: string[]; piCommandParts?: string[]; resumeSeeded?: boolean; runToken?: string; agentDir?: string }): string {
+	const env = [
+		`${DOCKET_WORKER_ENV}=${shellQuote(input.id)}`,
+		...(input.agentDir ? [`PI_CODING_AGENT_DIR=${shellQuote(input.agentDir)}`] : []),
+	];
+	const piParts = [...env, ...(input.piCommandParts ?? currentPiCommandParts()).map(shellQuote), "--session-dir", shellQuote(input.sessionDir)];
 	if (input.resumeSeeded) piParts.push("--continue");
 	for (const arg of input.extensionArgs ?? []) piParts.push(shellQuote(arg));
 	piParts.push(shellQuote(input.initialPrompt));
@@ -443,6 +458,19 @@ export function createWorkerStore(): WorkerStore {
 		taskFile(id: string) {
 			return path.join(workerDir(id), "task.md");
 		},
+		deliverablesDir(id: string) {
+			return workerDeliverablesDir(workersRoot(), id);
+		},
+		deliverableFile(id: string, version: number) {
+			return workerDeliverableFile(workersRoot(), id, version);
+		},
+		async readDeliverable(id: string, version: number): Promise<WorkerDeliverable | undefined> {
+			return readWorkerDeliverable(workersRoot(), id, version);
+		},
+		async readCurrentDeliverable(workerOrId: WorkerStatus | string): Promise<WorkerDeliverable | undefined> {
+			const status = typeof workerOrId === "string" ? await this.find(workerOrId) : workerOrId;
+			return status ? readCurrentWorkerDeliverable(workersRoot(), status) : undefined;
+		},
 
 		async list(options: { projectRoot?: string } = {}): Promise<WorkerStatus[]> {
 			const root = workersRoot();
@@ -543,6 +571,10 @@ export function createWorkerStore(): WorkerStore {
 			const dir = workerDir(id);
 			await fs.mkdir(dir, { recursive: true });
 
+			const sourceHandoff = input.sourceDeliverable
+				? { ...input.sourceDeliverable.provenance, sidecarPath: path.join(dir, "source-deliverable.md") }
+				: undefined;
+			if (input.sourceDeliverable) await fs.writeFile(sourceHandoff!.sidecarPath, input.sourceDeliverable.body, "utf8");
 			const worktree = input.worktree === false ? undefined : createWorkerWorkspace(input.cwd, path.join(dir, "workspace"));
 			const workerCwd = worktree ? path.join(worktree.path, path.relative(worktree.baseRoot ?? worktree.baseCwd, input.cwd)) : input.cwd;
 			if (worktree) await fs.mkdir(workerCwd, { recursive: true });
@@ -570,6 +602,7 @@ export function createWorkerStore(): WorkerStore {
 				...(input.planGate ? { planGate: true } : {}),
 				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
 				...(parentLabel ? { parentWorkerLabel: parentLabel } : {}),
+				...(sourceHandoff ? { sourceHandoff } : {}),
 			}), "utf8");
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind, depth, parentWorkerLabel: parentLabel });
@@ -590,6 +623,9 @@ export function createWorkerStore(): WorkerStore {
 				state: "starting",
 				runToken,
 				...(input.kind ? { kind: input.kind } : {}),
+				...(input.model ? { model: input.model } : {}),
+				...(input.thinking ? { thinking: input.thinking } : {}),
+				...(sourceHandoff ? { sourceHandoff } : {}),
 				...(input.parentWorkerId ? { parentWorkerId: input.parentWorkerId } : {}),
 				...(parentTmuxTarget ? { parentTmuxTarget } : {}),
 				...(depth ? { depth } : {}),
@@ -597,7 +633,7 @@ export function createWorkerStore(): WorkerStore {
 			};
 			await this.writeStatus(status);
 
-			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded, runToken });
+			const command = buildWorkerLaunchCommand({ id, sessionDir, statusFile: this.statusFile(id), initialPrompt, extensionArgs: input.extensionArgs ?? explicitExtensionArgs(), resumeSeeded, runToken, agentDir: getAgentDir() });
 			const result = launchSharedWindow({ windowName, cwd: workerCwd, command });
 			if (!result.ok) {
 				if (worktree) removeWorkerWorkspace(worktree);
@@ -677,7 +713,11 @@ export function createWorkerStore(): WorkerStore {
 			const parent = status.parentWorkerId ? await this.find(status.parentWorkerId) : undefined;
 			const parentLabel = parent ? workerShortLabel(parent.index) : undefined;
 			const prompt = buildWorkerInitialPrompt({ index: status.index, id: status.id, dir, ...(status.worktree?.path ? { worktreePath: status.worktree.path } : {}), ...(status.kind ? { kind: status.kind } : {}), ...(typeof status.depth === "number" ? { depth: status.depth } : {}), ...(parentLabel ? { parentWorkerLabel: parentLabel } : {}) });
-			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: explicitExtensionArgs(), resumeSeeded: seeded, runToken });
+			const launchOverrides = [
+				...(status.model ? ["--model", status.model] : []),
+				...(status.thinking ? ["--thinking", status.thinking] : []),
+			];
+			const command = buildWorkerLaunchCommand({ id: status.id, sessionDir, statusFile: this.statusFile(status.id), initialPrompt: prompt, extensionArgs: [...explicitExtensionArgs(), ...launchOverrides], resumeSeeded: seeded, runToken, agentDir: getAgentDir() });
 			const launch = launchSharedWindow({ windowName, cwd: status.cwd, command });
 			if (!launch.ok) {
 				await this.updateStatus(status.id, respawnFailedTransition(launch.error));

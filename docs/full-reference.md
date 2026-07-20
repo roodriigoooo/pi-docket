@@ -93,7 +93,9 @@ cp .pi/trail.json .pi/docket.json 2>/dev/null || true
 1. **Spawn** — explicitly start a background worker with `/docket spawn` (never automatic).
 2. **Watch** — dock metadata updates; peek or tell to steer without attaching.
 3. **Decide** — open the verdict; press `r` for zero-context Report when the card is too compact.
-4. **Act** — promote, discard, reply, or attach evidence only when you choose.
+4. **Act** — promote, discard, approve, reply, or attach evidence only when you choose.
+
+Every accepted `docket_done` freezes one immutable **Worker Deliverable Version** before review. Report, diff, Hunk, overlap checks, and promotion read that version, not live worker output. Approval is generation-bound and never injects context or starts work; patch promotion remains its own explicit verdict action. Reopen an approved card and press `u Use` to queue its full body for next parent prompt or start one fresh worker with byte-exact `source-deliverable.md` input; both paths stay human-started and transcript-free.
 
 Evidence bundles (`/docket save` / `/docket load`) support durable capture beside that worker loop.
 
@@ -170,11 +172,11 @@ The preview is read from disk. Browsing costs zero model context; attaching stil
 
 `Reject & stop` is set apart with a blank line and warning color because it kills the worker and removes its workspace, and it always asks for confirmation. Number keys only reach the offered options, never the destructive verb.
 
-When a ready worker has a change set, `h` opens Hunk with the exact patch Docket would promote. Docket does not auto-promote or inject context after Hunk exits. If Hunk comments exist, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is missing, Docket shows `npm i -g hunkdiff` and opens the built-in full diff viewer.
+When a ready worker has a change set, `h` opens Hunk with exact frozen patch from that Deliverable Version. Docket does not auto-promote or inject context after Hunk exits. Revision notes carry source ref/version and the next accepted `docket_done` publishes a new version; old body and patch remain unchanged. If Hunk comments exist, Docket asks whether to send them to the worker for revision, copy them, or ignore them. If Hunk is missing, Docket shows `npm i -g hunkdiff` and opens the built-in full diff viewer.
 
 ## Decision ledger
 
-Every verdict you resolve (accept, reject, reject & stop, chat, or an option-send) is appended to `~/.pi/agent/docket/decisions.ndjson` with the verb, the option text, any risk the worker flagged, and the evidence refs that were on the card. `/docket log decisions` (short: `/docket decisions`) renders it:
+Every verdict you resolve (accept, reject, reject & stop, chat, or an option-send) is appended to `~/.pi/agent/docket/decisions.ndjson` with the verb, the option text, any risk the worker flagged, and the evidence refs that were on the card. Ready-state records also carry immutable Deliverable `id`, `version`, and `ref`; approval or rejection binds that exact version. `/docket log decisions` (short: `/docket decisions`) renders it:
 
 ```text
 Decisions · last 7 days
@@ -221,6 +223,7 @@ Workers have:
 - task file,
 - `status.json`,
 - `artifacts.json`,
+- immutable `deliverables/v<N>.json` sidecars,
 - append-only `events.ndjson`,
 - protocol tools for parent communication.
 

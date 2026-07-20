@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createLoadedArtifactContext } from "../extensions/loaded-artifact-context.js";
 import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
+import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
 
 const commandArtifact: Artifact = {
 	id: "c1",
@@ -165,4 +166,91 @@ test("Loaded Artifact context drains pending checkpoint consumes once", async ()
 	await loaded.drainCheckpointConsumes(async (entry) => { consumed.push(entry.id); });
 
 	assert.deepEqual(consumed, ["ck-1"]);
+});
+
+test("Loaded Artifact context mounts immutable deliverable and queues a full chip", async () => {
+	const loaded = context([]);
+	const deliverable: WorkerDeliverable = {
+		schemaVersion: 1,
+		id: "worker-deliverable:worker-1",
+		version: 2,
+		ref: "worker-deliverable:worker-1:2",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: worker.id, workerLabel: "w2", task: worker.task },
+		body: "approved v2 body",
+		summary: "approved",
+		outcome: "proposal",
+		evidence: [],
+		recommendations: [],
+		refs: [],
+	};
+	const slot = await loaded.loadDeliverable(worker, deliverable);
+	const artifact = slot.artifacts[0]!;
+
+	assert.equal(artifact.body, "approved v2 body");
+	assert.equal(artifact.ref, deliverable.ref);
+	assert.equal(loaded.toggleChip(artifact, "full"), "added");
+	assert.equal(loaded.chips()[0]?.mode, "full");
+});
+
+test("mounting a newer deliverable preserves an already queued approved version", async () => {
+	const loaded = context([]);
+	const v1: WorkerDeliverable = {
+		schemaVersion: 1, id: "worker-deliverable:worker-1", version: 1, ref: "worker-deliverable:worker-1:1", createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: worker.id, workerLabel: "w2", task: worker.task }, body: "v1", summary: "v1", outcome: "proposal", evidence: [], recommendations: [], refs: [],
+	};
+	const v2 = { ...v1, version: 2, ref: "worker-deliverable:worker-1:2", body: "v2" };
+	const first = await loaded.loadDeliverable(worker, v1);
+	loaded.toggleChip(first.artifacts[0]!, "full");
+	await loaded.loadDeliverable(worker, v2);
+
+	assert.equal(loaded.chips()[0]?.ref, v1.ref);
+	assert.equal(loaded.chips()[0]?.body, "v1");
+	assert.equal(loaded.carryoverArtifacts()[0]?.ref, v2.ref);
+});
+
+test("queued deliverable body survives a worker slot refresh", async () => {
+	const loaded = context([]);
+	const v1: WorkerDeliverable = {
+		schemaVersion: 1, id: "worker-deliverable:worker-1", version: 1, ref: "worker-deliverable:worker-1:1", createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: worker.id, workerLabel: "w2", task: worker.task }, body: "approved v1 exact body", summary: "v1", outcome: "proposal", evidence: [], recommendations: [], refs: [],
+	};
+	const first = await loaded.loadDeliverable(worker, v1);
+	loaded.toggleChip(first.artifacts[0]!, "full");
+	loaded.unloadSource("worker", worker.id);
+	await loaded.loadDeliverable(worker, { ...v1, version: 2, ref: "worker-deliverable:worker-1:2", body: "v2" });
+
+	const expanded = await loaded.expandChipsForSubmit({ cwd: "/repo", sessionManager: { getBranch: () => [] } }, "next");
+	assert.equal(expanded.missing.length, 0);
+	assert.match(expanded.text, /approved v1 exact body/);
+});
+
+test("full deliverable chip expands approved bytes once on next submit", async () => {
+	const loaded = createLoadedArtifactContext({
+		readCheckpointArtifacts: async () => [],
+		readWorkerArtifacts: async () => [commandArtifact],
+		loadConfig: async () => ({ maxArtifacts: 50, maxBodyChars: 1000, checkpointArtifacts: 10, consumedRetentionDays: 7, summarizer: { enabled: false, maxOutputTokens: 1, maxInputChars: 1, timeoutMs: 1 } }),
+		createCatalog: (_ctx, _config, carryover) => ({
+			list: () => carryover,
+			find: (id) => carryover.find((artifact) => artifact.ref === id || artifact.displayId === id),
+			reference: () => "unused",
+			fullText: (artifact) => artifact.body,
+			inspect: async () => ({ title: "", text: "" }),
+			search: async () => [],
+			selectForCheckpoint: () => [],
+			checkpointPayload: () => [],
+			summary: (artifact) => artifact,
+		}),
+	});
+	const deliverable: WorkerDeliverable = {
+		schemaVersion: 1, id: "worker-deliverable:worker-1", version: 2, ref: "worker-deliverable:worker-1:2", createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: worker.id, workerLabel: "w2", task: worker.task }, body: "approved v2 exact body", summary: "approved", outcome: "proposal", evidence: [], recommendations: [], refs: [],
+	};
+	const slot = await loaded.loadDeliverable(worker, deliverable);
+	loaded.toggleChip(slot.artifacts[0]!, "full");
+	const expanded = await loaded.expandChipsForSubmit({ cwd: "/repo", sessionManager: { getBranch: () => [] } }, "next prompt");
+	assert.match(expanded.text, /approved v2 exact body/);
+	assert.doesNotMatch(expanded.text, /latest mutable worker output/);
+	loaded.clearChips();
+	assert.equal(loaded.chips().length, 0);
 });

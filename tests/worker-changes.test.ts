@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
+import { freezeWorkerChangeSet, promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import { createWorkerWorkspace } from "../extensions/worker-store.js";
 
@@ -61,6 +61,21 @@ test("worker change set artifact summarizes workspace edits", async () => {
 		assert.match(artifact?.title ?? "", /2 files/);
 		assert.match(artifact?.body ?? "", /app\.txt/);
 		assert.match(artifact?.body ?? "", /new\.txt/);
+	} finally {
+		await repo.cleanup();
+	}
+});
+
+test("freezing a deliverable fails instead of hiding workspace staging errors", async () => {
+	const repo = await makeRepo();
+	try {
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\ntwo\n", "utf8");
+		const index = git(repo.workerPath, ["rev-parse", "--git-path", "index"]);
+		const lock = `${path.isAbsolute(index) ? index : path.join(repo.workerPath, index)}.lock`;
+		await writeFile(lock, "locked", "utf8");
+
+		assert.throws(() => freezeWorkerChangeSet(worker(repo.root, repo.workerPath, repo.head), 1), /git add -A failed/);
+		await rm(lock, { force: true });
 	} finally {
 		await repo.cleanup();
 	}
@@ -128,5 +143,24 @@ test("promote does not warn when parent still matches dirty spawn snapshot", asy
 	} finally {
 		spawnSync("git", ["worktree", "remove", "--force", workspace], { cwd: root, stdio: "ignore" });
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("frozen change set promotes reviewed bytes and preserves later worker edits", async () => {
+	const repo = await makeRepo();
+	try {
+		const status = worker(repo.root, repo.workerPath, repo.head);
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\nv1\n", "utf8");
+		const frozen = freezeWorkerChangeSet(status, 1);
+		assert.ok(frozen);
+		await writeFile(path.join(repo.workerPath, "app.txt"), "one\nv2\n", "utf8");
+
+		const result = promoteWorkerChangeSet(status, repo.root, { changeSet: frozen! });
+
+		assert.equal(result.ok, true, result.message);
+		assert.equal(await readFile(path.join(repo.root, "app.txt"), "utf8"), "one\nv1\n");
+		assert.equal(await readFile(path.join(repo.workerPath, "app.txt"), "utf8"), "one\nv2\n");
+	} finally {
+		await repo.cleanup();
 	}
 });

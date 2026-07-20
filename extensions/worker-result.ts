@@ -2,23 +2,24 @@ import { workerActivityChip, workerTodoBoardLines, type WorkerDerivedState, type
 import type { Artifact } from "./types.js";
 import { projectWorkerReport, type WorkerReport } from "./worker-report.js";
 import { projectWorkerReview, truncateWorkerReviewText } from "./worker-review.js";
+import type { WorkerDeliverable } from "./worker-deliverable.js";
 
 export { isWorkerStatusArtifact } from "./worker-review.js";
 
-export function workerResultSummary(worker: WorkerStatus, artifacts: Artifact[] = []): string {
-	return projectWorkerReview(worker, artifacts).summary;
+export function workerResultSummary(worker: WorkerStatus, artifacts: Artifact[] = [], deliverable?: WorkerDeliverable): string {
+	return projectWorkerReview(worker, artifacts, Date.now(), deliverable).summary;
 }
 
-export function workerResultHeadline(worker: WorkerStatus, artifacts: Artifact[] = [], max = 72): string {
-	return truncateWorkerReviewText(workerResultSummary(worker, artifacts).replace(/\s+/g, " "), max);
+export function workerResultHeadline(worker: WorkerStatus, artifacts: Artifact[] = [], max = 72, deliverable?: WorkerDeliverable): string {
+	return truncateWorkerReviewText(workerResultSummary(worker, artifacts, deliverable).replace(/\s+/g, " "), max);
 }
 
-export function workerResultArtifact(worker: WorkerStatus, artifacts: Artifact[] = []): Artifact | undefined {
-	return projectWorkerReview(worker, artifacts).result;
+export function workerResultArtifact(worker: WorkerStatus, artifacts: Artifact[] = [], deliverable?: WorkerDeliverable): Artifact | undefined {
+	return projectWorkerReview(worker, artifacts, Date.now(), deliverable).result;
 }
 
-export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [], maxBodyLines = 8): string {
-	const review = projectWorkerReview(worker, artifacts);
+export function workerResultText(worker: WorkerStatus, artifacts: Artifact[] = [], maxBodyLines = 8, deliverable?: WorkerDeliverable): string {
+	const review = projectWorkerReview(worker, artifacts, Date.now(), deliverable);
 	const result = review.result;
 	const body = !review.resultIsStatus ? result?.body?.split(/\r?\n/).slice(0, maxBodyLines).join("\n") : undefined;
 	const questions = review.questions.map((item, index) => `${index + 1}. ${item.text}`).join("\n");
@@ -65,9 +66,9 @@ function changesLineFromReport(report: WorkerReport): string {
 	return `${report.changeTotals.files} files`;
 }
 
-export function workerResultReport(worker: WorkerStatus, artifacts: Artifact[] = []): WorkerResultReport {
-	const report = projectWorkerReport(worker, artifacts);
-	const review = projectWorkerReview(worker, artifacts);
+export function workerResultReport(worker: WorkerStatus, artifacts: Artifact[] = [], deliverable?: WorkerDeliverable): WorkerResultReport {
+	const report = projectWorkerReport(worker, artifacts, undefined, deliverable);
+	const review = projectWorkerReview(worker, artifacts, Date.now(), deliverable);
 	const nextActions: Array<{ key: string; label: string }> = [];
 	if (report.state === "needs_input") nextActions.push({ key: "r", label: "tell" });
 	else if (report.state === "failed") nextActions.push({ key: "Enter", label: "Inspect failure" });

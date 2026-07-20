@@ -9,6 +9,7 @@ import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 import type { WorkerCommands } from "../extensions/worker-commands.js";
 import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import type { DecisionEvent, DecisionRecord } from "../extensions/decision-log.js";
+import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
 import { findVerdictWorker, type WorkerVerdictDeps } from "../extensions/worker-verdict.js";
 
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
@@ -79,6 +80,7 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		find: async () => worker,
 		list: async () => [worker],
 		readArtifacts: async () => [workerStatus],
+		readCurrentDeliverable: async () => undefined,
 	} as unknown as WorkerStore;
 	const deps: DocketCommandRouterDeps = {
 		hasUI: false,
@@ -152,6 +154,34 @@ test("Docket Command Router marks explicit worker load", async () => {
 	assert.equal(decisions.length, 0);
 	const verdictWorker = await findVerdictWorker({ workerStore: deps.workerStore, projectRoot: "/repo" } as unknown as WorkerVerdictDeps);
 	assert.equal(verdictWorker?.id, worker.id);
+});
+
+test("Docket Command Router loads immutable deliverable instead of competing worker artifacts", async () => {
+	const deliverable: WorkerDeliverable = {
+		schemaVersion: 1,
+		id: "worker-deliverable:worker-1",
+		version: 1,
+		ref: "worker-deliverable:worker-1:1",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: worker.id, workerLabel: "w2", task: worker.task },
+		body: "exact body",
+		summary: "summary",
+		outcome: "proposal",
+		evidence: [],
+		recommendations: [],
+		refs: [],
+	};
+	const workerStore = {
+		find: async () => worker,
+		list: async () => [worker],
+		readArtifacts: async () => [workerStatus],
+		readCurrentDeliverable: async () => deliverable,
+	} as unknown as WorkerStore;
+	const { calls, router } = harness({ workerStore });
+
+	await router.handle({ kind: "load", refKind: "worker", ref: "w2", includeConsumed: false });
+
+	assert.deepEqual(calls, ["loadSource:deliverable", "loaded:worker-1", "announce:loaded w2 · 1 artifact", "refreshWorkers"]);
 });
 
 test("Docket Command Router routes worker delete and refreshes dock", async () => {

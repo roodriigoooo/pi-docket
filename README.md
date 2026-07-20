@@ -81,7 +81,8 @@ spawn worker -> watch / peek / tell -> verdict -> Report / diff / Hunk -> decide
 1. Start a worker with `/docket spawn` (always user-initiated — Docket never silently spawns).
 2. Watch the dock; peek or tell if you need to steer.
 3. When the worker is ready, open the verdict card.
-4. Press `r` for Report if you need the full evidence view, then `d`/`h` for diff/Hunk, then promote or discard.
+4. Press `r` for Report if you need full immutable deliverable body, then `d`/`h` for frozen diff/Hunk, then promote, approve, or reject.
+5. Approval records judgment for exact deliverable version. It does not inject context or start work. Reopen an approved result and press `u Use`: queue its full body for next parent prompt, or start one fresh reviewed-input worker.
 
 Evidence bundles (`/docket save` / `/docket load`) sit beside that loop when you want durable capture outside a worker.
 
@@ -213,7 +214,7 @@ Bundled worker kinds:
 A plan gate lets a worker inspect first, then requires it to ask before its first edit or mutating command.
 Configured `worker.defaultKind` values are deliberate power-user overrides: Docket preserves the selected kind's declared rights instead of adding an implicit policy on top.
 
-Ready review loop: verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for diff/Hunk → promote or discard. Attach is a secondary debug escape hatch, not the normal path.
+Ready review loop: accepted `docket_done` freezes a Worker Deliverable version → verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for exact frozen diff/Hunk → promote, approve, or reject. Approval never injects context. After approval, `u Use` either queues one full immutable body for next parent prompt or starts one fresh worker with `source-deliverable.md` input and recorded provenance. Attach is a secondary debug escape hatch, not the normal path.
 
 ## Evidence bundles
 
@@ -308,4 +309,5 @@ npm run pack:dry
 - [Full reference](./docs/full-reference.md)
 - [Configuration](./docs/configuration.md)
 - [Architecture](./docs/architecture.md)
+- [Manual visual demo](./docs/manual-demo.md)
 - [Changelog](./CHANGELOG.md)

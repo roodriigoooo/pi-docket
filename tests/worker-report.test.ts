@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
+import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
 import {
 	displayWorkerSummary,
 	formatWorkerReportText,
@@ -112,6 +113,40 @@ test("projectWorkerReport includes change totals, evidence, command statuses, an
 	assert.match(text, /Patched auth\./);
 	assert.doesNotMatch(text, /body/); // no transcript/output bodies
 	assert.doesNotMatch(text, /cmd output/);
+});
+
+test("report reads full immutable deliverable body and handoff provenance", () => {
+	const deliverable: WorkerDeliverable = {
+		schemaVersion: 1,
+		id: "worker-deliverable:worker-1",
+		version: 2,
+		ref: "worker-deliverable:worker-1:2",
+		createdAt: "2026-01-01T00:06:00.000Z",
+		source: { workerId: "worker-1", workerLabel: "w1", task: "map auth call sites" },
+		body: "# Reviewed implementation\n\nExact result body",
+		summary: "Reviewed implementation",
+		outcome: "proposal",
+		evidence: ["src/auth.ts"],
+		recommendations: ["implement plan"],
+		refs: [],
+		sourceHandoff: {
+			sourceDeliverableId: "worker-deliverable:planner",
+			sourceVersion: 1,
+			sourceRef: "worker-deliverable:planner:1",
+			sourceWorkerId: "planner",
+			sourceWorkerLabel: "w2",
+			approvingDecisionId: "decision-1",
+			approvedAt: "2026-01-01T00:05:00.000Z",
+			sidecarPath: "source-deliverable.md",
+		},
+	};
+	const report = projectWorkerReport(worker({ summary: "mutable summary" }), [], undefined, deliverable);
+	const text = formatWorkerReportText(report);
+
+	assert.equal(report.summary, deliverable.body);
+	assert.match(text, /Deliverable: worker-deliverable:worker-1:2 \(v2\)/);
+	assert.match(text, /Handoff source: worker-deliverable:planner:1/);
+	assert.match(text, /Exact result body/);
 });
 
 test("projectWorkerReport falls back to edited file artifacts when change set is missing", () => {

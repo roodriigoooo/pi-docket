@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkerStatus } from "./background-work.js";
+import type { WorkerDeliverable } from "./worker-deliverable.js";
 import type { Artifact } from "./types.js";
 
 export type HunkReviewAction = "send" | "copy" | "ignore";
@@ -107,6 +108,8 @@ export function parseHunkComments(rawJson: string): HunkReviewComment[] {
 }
 
 export function workerChangeSetPatch(changeSet: Artifact): string | undefined {
+	const frozen = changeSet.meta?.patch;
+	if (typeof frozen === "string" && frozen.trim()) return frozen;
 	const marker = "\nPatch:\n";
 	const idx = changeSet.body.indexOf(marker);
 	if (idx < 0) return undefined;
@@ -215,7 +218,8 @@ export function formatHunkCommentLocation(comment: HunkReviewComment): string {
 	return `${comment.filePath}${line}${old}`;
 }
 
-export function formatHunkReviewComments(comments: HunkReviewComment[]): string {
+export function formatHunkReviewComments(comments: HunkReviewComment[], deliverable?: Pick<WorkerDeliverable, "ref" | "version">): string {
+	const source = deliverable ? `Request revision for ${deliverable.ref} (version ${deliverable.version}):` : undefined;
 	const header = `revise from Hunk review (${comments.length} comment${comments.length === 1 ? "" : "s"}):`;
 	const lines = comments.flatMap((comment, index) => [
 		`${index + 1}. ${formatHunkCommentLocation(comment)}`,
@@ -223,9 +227,10 @@ export function formatHunkReviewComments(comments: HunkReviewComment[]): string 
 		...(comment.rationale ? [`   rationale: ${comment.rationale}`] : []),
 	]);
 	return [
+		source,
 		header,
 		...lines,
 		"",
 		"Please address these comments in your worker workspace, then call docket_done with updated summary and evidence.",
-	].join("\n");
+	].filter((line): line is string => line !== undefined).join("\n");
 }

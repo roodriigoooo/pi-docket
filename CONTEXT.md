@@ -22,8 +22,32 @@ _Avoid_: trail, transcript, memory.
 A background Pi process running as one window in the shared `docket-workers` tmux session. Generates artifacts that may become review items.
 _Avoid_: job, agent, subprocess.
 
+**Worker Deliverable**:
+Immutable primary output frozen when a worker's accepted `docket_done` reaches `ready`. Full body, refs, and optional patch live in `deliverables/v<N>.json`; status keeps its existing lifecycle/result projection plus the current `{ id, version, ref }` pointer.
+_Avoid_: latest answer, worker result, live output.
+
+**Deliverable Version**:
+One accepted ready generation of a Worker Deliverable. `v1` never changes when a revision produces `v2`.
+_Avoid_: edit, overwrite, current output.
+
+**Approval**:
+A generation-bound verdict accepting one exact Deliverable Version. It never injects context or starts work; patch promotion remains an explicit verdict action.
+_Avoid_: use, handoff, auto-promote.
+
+**Review Note**:
+A multiline human revision request bound to one Deliverable Version and written to the Decision ledger. It never edits immutable deliverable body.
+_Avoid_: annotation, patch to result.
+
+**Use / Handoff**:
+A separate human action available after Approval. Use → Parent queues one full immutable-deliverable chip for next human prompt. Use → Worker starts one fresh worker with reviewed sidecar input. Neither action records another verdict or changes worker lifecycle.
+_Avoid_: approve and send, auto-chain, inject on ready.
+
+**Handoff Provenance**:
+Structured source deliverable ref/version, source Worker, approving decision, timestamp, and destination sidecar path carried into a handoff worker and its later Deliverable.
+_Avoid_: transcript seed, inherited authority.
+
 **Pre-flight brief**:
-The top section of a worker's `task.md`: task, kind, workspace, decision rights, and plan gate. It gives the worker authority boundaries before it starts.
+The top section of a worker's `task.md`: task, kind, workspace, decision rights, plan gate, and optional reviewed handoff source. It gives the worker authority boundaries before it starts.
 _Avoid_: prompt summary, system prompt, hidden policy.
 
 **Decision rights**:
@@ -71,7 +95,7 @@ A warning that two Workers edited the same path in their isolated workspaces. Do
 _Avoid_: conflict resolver, merge queue.
 
 **Decision ledger**:
-The append-only record of every verdict you resolve, written to `decisions.ndjson`. Each entry keeps the verb, the option chosen, any risk shown, and the evidence refs that were on the card. Read it with `/docket log decisions`.
+The append-only record of every verdict you resolve, written to `decisions.ndjson`. Ready judgments include decision id and exact deliverable id/version/ref plus verb, review note or option, risk, and visible evidence refs. Read it with `/docket log decisions`.
 _Avoid_: history, audit log, transcript.
 
 **Decision debt**:
@@ -93,7 +117,8 @@ _Avoid_: continue, resume, restore.
 ## Relationships
 
 - A **Worker** starts from a **Pre-flight brief** and may be constrained by **Decision rights** or a **Plan gate**.
-- A **Worker** produces **Artifacts**; the attention queue promotes some to **Review items**.
+- A **Worker** produces **Artifacts** and one primary **Worker Deliverable** per accepted ready generation; supporting artifacts remain evidence.
+- An **Approval** judges one **Deliverable Version**. **Use / Handoff** is separate and remains human-started.
 - An **Evidence bundle** freezes selected **Artifacts** plus an **Orientation header**.
 - **Save** = choose artifacts + write bundle + label current Pi tree leaf.
 - **Load** = **Mount** the bundle into the current session.

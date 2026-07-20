@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import type { DecisionRecord } from "../extensions/decision-log.js";
 import type { Artifact } from "../extensions/types.js";
+import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
 import { runWorkerVerdict, verdictCandidateRank, type WorkerVerdictDeps } from "../extensions/worker-verdict.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -63,6 +64,7 @@ test("verdictCandidateRank prioritizes blocked, failed, then ready workers", () 
 	assert.equal(verdictCandidateRank(worker({ state: "needs_input" })), 0);
 	assert.equal(verdictCandidateRank(worker({ state: "failed" })), 1);
 	assert.equal(verdictCandidateRank(worker({ state: "ready" })), 2);
+	assert.equal(verdictCandidateRank(worker({ state: "ready", todos: [{ id: "t1", text: "follow up", state: "pending" }] })), 2);
 	assert.equal(verdictCandidateRank(worker({ state: "active" })), 100);
 });
 
@@ -239,4 +241,108 @@ test("runWorkerVerdict stops without UI", async () => {
 
 	assert.equal(outcome, "stop");
 	assert.deepEqual(calls, ["notify:error:Docket verdict needs UI. Use /docket tell, /docket load, or /docket delete."]);
+});
+
+function deliverable(version: number): WorkerDeliverable {
+	return {
+		schemaVersion: 1,
+		id: "worker-deliverable:worker-1",
+		version,
+		ref: `worker-deliverable:worker-1:${version}`,
+		createdAt: "2026-01-01T00:00:00.000Z",
+		source: { workerId: "worker-1", workerLabel: "w1", task: "review auth flow" },
+		body: `body v${version}`,
+		summary: `summary v${version}`,
+		outcome: "proposal",
+		evidence: [],
+		recommendations: [],
+		refs: [],
+	};
+}
+
+test("runWorkerVerdict rejects a stale deliverable action and reopens current version", async () => {
+	const current = deliverable(2);
+	const stale = deliverable(1);
+	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	let cards = 0;
+	const { deps, decisions, calls } = depsFor(w, {
+		showVerdict: async () => ++cards === 1 ? { verb: "accept", worker: w, deliverable: stale } : null,
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "stop");
+	assert.equal(cards, 2);
+	assert.equal(decisions.length, 0);
+	assert.ok(calls.some((call) => call.includes("newer deliverable published")));
+});
+
+test("request revision sends multiline notes without editable placeholder text", async () => {
+	const current = deliverable(1);
+	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	let editor: { title: string; initial: string } | undefined;
+	const notes = "Change section 2.\nKeep worked example.";
+	const { deps, calls, decisions } = depsFor(w, {
+		showVerdict: async () => ({ verb: "chat", worker: w, deliverable: current }),
+		reviewNote: async (title, initial) => {
+			editor = { title, initial };
+			return notes;
+		},
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "advance");
+	assert.deepEqual(editor, { title: `Request revision · w1 · ${current.ref}`, initial: "" });
+	assert.ok(calls.includes(`tell:w1:Request revision for ${current.ref} (version 1):\n${notes}`));
+	assert.equal(decisions[0]?.option, notes);
+	assert.equal(decisions[0]?.reviewNote, notes);
+	assert.equal(current.body, "body v1");
+});
+
+test("failed revision delivery records no decision", async () => {
+	const current = deliverable(1);
+	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	let cards = 0;
+	const { deps, decisions } = depsFor(w, {
+		showVerdict: async () => ++cards === 1 ? { verb: "chat", worker: w, deliverable: current } : null,
+		reviewNote: async () => "revise this",
+	});
+	deps.workerCommands.tell = async () => false;
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "stop");
+	assert.equal(cards, 2);
+	assert.deepEqual(decisions, []);
+});
+
+test("re-approving a reviewed deliverable records its underlying ready state", async () => {
+	const current = deliverable(1);
+	const w = worker({ state: "ready", reviewedAt: "2026-01-01T00:01:00.000Z", deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	const { deps, decisions } = depsFor(w, {
+		showVerdict: async () => ({ verb: "accept", worker: w, deliverable: current }),
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(decisions[0]?.state, "ready");
+});
+
+test("runWorkerVerdict Use performs handoff only after current approval", async () => {
+	const current = deliverable(2);
+	const w = worker({ state: "ready", deliverable: { id: current.id, version: current.version, ref: current.ref } });
+	const used: string[] = [];
+	const { deps, decisions, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "use", worker: w, deliverable: current }),
+		isDeliverableApproved: async () => true,
+		useDeliverable: async (_worker, item) => { used.push(item.ref); },
+	});
+
+	const outcome = await runWorkerVerdict(deps, w);
+
+	assert.equal(outcome, "stop");
+	assert.deepEqual(used, [current.ref]);
+	assert.equal(decisions.length, 0);
+	assert.equal(calls.some((call) => call.startsWith("update:")), false);
 });

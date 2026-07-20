@@ -5,6 +5,7 @@ import type { ArtifactKind } from "./types.js";
 import type { WorkerKindRegistry, WorkerKind } from "./worker-kinds.js";
 import { resolveWorkerSpawnPolicy } from "./worker-spawn-policy.js";
 import { explicitExtensionArgs, workerProjectKey, type WorkerStore } from "./worker-store.js";
+import type { WorkerHandoffProvenance } from "./worker-deliverable.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
@@ -31,8 +32,22 @@ type WorkerCommandsDeps = {
 };
 
 export type WorkerCommands = {
-	spawn(task: string, options?: { worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean }): Promise<WorkerStatus | undefined>;
-	tell(ref: string, text: string): Promise<void>;
+	spawn(task: string, options?: {
+		worktree?: boolean;
+		fresh?: boolean;
+		seed?: boolean;
+		as?: string;
+		parentWorkerId?: string;
+		depth?: number;
+		layout?: "single" | "split-events";
+		captureTerminal?: boolean;
+		/** Internal Use → Worker override. Not parsed from /docket spawn. */
+		model?: string;
+		/** Internal Use → Worker override. Not parsed from /docket spawn. */
+		thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+		sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
+	}): Promise<WorkerStatus | undefined>;
+	tell(ref: string, text: string): Promise<boolean | void>;
 	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
@@ -106,7 +121,9 @@ function formatKindList(kinds: WorkerKind[]): string {
 
 export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	const loadWorker = async (worker: WorkerStatus): Promise<void> => {
-		const result = await deps.loadedArtifacts.loadSource({ kind: "worker", worker });
+		const deliverable = await deps.store.readCurrentDeliverable?.(worker);
+		if (worker.deliverable && !deliverable) throw new Error(`Worker deliverable ${worker.deliverable.ref} is missing or invalid`);
+		const result = await deps.loadedArtifacts.loadSource(deliverable ? { kind: "deliverable", worker, deliverable } : { kind: "worker", worker });
 		deps.announce(
 			`loaded ${result.slot.slot} · ${result.slot.artifacts.length} artifact${result.slot.artifacts.length === 1 ? "" : "s"}`,
 			`${workerSummaryName(worker)}\nrefs: @${result.slot.slot}.<id>`,
@@ -115,7 +132,19 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 	};
 
 	return {
-		async spawn(task: string, options: { worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; parentWorkerId?: string; depth?: number; layout?: "single" | "split-events"; captureTerminal?: boolean } = {}): Promise<WorkerStatus | undefined> {
+		async spawn(task: string, options: {
+			worktree?: boolean;
+			fresh?: boolean;
+			seed?: boolean;
+			as?: string;
+			parentWorkerId?: string;
+			depth?: number;
+			layout?: "single" | "split-events";
+			captureTerminal?: boolean;
+			model?: string;
+			thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+			sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
+		} = {}): Promise<WorkerStatus | undefined> {
 			try {
 				const policy = resolveWorkerSpawnPolicy({
 					kinds: deps.kinds,
@@ -148,6 +177,9 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					worktree: policy.useWorktree,
 					...(policy.freshLaunch ? { fresh: true } : {}),
 					...(git ? { git } : {}),
+					...(policy.model ? { model: policy.model } : {}),
+					...(policy.thinking ? { thinking: policy.thinking } : {}),
+					...(options.sourceDeliverable ? { sourceDeliverable: options.sourceDeliverable } : {}),
 					kind: kind.name,
 					readOnly: kind.readOnly,
 					...(kind.planGate ? { planGate: true } : {}),
@@ -173,11 +205,11 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				return undefined;
 			}
 		},
-		async tell(ref: string, text: string): Promise<void> {
+		async tell(ref: string, text: string): Promise<boolean> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
 				deps.notify("Docket worker not found", "error");
-				return;
+				return false;
 			}
 			const sent = await deps.store.sendInput(worker.id, formatWorkerTell(worker, text));
 			if (sent) deps.announce(
@@ -187,6 +219,7 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				{ kind: "prompt", title: `tell ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
 			);
 			else deps.notify(`Docket could not send message to ${workerShortLabel(worker.index)}`, "error");
+			return sent;
 		},
 		async list(options: { allProjects?: boolean } = {}): Promise<void> {
 			const projectRoot = options.allProjects ? undefined : deps.projectRoot;

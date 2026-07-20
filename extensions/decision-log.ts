@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import type { WorkerDeliverablePointer } from "./worker-deliverable.js";
 
 /**
  * Append-only ledger of worker decisions. Two things land here:
@@ -22,6 +24,8 @@ export type DecisionVerb = "accept" | "reject" | "rejectStop" | "chat" | "send";
 
 export type VerdictResolvedEvent = {
 	type: "verdict_resolved";
+	/** Stable decision identity. Legacy rows may not have one. */
+	id?: string;
 	timestamp: string;
 	workerId: string;
 	workerLabel: string;
@@ -34,6 +38,12 @@ export type VerdictResolvedEvent = {
 	risk?: string;
 	/** Artifact refs visible on the card at decision time (change set, status, …). */
 	evidenceRefs: string[];
+	/** Exact immutable generation judged by this verdict. Omitted on legacy rows. */
+	deliverableId?: string;
+	deliverableVersion?: number;
+	deliverableRef?: string;
+	/** Multiline revision note; never mutates deliverable body. */
+	reviewNote?: string;
 	task?: string;
 };
 
@@ -52,6 +62,40 @@ export type DecisionEvent = VerdictResolvedEvent | WorkerEvictedUnreviewedEvent;
 /** What callers hand us; the log stamps `type` and `timestamp`. */
 export type DecisionRecord = Omit<VerdictResolvedEvent, "type" | "timestamp">;
 export type EvictionRecord = Omit<WorkerEvictedUnreviewedEvent, "type" | "timestamp" | "reason">;
+
+function sameDeliverable(event: VerdictResolvedEvent, pointer: WorkerDeliverablePointer): boolean {
+	return event.deliverableId === pointer.id && event.deliverableVersion === pointer.version && event.deliverableRef === pointer.ref;
+}
+
+/** Latest terminal judgment for one immutable deliverable generation. */
+export function latestDeliverableJudgment(events: DecisionEvent[], pointer: WorkerDeliverablePointer): VerdictResolvedEvent | undefined {
+	let latest: VerdictResolvedEvent | undefined;
+	for (const event of events) {
+		if (event.type !== "verdict_resolved" || !sameDeliverable(event, pointer)) continue;
+		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") latest = event;
+	}
+	return latest;
+}
+
+/** Approval is generation-bound; needs_input accepts and failed retries never qualify. */
+export function isDeliverableApproved(events: DecisionEvent[], pointer: WorkerDeliverablePointer): boolean {
+	const judgment = latestDeliverableJudgment(events, pointer);
+	return judgment?.verb === "accept" && (judgment.state === "ready" || judgment.state === "ready_open_todos");
+}
+
+/** Alias named after review language used in Docket docs. */
+export const latestJudgmentForDeliverable = latestDeliverableJudgment;
+
+/** Deliverable refs with a recorded terminal judgment; useful for generation-aware pruning. */
+export function reviewedDeliverableRefs(events: DecisionEvent[]): Set<string> {
+	const refs = new Set<string>();
+	for (const event of events) {
+		if (event.type !== "verdict_resolved") continue;
+		if (!event.deliverableRef) continue;
+		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") refs.add(event.deliverableRef);
+	}
+	return refs;
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -136,10 +180,13 @@ function formatEventLine(event: DecisionEvent, now: number): string {
 		const task = event.task ? ` · ${event.task}` : "";
 		return `${when}  ${event.workerLabel}  evicted unreviewed (${event.state})${task}`;
 	}
-	const option = event.option ? ` "${event.option}"` : "";
+	const optionText = event.option?.replace(/\s+/g, " ").trim();
+	const option = optionText ? ` "${optionText}"` : "";
 	const risk = event.risk ? `  ⚠ ${event.risk}` : "";
-	const evidence = event.evidenceRefs.length > 0 ? `  [${event.evidenceRefs.join(", ")}]` : "";
-	return `${when}  ${event.workerLabel}  ${verbLabel(event.verb)}${option}  (${event.state})${risk}${evidence}`;
+	const supportingRefs = event.evidenceRefs.filter((ref) => ref !== event.deliverableRef);
+	const evidence = supportingRefs.length > 0 ? `  [${supportingRefs.join(", ")}]` : "";
+	const version = event.deliverableRef ? `  [${event.deliverableRef}]` : "";
+	return `${when}  ${event.workerLabel}  ${verbLabel(event.verb)}${option}  (${event.state})${risk}${version}${evidence}`;
 }
 
 /** Human-readable decisions audit for `/docket log decisions`. Pure: easy to test. */
@@ -223,7 +270,7 @@ export function createDecisionLog(): DecisionLog {
 			return events;
 		},
 		async recordVerdict(record: DecisionRecord): Promise<void> {
-			await this.append({ type: "verdict_resolved", timestamp: new Date().toISOString(), ...record });
+			await this.append({ type: "verdict_resolved", timestamp: new Date().toISOString(), ...record, id: record.id ?? randomUUID() });
 		},
 		async recordEviction(record: EvictionRecord): Promise<void> {
 			await this.append({ type: "worker_evicted_unreviewed", timestamp: new Date().toISOString(), reason: "pruned", ...record });
