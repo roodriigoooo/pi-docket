@@ -23,7 +23,7 @@ It is not a transcript browser, not a memory system, and not a task manager.
 - **Pi owns sessions.** Use pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for conversation topology and context-window management.
 - **Docket owns decisions.** It ranks artifacts into review items, shows cards, and keeps evidence out of model context until you attach it.
 - **tmux owns parallel visibility.** Workers are visible pi processes in one shared tmux session. You can attach and inspect them directly.
-- **Workers are explicit.** Spawning stays user-initiated through `/docket spawn`. Docket never silently spawns and does not proactively suggest workers.
+- **Workers are explicit and independent.** Every Worker comes from human `/docket spawn` or approved Use → Worker. Workers have no spawn tool; deleting one never deletes another.
 
 ## Install
 
@@ -42,6 +42,7 @@ Spawn a worker explicitly:
 ```bash
 /docket spawn --as scout map auth call sites
 /docket spawn --as patcher fix failing auth test
+/docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth
 ```
 
 Save evidence as a zero-token bundle:
@@ -65,7 +66,7 @@ This release is a breaking rename.
 - GitHub repo title: `pi-docket`
 - Slash command: `/docket`
 - Old `/trail` commands are not kept as aliases.
-- Worker protocol tools are now `docket_wait`, `docket_done`, `docket_fail`, `docket_todos`, and `docket_spawn_child`.
+- Worker protocol tools are `docket_wait`, `docket_done`, `docket_fail`, and `docket_todos`.
 - Storage/config paths now use `docket`:
   - `~/.pi/agent/docket/`
   - `~/.pi/agent/docket.json`
@@ -107,7 +108,7 @@ Primary commands:
 |---|---|
 | `/docket` | Open decision docket. |
 | `f8` | Open worker progress lens. |
-| `/docket spawn [--seed\|--fresh] [--as <kind>] <task>` | Start explicit background worker. Default: fresh session (no parent context). `--seed` inherits parent session; `--fresh` is explicit (overrides a `full` kind). |
+| `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed\|--fresh] [--as <kind>] [--worktree] [--] <task>` | Start explicit worker. Model/thinking inherit parent; context defaults fresh; workspace derives from kind intent. |
 | `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
 | `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
 | `/docket load [id\|last\|w<N>]` | Mount bundle or worker artifacts at zero model-context cost. |
@@ -127,7 +128,7 @@ Advanced commands:
 | `/docket search <query>` | Ranked artifact search. |
 | `/docket list [--include-consumed] [--workers\|--all]` | List saved bundles or workers. |
 | `/docket unload <id\|w<N>\|all>` | Drop mounted bundle/worker artifacts. |
-| `/docket delete [id\|last\|w<N>]` | Delete bundle or worker. Worker delete cascades to children. |
+| `/docket delete [id\|last\|w<N>]` | Delete bundle or one worker. Other workers remain independent. |
 | `/docket ref <artifact-id>` | Attach compact artifact reference to next prompt. |
 | `/docket inject-full <artifact-id>` | Attach full artifact text to next prompt. |
 | `/docket copy <artifact-id>` | Copy artifact text. |
@@ -229,7 +230,11 @@ Workers have:
 
 Worker artifacts never enter model context automatically. Parent updates from workers are metadata only (dock state, progress, readiness). Full evidence stays on disk until you open Report, load, or attach. Loading a worker mounts evidence and marks it `loaded` alongside its existing lifecycle state; a ready worker remains ready and still needs a verdict.
 
-Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before the first edit or mutating command. The bundled `patcher` kind uses this by default.
+Each worker gets a small pre-flight brief in `task.md`: kind, workspace, decision rights, and any plan gate. A plan gate means the worker can do read-only discovery, then must call `docket_wait` with its plan before first mutation. Bundled `patcher` uses this by default.
+
+Kinds state intent and authority only. Read-only kinds share parent directory; writable kinds get isolated workspace. Model and thinking inherit current parent state unless `--model` / `--thinking` overrides them. Exact `provider/model` must exist in Pi's available registry; invalid execution aborts. Interactive changed spend asks for confirmation, while bare same-parent spawn stays low-friction. Noninteractive mode never waits for UI. Launch details and status always show canonical model and effective thinking.
+
+Context precedence is handoff forced-fresh / `--fresh`, then `--seed`, `worker.parentSeedPolicy`, legacy kind `parent_seed`, then fresh. `--fresh` wins if both flags appear. See [configuration](./configuration.md#per-spawn-execution) for full precedence and legacy migration.
 
 When two workers edit the same path, Docket surfaces an `overlap w<N>: <path>` hint in the dock/dashboard and asks for confirmation before promoting a conflicting change set. It does not lock files or auto-merge workers; the parent remains the mediator.
 
@@ -291,9 +296,8 @@ Workers use tools, not shell commands:
 | `docket_wait` | Ask parent for input and pause. |
 | `docket_done` | Mark useful output ready for review. |
 | `docket_fail` | Mark cannot continue with no useful partial output. |
-| `docket_spawn_child` | Dispatch allowed child worker kind. |
 
-Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prompt commands only.
+Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prompt commands only. Worker creation remains human-only.
 
 For plan-gated work, the worker uses `docket_wait` as the gate. The verdict card shows the plan options and recommendation, then your choice is sent back as plain parent input.
 
@@ -313,7 +317,7 @@ tmux attach -t docket-workers
 - **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
 - **Peek**: `/docket workers` uses `capture-pane -p` to render a bounded selected-worker pane snapshot inside the dashboard. It does not attach, focus the pane, or add anything to model context.
 - **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes panes with `list-panes -F "#{pane_id} #{pane_dead}"`, captures the dead worker pane with `capture-pane`, writes `pane-tail.txt`, then kills the stale window. Split layouts are probed per pane because an event-tail helper pane may still be alive.
-- **Optional tmux surfaces**: `layout: split-events` opens a detached split pane that tails `events.ndjson`; `worker.captureTerminal` uses `pipe-pane` to write terminal noise to `pane.log`; `worker.tmuxStatusLine` can write compact fleet status into the tmux status bar.
+- **Optional tmux surfaces**: legacy `layout: split-events` remains compatibility-only until layout work lands; `worker.captureTerminal` uses `pipe-pane` for `pane.log`; `worker.tmuxStatusLine` writes compact fleet status into tmux status bar.
 
 Silence warnings do not poll `capture-pane`. Docket reads the worker's `events.ndjson`; if nothing useful appears for a few minutes, the dock shows `silent Nm`. Use peek when you want scrollback. Use attach when you need full terminal control.
 

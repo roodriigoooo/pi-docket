@@ -19,8 +19,16 @@ The decision surface containing review items. A docket is for judgment, not brow
 _Avoid_: trail, transcript, memory.
 
 **Worker**:
-A background Pi process running as one window in the shared `docket-workers` tmux session. Generates artifacts that may become review items.
-_Avoid_: job, agent, subprocess.
+A human-started background Pi process running as one independent window in the shared `docket-workers` tmux session. Generates artifacts that may become review items. Workers cannot create other Workers.
+_Avoid_: job, agent, subprocess, child worker.
+
+**Worker Kind**:
+Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not normally choose model, thinking, context, workspace, or tmux layout.
+_Avoid_: execution preset, model profile, agent class.
+
+**Worker Execution**:
+One resolved launch policy: canonical model, effective thinking, parent-context choice, workspace, and compatibility-only layout. Per-spawn choices are explicit; otherwise model/thinking inherit current parent state, context defaults fresh, and workspace derives from kind intent.
+_Avoid_: kind, hidden defaults, routing profile.
 
 **Worker Deliverable**:
 Immutable primary output frozen when a worker's accepted `docket_done` reaches `ready`. Full body, refs, and optional patch live in `deliverables/v<N>.json`; status keeps its existing lifecycle/result projection plus the current `{ id, version, ref }` pointer.
@@ -116,6 +124,8 @@ _Avoid_: continue, resume, restore.
 
 ## Relationships
 
+- A human starts each independent **Worker**. Workers expose only progress/wait/done/fail protocol tools and cannot create Workers.
+- A **Worker Kind** states intent and authority; resolved **Worker Execution** states launch spend and isolation.
 - A **Worker** starts from a **Pre-flight brief** and may be constrained by **Decision rights** or a **Plan gate**.
 - A **Worker** produces **Artifacts** and one primary **Worker Deliverable** per accepted ready generation; supporting artifacts remain evidence.
 - An **Approval** judges one **Deliverable Version**. **Use / Handoff** is separate and remains human-started.

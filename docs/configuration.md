@@ -27,8 +27,8 @@ Both optional. Defaults below.
 
   "worker": {
     "maxActive": 8,
-    "maxSpawnDepth": 2,
     "defaultKind": "default",
+    "parentSeedPolicy": "none",
     "dockIdleHideMinutes": 30,
     "pruneAfterHours": 24,
     "tmuxStatusLine": false,
@@ -67,124 +67,109 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 | key | default | meaning |
 |---|---|---|
 | `worker.maxActive` | 8 | reject `/docket spawn` once this many workers are starting/active/idle/needs_input. |
-| `worker.maxSpawnDepth` | 2 | bound `docket_spawn_child` recursion (top-level worker = depth 0). |
-| `worker.defaultKind` | `default` | kind used when `/docket spawn` is invoked without `--as`. |
-| `worker.dockIdleHideMinutes` | 30 | hide `ended` workers from the dock after this many minutes; 0 keeps them. |
-| `worker.pruneAfterHours` | 24 | auto-prune `ended` worker dirs after this many hours; 0 disables. |
-| `worker.tmuxStatusLine` | false | write a compact summary to `docket-workers`' `status-right`. |
-| `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log` per worker. |
-| `worker.parentSeedPolicy` | `none` | default parent-seed policy for `/docket spawn` when neither `--seed`/`--fresh` nor the kind sets one. `"none"` (default) spawns fresh workers with no parent context; `"full"` seeds the worker with the parent session JSONL (reuses prompt cache prefix but inherits full parent context). Use as a project-wide escape hatch when most workers need parent context. |
-| `worker.guardrailsPath` | bundled | absolute or cwd-relative path to a guardrail file appended to every worker prompt. |
+| `worker.defaultKind` | `default` | kind used when `/docket spawn` omits `--as`. |
+| `worker.parentSeedPolicy` | `none` | `"full"` seeds parent JSONL when no per-spawn context flag is present; explicit `"none"` keeps workers fresh and overrides legacy kind seeding. |
+| `worker.dockIdleHideMinutes` | 30 | hide ended workers from dock after this many minutes; 0 keeps them. |
+| `worker.pruneAfterHours` | 24 | auto-prune ended worker dirs after this many hours; 0 disables. |
+| `worker.tmuxStatusLine` | false | write compact fleet state to `docket-workers` `status-right`. |
+| `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log`. |
+| `worker.guardrailsPath` | bundled | absolute or cwd-relative universal guardrail replacement. |
 
-`worker.guardrailsPath` replaces `extensions/worker-guardrails.md` from this package. Use it to pin team-wide policies into every worker.
+`worker.maxSpawnDepth` is removed. Existing JSON keys are ignored. Workers cannot create workers, and delete/prune affects one requested worker only.
 
-`worker.defaultKind` is a deliberate power-user override. Docket preserves the configured kind's declared rights, including a custom kind with no plan gate; it does not silently add another policy layer.
+`worker.defaultKind` preserves that kind's declared rights; Docket does not add an implicit plan gate. `worker.guardrailsPath` replaces packaged `extensions/worker-guardrails.md` for every worker.
+
+### Per-spawn execution
+
+```text
+/docket spawn --model <provider/model> --thinking <level> [--seed|--fresh] [--as <kind>] [--worktree] [--] <task>
+```
+
+Both `--flag value` and `--flag=value` work. `--` ends option parsing. Unknown option-like tokens before `--` fail instead of becoming task text. If both context flags appear, `--fresh` wins.
+
+Model/thinking default to current parent execution. Model refs must exactly match `ctx.modelRegistry.getAvailable()` as `provider/model`; model ids may contain more `/` characters. Thinking is `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. Invalid execution aborts. Explicit non-off thinking on a non-reasoning model aborts; inherited thinking resolves visibly to `off`.
+
+Interactive Docket asks for confirmation when resolved model/thinking differs from parent or deprecated kind execution contributes. Bare same-parent spawn does not ask. Print/JSON/noninteractive mode never waits for UI; it emits resolved launch details and starts. Every launch and status records canonical model plus effective thinking.
+
+Execution precedence:
+
+| concern | highest → lowest |
+|---|---|
+| kind | `--as` → `worker.defaultKind` → builtin default |
+| model | `--model` / handoff choice → legacy kind model → parent model |
+| thinking | `--thinking` / handoff choice → legacy kind thinking → parent thinking |
+| context | handoff forced-fresh / `--fresh` → `--seed` → `worker.parentSeedPolicy` → legacy `parent_seed` → fresh |
+| workspace | `--worktree` → legacy `default_worktree` → writable isolated / read-only shared |
+| tmux layout | legacy compatibility value → single |
 
 ## Worker kinds
 
-A *kind* is a markdown file with YAML frontmatter. Drop into either:
+Kind markdown states task intent and authority, not normal execution. Files load from:
 
-- `~/.pi/agent/docket/worker-kinds/*.md` — user-global
-- `<project>/.pi/docket/worker-kinds/*.md` — project-scoped
+- `~/.pi/agent/docket/worker-kinds/*.md`
+- `<project>/.pi/docket/worker-kinds/*.md`
 
-Bundled kinds (`default`, `scout`, `patcher`) live in `extensions/worker-kinds/` and reload on every command.
+Bundled `default`, `scout`, and `patcher` kinds are intent-only.
 
-### Frontmatter fields
+### Current frontmatter
 
 | field | default | meaning |
 |---|---|---|
-| `name` | — | required; kebab-case slug used by `--as` |
-| `description` | — | one-line shown in `/docket kinds` |
-| `model` | parent | optional model override (`provider/model` string) |
-| `thinking` | parent/default | optional Pi thinking override: `off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
-| `read_only` | false | when true, appendix tells the worker not to edit files |
-| `default_worktree` | true | spawn this kind in a detached worktree by default |
-| `parent_seed` | `none` | `none` for a fresh worker; `full` to seed the worker session with the parent's JSONL (reuses prompt cache prefix but inherits full parent context — use only when the worker needs it). Per-spawn `--seed`/`--fresh` flags override. |
-| `max_artifacts` | — | soft cap surfaced as guidance; not enforced |
-| `max_duration_sec` | — | soft cap surfaced as guidance |
-| `can_spawn` | none | comma-list of kinds this worker may dispatch via `docket_spawn_child` |
-| `layout` | `single` | `split-events` opens a right pane with `tail -F events.ndjson` |
-| `plan_gate` | false | when true, worker must ask for parent approval before first edit or mutating command |
-| `decision_rights` | none | list of task authority lines shown in `task.md` and guardrails |
-| `guardrails_append` | — | extra guardrail lines folded into the kind appendix |
+| `name` | — | required slug selected by `--as` |
+| `description` | — | one-line intent shown by `/docket kinds` |
+| `read_only` | false | forbids edits; workspace derives shared unless `--worktree` |
+| `plan_gate` | false | requires `docket_wait` before first mutation |
+| `decision_rights` | none | authority lines shown in `task.md` and guardrails |
+| `max_artifacts` | — | soft guidance cap; not enforced |
+| `max_duration_sec` | — | soft time guidance |
+| `guardrails_append` | — | extra kind guardrail lines |
 
-The MD body is appended to the universal guardrails; it never replaces them. The protocol contract (`docket_wait`/`docket_done`/`docket_fail`/`docket_todos`) is the same for every kind.
+Markdown body appends output expectations and kind-specific instructions to universal guardrails. It never replaces them. Every kind uses exactly four protocol tools: `docket_todos`, `docket_wait`, `docket_done`, and `docket_fail`.
 
-`plan_gate` is intentionally small. The worker may do read-only discovery first, then uses `docket_wait` to show the plan, options, recommendation, and risk before it edits or runs a mutating command.
+Workspace derives from intent: read-only kinds share parent directory; writable kinds receive isolated workspace. Both start fresh unless `--seed` or `worker.parentSeedPolicy: "full"` applies.
 
-For a writable kind:
-
-```yaml
-plan_gate: true
-decision_rights:
-  - May edit docs after approval
-  - May run local tests
-```
-
-### Example: a `reviewer` kind
-
-`~/.pi/agent/docket/worker-kinds/reviewer.md`:
+Example:
 
 ```markdown
 ---
 name: reviewer
 description: Read-only diff review against HEAD.
 read_only: true
-default_worktree: false
-parent_seed: full
 max_duration_sec: 180
-thinking: high
 ---
 
-You are a code reviewer. Read the diff vs HEAD, then call `docket_done` with:
-- `outcome: findings` (or `no_evidence` when the diff is clean)
-- `summary`: one sentence on what changed and overall risk
-- `evidence`: file:line refs for each concrete finding
-- `recommended`: ordered action bullets for the parent
+Read the diff vs HEAD. Call `docket_done` with concrete file:line evidence,
+overall risk, and ordered recommendations.
 ```
 
-Spawn it:
+Choose spend at launch, not in kind:
 
-```bash
-/docket spawn --as reviewer audit the diff for missing error handling
+```text
+/docket spawn --as reviewer --model anthropic/claude-opus-4-6 --thinking high audit error handling
 ```
 
-### Example: a model + child spawn override
+### Legacy execution frontmatter
 
-`<project>/.pi/docket/worker-kinds/architect.md`:
+Through next major release Docket still reads `model`, `thinking`, `parent_seed`, `default_worktree`, and `layout`. `/docket kinds`, confirmation, warnings, and launch details mark these deprecated; valid values keep their precedence shown above. Migrate model/thinking to spawn flags, seeding to `worker.parentSeedPolicy` or context flags, and rely on intent-derived workspace.
 
-```markdown
----
-name: architect
-description: Plans a multi-file change. Can dispatch scout children for context.
-model: anthropic/claude-opus-4-7
-thinking: high
-read_only: true
-default_worktree: false
-can_spawn: scout
-layout: split-events
----
+`can_spawn` is different: it is ignored immediately and diagnosed as `can_spawn ignored; worker creation is human-only.` No worker receives a spawn tool. Legacy hierarchy fields in status JSON remain harmless extra data and are never used for list, respawn, attach fallback, or deletion.
 
-You are an architect. Produce an ordered plan: what to change, in which order,
-and which files each step touches. Use `docket_spawn_child` with `--as scout`
-when you need to ground a step in real code instead of guessing.
-```
+`layout` remains compatibility-only until dedicated tmux layout work; new kinds cannot advertise it.
 
 ### Runtime registration
 
-Other pi extensions can contribute kinds at runtime:
+Other Pi extensions contribute the same intent-only shape:
 
 ```ts
 globalThis.__docket?.registerWorkerKind({
   name: "linkcheck",
   description: "Verify external links in markdown",
   readOnly: true,
-  defaultWorktree: false,
-  body: "You verify HTTP links in *.md and report broken ones …",
+  systemPrompt: "Verify HTTP links in *.md and report broken ones.",
 });
 ```
 
-See [architecture.md](./architecture.md) for the full extension surface.
+Pre-0.8 runtime objects remain normalized through compatibility metadata and produce migration warnings. See [architecture.md](./architecture.md) for full extension surface.
 
 ## Storage paths
 
