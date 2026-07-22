@@ -29,3 +29,4 @@ video*_docket.mov
 
 # disposable local fixture and isolated Pi state for docs/manual-demo.md
 /.docket-demo/
+/docs/manual-demo.md
