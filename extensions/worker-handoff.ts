@@ -38,6 +38,7 @@ export function createWorkerHandoffProvenance(
 		sourceDeliverableId: deliverable.id,
 		sourceVersion: deliverable.version,
 		sourceRef: deliverable.ref,
+		sourceKind: "worker",
 		sourceWorkerId: deliverable.source.workerId,
 		sourceWorkerLabel: deliverable.source.workerLabel,
 		approvingDecisionId: decision.id ?? `legacy-approval:${deliverable.ref}`,

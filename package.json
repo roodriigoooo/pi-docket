@@ -1,13 +1,13 @@
 {
   "name": "@roodriigoooo/pi-docket",
   "version": "0.8.0",
-	"description": "Delegate safely without losing control — visible tmux workers, evidence-first verdicts, evidence outside model context",
+	"description": "Delegate safely without losing control — visible workers, evidence-first verdicts, and durable deliverables outside model context",
 	"keywords": [
 		"pi-package",
 		"pi-extension",
 		"docket",
 		"workers",
-		"evidence-bundles",
+		"deliverables",
 		"context",
 		"coding-agent"
 	],

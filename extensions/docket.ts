@@ -6,7 +6,7 @@
  *   /docket answers [query]          browse assistant/worker answers
  *   /docket log                      audit timeline grouped by episode
  *   /docket search <query>           ranked artifact search
- *   /docket save [flags] [note]
+ *   /docket save [--from <artifact-ref|w<N>>]
  *   /docket load [id|last|w<N>]
  *   /docket list
  *   /docket delete [id|last|w<N>]
@@ -14,11 +14,10 @@
  *   /docket inject-full <artifact-id>
  *   /docket copy <artifact-id>
  *
- * Save flags:
- *   --once, --summarize, --model, --max-output
+ * New saves create immutable deliverables; legacy bundle files are read-only compatibility data.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,9 +39,10 @@ import {
 } from "@mariozechner/pi-tui";
 import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
-import { createCheckpointCommands, type ResumeAction, type ResumeMode, type ResumeSelection } from "./checkpoint-commands.js";
-import { createCheckpointLifecycle } from "./checkpoint-lifecycle.js";
+import { createCheckpointCommands } from "./checkpoint-commands.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
+import { createDeliverableStore, storedDeliverableHandoffProvenance, type StoredDeliverable } from "./deliverable-store.js";
+import { createDeliverableLifecycle, type ParentDeliverableOutcome } from "./deliverable-lifecycle.js";
 import { gitSnapshotLabel, readGitSnapshot } from "./git-context.js";
 import { createLoadedArtifactContext, type Chip, type ChipToggleResult } from "./loaded-artifact-context.js";
 import { loadConfig } from "./docket-config.js";
@@ -141,7 +141,7 @@ function relativeTime(timestamp?: number): string {
 }
 
 function kindLabel(kind: ArtifactKind): string {
-	const labels: Record<ArtifactKind, string> = { command: "cmd", error: "error", file: "file", code: "code", prompt: "prompt", response: "answer", checkpoint: "restore" };
+	const labels: Record<ArtifactKind, string> = { command: "cmd", error: "error", file: "file", code: "code", prompt: "prompt", response: "answer", checkpoint: "legacy" };
 	return labels[kind];
 }
 
@@ -176,7 +176,7 @@ function filterBar(theme: any, active: string): string {
 		{ value: "code", label: "code" },
 		{ value: "prompt", label: "user" },
 		{ value: "response", label: "ai" },
-		{ value: "checkpoint", label: "ckpt" },
+		{ value: "checkpoint", label: "legacy" },
 	];
 	return filters.map((filter) => filter.value === active ? activePill(theme, filter.label) : inactivePill(theme, filter.label)).join(" ");
 }
@@ -297,6 +297,8 @@ function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
 	if (action === "attachReference") return "Attach";
 	if (action === "injectFull") return "Full";
 	if (action === "copyArtifact") return "Copy";
+	if (action === "save") return "Save";
+	if (action === "useDeliverable") return "Use";
 	if (action === "pin") return "Pin";
 	if (action === "markDone") return "Done";
 	if (item.reasonId === "workerFailed" || item.reasonId === "error" || item.reasonId === "failedCommand") return "Inspect failure";
@@ -306,7 +308,7 @@ function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
 	if (artifact.kind === "command") return "Inspect output";
 	if (artifact.kind === "response") return "View answer";
 	if (artifact.kind === "code") return "View code";
-	if (artifact.kind === "checkpoint") return "Open checkpoint";
+	if (artifact.kind === "checkpoint") return "Open legacy bundle";
 	return "Open";
 }
 
@@ -317,6 +319,8 @@ function selectedActionHints(item: ReviewItem, pinned: boolean, done: boolean): 
 	if (item.actions.includes("promoteWorker")) hints.push("P promote");
 	if (item.actions.includes("tellWorker")) hints.push("r reply");
 	if (item.actions.includes("openFile")) hints.push("o open");
+	if (item.actions.includes("save")) hints.push("S save");
+	if (item.actions.includes("useDeliverable")) hints.push("u use");
 	hints.push("a attach", "I full", "y copy", pinned ? "p unpin" : "p pin", done ? "x restore" : "x done", "v preview");
 	return artifact ? hints : [];
 }
@@ -381,6 +385,8 @@ export function browserCardButtons(item: ReviewItem, done: boolean): InboxButton
 		...(actions.has("promoteWorker") && item.primaryAction !== "promoteWorker" ? [{ keys: "P", action: "promote", label: "Promote", slots: ["card"] as const }] : []),
 		...(actions.has("inspect") && item.primaryAction !== "inspect" ? [{ keys: "d", action: "inspect", label: artifactIsDiffLike(item.artifact) ? "Review diff" : "Inspect", slots: ["card"] as const }] : []),
 		...(actions.has("tellWorker") && item.primaryAction !== "tellWorker" ? [{ keys: "r", action: "reply", label: "Reply", slots: ["card"] as const }] : []),
+		...(actions.has("save") ? [{ keys: "S", action: "save", label: "Save", slots: ["card"] as const }] : []),
+		...(actions.has("useDeliverable") ? [{ keys: "u", action: "use", label: "Use", slots: ["card"] as const }] : []),
 		...(actions.has("attachReference") ? [{ keys: "a", action: "attach", label: "Attach", slots: ["card"] as const }] : []),
 		...(actions.has("copyArtifact") ? [{ keys: "y", action: "copy", label: "Copy", slots: ["card"] as const }] : []),
 		...(actions.has("markDone") ? [{ keys: "space", action: "done", label: done ? "Restore" : "Done", slots: ["card"] as const }] : []),
@@ -421,8 +427,8 @@ function emptyDocketMessage(state: NavigatorState, hasArtifacts: boolean): Empty
 	if (!hasArtifacts) {
 		return {
 			title: "No session activity yet",
-			body: "Docket fills as you work: commands, file changes, errors, answers, and checkpoints become browsable here.",
-			actions: ["ask agent to inspect a file", "run a command", "load a checkpoint or worker"],
+			body: "Docket fills as you work: commands, file changes, errors, answers, and deliverables become browsable here.",
+			actions: ["ask agent to inspect a file", "run a command", "load a deliverable or worker"],
 		};
 	}
 	if (state.mode === "review") {
@@ -454,7 +460,7 @@ function emptyDocketMessage(state: NavigatorState, hasArtifacts: boolean): Empty
  * knowledge of the current selection.
  *
  * Key grammar after the 1c cleanup: reply and save are split off the old overloaded `c`
- * (`r` reply / `b` save), and the duplicate `c`/`t`/`i` aliases are gone. `a` is the one
+ * (`r` reply / `S` save), and the duplicate `c`/`t`/`i` aliases are gone. `a` is the one
  * attach key.
  */
 export function navigatorKeyIntent(data: string): NavigatorIntent | undefined {
@@ -472,7 +478,9 @@ export function navigatorKeyIntent(data: string): NavigatorIntent | undefined {
 	if (matchesKey(data, Key.enter)) return { kind: "activatePrimary" };
 	if (data === " " || data === "x") return { kind: "runAction", action: "markDone" };
 	if (data === "r") return { kind: "runAction", action: "tellWorker" };
-	if (data === "b") return { kind: "createCheckpoint" };
+	if (data === "b") return { kind: "save" };
+	if (data === "S") return { kind: "runAction", action: "save" };
+	if (data === "u") return { kind: "runAction", action: "useDeliverable" };
 	if (data === "P") return { kind: "runAction", action: "promoteWorker" };
 	if (data === "d") return { kind: "runAction", action: "inspect" };
 	if (data === "a") return { kind: "runAction", action: "attachReference" };
@@ -541,7 +549,7 @@ export class DocketView implements Component {
 			this.done({ action: "search" });
 			return;
 		}
-		if (action.action === "createCheckpoint") {
+		if (action.action === "save") {
 			this.done({ action: "save" });
 			return;
 		}
@@ -564,6 +572,8 @@ export class DocketView implements Component {
 		else if (action.id === "openFile") this.done({ action: "openFile", artifact });
 		else if (action.id === "promoteWorker") this.done({ action: "promoteWorker", artifact });
 		else if (action.id === "tellWorker") this.done({ action: "tellWorker", artifact });
+		else if (action.id === "save") this.done({ action: "save", artifact });
+		else if (action.id === "useDeliverable") this.done({ action: "useDeliverable", artifact });
 		else if (action.id === "attachReference") this.done({ action: "reference", artifact });
 		else if (action.id === "injectFull") this.done({ action: "injectFull", artifact });
 		else if (action.id === "copyArtifact") this.done({ action: "copy", artifact });
@@ -764,9 +774,9 @@ export class DocketView implements Component {
 		}
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim(`↑↓ move · / search · b save · ? more · Esc close`), 1, 0));
+		this.container.addChild(new Text(dim(`↑↓ move · / search · S save · ? more · Esc close`), 1, 0));
 		if (this.showHelp) {
-			this.container.addChild(new Text(`${muted("Card")} ${dim("Enter primary · r reply · b save · Space done · a attach · y copy · d diff · P promote · I inject full · o open file")}`, 1, 0));
+			this.container.addChild(new Text(`${muted("Card")} ${dim("Enter primary · r reply · S save · Space done · a attach · y copy · d diff · P promote · I inject full · o open file")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Modes")} ${modeBar(this.theme, this.state.mode)} ${dim("· 1 inbox · 2 answers · 3 log · tab cycle")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Source")} ${dim("s switch source · pills above show available scopes")}`, 1, 0));
 			this.container.addChild(new Text(`${muted("Filters")} ${dim("f cycle artifact kind")}`, 1, 0));
@@ -794,7 +804,7 @@ async function showDocketBrowser(
 	});
 }
 
-type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send" | "report" | "use";
+type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send" | "report" | "use" | "save";
 export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
 type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
@@ -850,6 +860,7 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 	}
 	if (canUse && (state === "reviewed" || state === "ready" || state === "ready_open_todos")) return [
 		{ id: "use", label: "Use", description: "handoff approved deliverable" },
+		{ id: "save", label: "Save", description: "copy approved deliverable to durable storage" },
 		{ id: "report", label: "Report", description: "read reviewed deliverable" },
 	];
 	if (state === "failed") return [
@@ -962,7 +973,7 @@ export class DocketVerdictView implements Component {
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options, this.canUse, Boolean(this.deliverable));
 		const max = Math.max(0, verbs.length - 1);
 		const ready = state === "ready" || state === "ready_open_todos" || state === "reviewed";
-		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready, canUse: this.canUse });
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready, canUse: this.canUse, canSave: this.canUse });
 		const action = keymap.resolve(data);
 		if (action === "close") {
 			this.finish(null);
@@ -983,6 +994,10 @@ export class DocketVerdictView implements Component {
 		}
 		else if (action === "use" && this.canUse && this.deliverable) {
 			this.finish({ verb: "use", worker: this.worker, deliverable: this.deliverable });
+			return;
+		}
+		else if (action === "save" && this.canUse && this.deliverable) {
+			this.finish({ verb: "save", worker: this.worker, deliverable: this.deliverable });
 			return;
 		}
 		else if (action === "diff" && this.changeSet) {
@@ -1143,7 +1158,7 @@ export class DocketVerdictView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse }), "footer");
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse, canSave: this.canUse }), "footer");
 		const footer = new Text(dim(`${hints} · ${exitHint}`), 1, 0);
 		this.container.addChild(footer);
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
@@ -1363,106 +1378,10 @@ function compactTokens(tokens: number): string {
 	return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens);
 }
 
-class DocketResumeView implements Component {
-	private container: Container | Box = new Container();
-	private selected: number;
-	private cachedWidth?: number;
-	private cachedLines?: string[];
-
-	constructor(
-		private tui: TUI,
-		private theme: any,
-		private summaries: CheckpointSummary[],
-		initialSelected: number,
-		private done: (result: ResumeSelection) => void,
-		private mode: ResumeMode = "resume",
-	) {
-		this.selected = Math.min(Math.max(0, initialSelected), Math.max(0, summaries.length - 1));
-	}
-
-	handleInput(data: string): void {
-		const keymap = createPickerKeymap({ mode: this.mode, canPreview: true });
-		const action = keymap.resolve(data);
-		if (action === "close") {
-			this.done(null);
-			return;
-		}
-		if (action === "down") this.selected = Math.min(this.selected + 1, Math.max(0, this.summaries.length - 1));
-		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
-		else if (action === "top") this.selected = 0;
-		else if (action === "bottom") this.selected = Math.max(0, this.summaries.length - 1);
-		else if (action === "select") {
-			const action: ResumeAction = this.mode === "delete" ? "delete" : this.mode === "load" ? "load" : "continue";
-			this.finish(action);
-		}
-		else if (action === "preview") this.finish("preview");
-		else if (action === "edit" && this.mode === "resume") this.finish("edit");
-		else if (action === "delete" && this.mode !== "load") this.finish("delete");
-		this.invalidate();
-		this.tui.requestRender();
-	}
-
-	private finish(action: ResumeAction): void {
-		const summary = this.summaries[this.selected];
-		if (summary) this.done({ action, summary, index: this.selected });
-	}
-
-	invalidate(): void {
-		this.container.invalidate();
-		this.cachedWidth = undefined;
-		this.cachedLines = undefined;
-	}
-
-	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-		this.container = new Box(2, 1, docketCardBg(this.theme));
-		const innerWidth = Math.max(20, width - 4);
-		const accent = (s: string) => this.theme.fg("accent", s);
-		const dim = (s: string) => this.theme.fg("dim", s);
-		const muted = (s: string) => this.theme.fg("muted", s);
-		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
-		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
-		const listWidth = Math.max(30, innerWidth);
-		const start = Math.max(0, Math.min(this.selected - 5, this.summaries.length - 11));
-		const visible = this.summaries.slice(start, start + 11);
-
-		const headerLeft = ` ${accent(this.theme.bold(`docket · ${this.mode}`))} ${dim(`${this.summaries.length} checkpoint${this.summaries.length === 1 ? "" : "s"}`)} `;
-		this.container.addChild(new Text(fitBorder(headerLeft, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
-		for (let i = 0; i < visible.length; i++) {
-			const summary = visible[i];
-			if (!summary) continue;
-			const absolute = start + i;
-			const entry = summary.entry;
-			const selected = absolute === this.selected;
-			const marker = selected ? accent("▸") : dim(" ");
-			const id = selected ? accent(this.theme.bold(entry.id.slice(0, 18).padEnd(18))) : muted(entry.id.slice(0, 18).padEnd(18));
-			const mode = entry.consumeOnUse ? `${entry.mode}:once` : entry.mode;
-			const stats = `${compactTokens(summary.estimatedTokens)} tok · ${summary.files} files · ${summary.errors} err · ${summary.commands} cmd`;
-			const git = gitSnapshotLabel(entry.git);
-			const meta = [stats, git].filter(Boolean).join(" · ");
-			const line = `${marker} ${id} ${accent(mode.padEnd(12))} ${dim(relativeTime(Date.parse(entry.createdAt)).padEnd(9))} ${meta} ${muted(entry.note ?? "")}`;
-			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
-		}
-		this.container.addChild(new DynamicBorder(dividerBorder));
-		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({ mode: this.mode, canPreview: true }), "footer")), 1, 0));
-		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
-		this.cachedLines = this.container.render(width);
-		this.cachedWidth = width;
-		return this.cachedLines;
-	}
-}
-
-async function showCheckpointResumeSelector(ctx: ExtensionCommandContext, summaries: CheckpointSummary[], selected: number, mode: ResumeMode = "resume"): Promise<ResumeSelection> {
-	return ctx.ui.custom((tui, theme, _kb, done) => new DocketResumeView(tui, theme, summaries, selected, done, mode), {
-		overlay: true,
-		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
-	});
-}
-
 type ParallelKindFilter = ArtifactKind | "all";
 type ParallelSource = "all" | string;
 
-const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
+	const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
 
 function workerStateColor(theme: any, state: WorkerDerivedState, text: string): string {
 	if (state === "needs_input" || state === "ready_open_todos") return theme.fg("warning", text);
@@ -1978,6 +1897,7 @@ class DocketLoadPicker implements Component {
 	private mode: LoadPickerMode;
 	private checkpointIndex = 0;
 	private workerIndex = 0;
+	private deliverableIndex = 0;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -1988,45 +1908,62 @@ class DocketLoadPicker implements Component {
 		private workers: WorkerStatus[],
 		initialMode: LoadPickerMode,
 		private done: (result: LoadPickerSelection) => void,
+		private deliverables: StoredDeliverable[] = [],
 	) {
 		this.mode = this.canonicalMode(initialMode);
 		this.checkpointIndex = Math.max(0, this.checkpoints.length - 1);
 		this.workerIndex = Math.max(0, this.workers.length - 1);
+		this.deliverableIndex = Math.max(0, this.deliverables.length - 1);
 	}
 
 	private canonicalMode(requested: LoadPickerMode): LoadPickerMode {
-		if (requested === "worker" && this.workers.length === 0 && this.checkpoints.length > 0) return "checkpoint";
-		if (requested === "checkpoint" && this.checkpoints.length === 0 && this.workers.length > 0) return "worker";
-		return requested;
+		if (requested === "deliverable" && this.deliverables.length > 0) return requested;
+		if (requested === "checkpoint" && this.checkpoints.length > 0) return requested;
+		if (requested === "worker" && this.workers.length > 0) return requested;
+		if (this.deliverables.length > 0) return "deliverable";
+		if (this.checkpoints.length > 0) return "checkpoint";
+		return "worker";
 	}
 
 	private currentMax(): number {
-		return Math.max(0, (this.mode === "checkpoint" ? this.checkpoints.length : this.workers.length) - 1);
+		const count = this.mode === "checkpoint" ? this.checkpoints.length : this.mode === "worker" ? this.workers.length : this.deliverables.length;
+		return Math.max(0, count - 1);
 	}
 
 	private currentIndex(): number {
-		return this.mode === "checkpoint" ? this.checkpointIndex : this.workerIndex;
+		return this.mode === "checkpoint" ? this.checkpointIndex : this.mode === "worker" ? this.workerIndex : this.deliverableIndex;
 	}
 
 	private setIndex(value: number): void {
 		const max = this.currentMax();
 		const clamped = Math.max(0, Math.min(value, max));
 		if (this.mode === "checkpoint") this.checkpointIndex = clamped;
-		else this.workerIndex = clamped;
+		else if (this.mode === "worker") this.workerIndex = clamped;
+		else this.deliverableIndex = clamped;
 	}
 
 	private toggleMode(target?: LoadPickerMode): void {
-		const next = target ?? (this.mode === "checkpoint" ? "worker" : "checkpoint");
+		const available: LoadPickerMode[] = [
+			...(this.checkpoints.length > 0 ? ["checkpoint" as const] : []),
+			...(this.workers.length > 0 ? ["worker" as const] : []),
+			...(this.deliverables.length > 0 ? ["deliverable" as const] : []),
+		];
+		const next = target ?? available[(Math.max(0, available.indexOf(this.mode)) + 1) % Math.max(1, available.length)];
+		if (!next) return;
 		if (next === "checkpoint" && this.checkpoints.length === 0) return;
 		if (next === "worker" && this.workers.length === 0) return;
+		if (next === "deliverable" && this.deliverables.length === 0) return;
 		this.mode = next;
 	}
 
 	handleInput(data: string): void {
 		const keymap = createPickerKeymap({
 			mode: "load",
-			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
-			canPreview: this.mode === "checkpoint",
+			canSwitch: [this.checkpoints.length, this.workers.length, this.deliverables.length].filter((count) => count > 0).length > 1,
+			canCheckpoint: this.checkpoints.length > 0,
+			canWorker: this.workers.length > 0,
+			canDeliverable: this.deliverables.length > 0,
+			canPreview: this.mode === "checkpoint" || this.mode === "deliverable",
 		});
 		const action = keymap.resolve(data);
 		if (action === "close") {
@@ -2040,8 +1977,9 @@ class DocketLoadPicker implements Component {
 		else if (action === "switch") this.toggleMode();
 		else if (action === "switchCheckpoint") this.toggleMode("checkpoint");
 		else if (action === "switchWorker") this.toggleMode("worker");
+		else if (action === "switchDeliverable") this.toggleMode("deliverable");
 		else if (action === "select") this.finishLoad();
-		else if (action === "preview" && this.mode === "checkpoint") this.finishPreview();
+		else if (action === "preview" && (this.mode === "checkpoint" || this.mode === "deliverable")) this.finishPreview();
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -2053,12 +1991,23 @@ class DocketLoadPicker implements Component {
 			return;
 		}
 		const worker = this.workers[this.workerIndex];
-		if (worker) this.done({ kind: "worker", action: "load", worker });
+		if (this.mode === "worker" && worker) this.done({ kind: "worker", action: "load", worker });
+		else if (this.mode === "deliverable") {
+			const deliverable = this.deliverables[this.deliverableIndex];
+			if (deliverable) this.done({ kind: "stored-deliverable", action: "load", deliverable });
+		}
 	}
 
 	private finishPreview(): void {
-		const summary = this.checkpoints[this.checkpointIndex];
-		if (summary) this.done({ kind: "checkpoint", action: "preview", summary });
+		if (this.mode === "checkpoint") {
+			const summary = this.checkpoints[this.checkpointIndex];
+			if (summary) this.done({ kind: "checkpoint", action: "preview", summary });
+			return;
+		}
+		if (this.mode === "deliverable") {
+			const deliverable = this.deliverables[this.deliverableIndex];
+			if (deliverable) this.done({ kind: "stored-deliverable", action: "preview", deliverable });
+		}
 	}
 
 	invalidate(): void {
@@ -2080,21 +2029,26 @@ class DocketLoadPicker implements Component {
 		const headerLeft = ` ${accent(this.theme.bold("docket · load"))} ${dim("pick a source")} `;
 		this.container.addChild(new Text(fitBorder(headerLeft, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
 
-		const tabCk = `[1] checkpoints (${this.checkpoints.length})`;
+		const tabCk = `[1] legacy bundles (${this.checkpoints.length})`;
 		const tabWk = `[2] workers (${this.workers.length})`;
-		const tabLine = `${this.mode === "checkpoint" ? accent(this.theme.bold(tabCk)) : muted(tabCk)}    ${this.mode === "worker" ? accent(this.theme.bold(tabWk)) : muted(tabWk)}`;
+		const tabDl = `[3] deliverables (${this.deliverables.length})`;
+		const tabLine = `${this.mode === "checkpoint" ? accent(this.theme.bold(tabCk)) : muted(tabCk)}    ${this.mode === "worker" ? accent(this.theme.bold(tabWk)) : muted(tabWk)}    ${this.mode === "deliverable" ? accent(this.theme.bold(tabDl)) : muted(tabDl)}`;
 		this.container.addChild(new Text(tabLine, 1, 0));
 		this.container.addChild(new DynamicBorder(dividerBorder));
 
 		const listWidth = Math.max(30, innerWidth);
 		if (this.mode === "checkpoint") this.renderCheckpoints(listWidth, accent, dim, muted);
-		else this.renderWorkers(listWidth, accent, dim, muted);
+		else if (this.mode === "worker") this.renderWorkers(listWidth, accent, dim, muted);
+		else this.renderDeliverables(listWidth, accent, dim, muted);
 
 		this.container.addChild(new DynamicBorder(dividerBorder));
 		this.container.addChild(new Text(dim(formatKeyHints(createPickerKeymap({
 			mode: "load",
-			canSwitch: this.checkpoints.length > 0 && this.workers.length > 0,
-			canPreview: this.mode === "checkpoint",
+			canSwitch: [this.checkpoints.length, this.workers.length, this.deliverables.length].filter((count) => count > 0).length > 1,
+			canCheckpoint: this.checkpoints.length > 0,
+			canWorker: this.workers.length > 0,
+			canDeliverable: this.deliverables.length > 0,
+			canPreview: this.mode === "checkpoint" || this.mode === "deliverable",
 		}), "footer")), 1, 0));
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
 		this.cachedLines = this.container.render(width);
@@ -2104,7 +2058,7 @@ class DocketLoadPicker implements Component {
 
 	private renderCheckpoints(listWidth: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
 		if (this.checkpoints.length === 0) {
-			this.container.addChild(new Text(muted("no checkpoints — press 2 for workers"), 2, 0));
+			this.container.addChild(new Text(muted("no legacy bundles — press 2 for workers"), 2, 0));
 			return;
 		}
 		const start = Math.max(0, Math.min(this.checkpointIndex - 5, this.checkpoints.length - 11));
@@ -2151,10 +2105,31 @@ class DocketLoadPicker implements Component {
 			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
 		}
 	}
+
+	private renderDeliverables(listWidth: number, accent: (s: string) => string, dim: (s: string) => string, muted: (s: string) => string): void {
+		if (this.deliverables.length === 0) {
+			this.container.addChild(new Text(muted("no deliverables — press 1 for legacy bundles or 2 for workers"), 2, 0));
+			return;
+		}
+		const start = Math.max(0, Math.min(this.deliverableIndex - 5, this.deliverables.length - 11));
+		const visible = this.deliverables.slice(start, start + 11);
+		for (let i = 0; i < visible.length; i++) {
+			const deliverable = visible[i];
+			if (!deliverable) continue;
+			const absolute = start + i;
+			const selected = absolute === this.deliverableIndex;
+			const marker = selected ? accent("▸") : dim(" ");
+			const ref = selected ? accent(this.theme.bold(deliverable.ref.slice(0, 28).padEnd(28))) : muted(deliverable.ref.slice(0, 28).padEnd(28));
+			const source = deliverable.source.kind === "worker" ? deliverable.source.workerLabel : "parent";
+			const meta = `${source} · v${deliverable.version} · ${relativeTime(Date.parse(deliverable.savedAt))}`;
+			const line = `${marker} ${ref} ${accent(deliverable.outcome.padEnd(12))} ${dim(meta)} ${muted(deliverable.summary)}`;
+			this.container.addChild(new Text(truncateToWidth(line, listWidth - 2), 1, 0));
+		}
+	}
 }
 
-async function showLoadPicker(ctx: ExtensionCommandContext, checkpoints: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection> {
-	return ctx.ui.custom<LoadPickerSelection>((tui, theme, _kb, done) => new DocketLoadPicker(tui, theme, checkpoints, workers, initialMode, done), {
+async function showLoadPicker(ctx: ExtensionCommandContext, checkpoints: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode, deliverables: StoredDeliverable[] = []): Promise<LoadPickerSelection> {
+	return ctx.ui.custom<LoadPickerSelection>((tui, theme, _kb, done) => new DocketLoadPicker(tui, theme, checkpoints, workers, initialMode, done, deliverables), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
 	});
@@ -2174,14 +2149,6 @@ type LoadedCheckpoint = {
 	note?: string;
 	consumeOnUse?: boolean;
 };
-
-function checkpointContextContent(checkpoint: CheckpointIndexEntry, content: string): string {
-	return [`<<docket-checkpoint ${checkpoint.id}>>`, content.trim(), `<</docket-checkpoint>>`].join("\n");
-}
-
-function loadedCheckpointMeta(checkpoint: CheckpointIndexEntry): LoadedCheckpoint {
-	return { id: checkpoint.id, mode: checkpoint.mode, note: checkpoint.note, consumeOnUse: checkpoint.consumeOnUse };
-}
 
 function loadedCheckpointFromSession(ctx: ExtensionContext): LoadedCheckpoint | undefined {
 	const branch = ctx.sessionManager.getBranch();
@@ -2209,46 +2176,17 @@ function setLoadedCheckpointWidget(ctx: ExtensionContext, checkpoint: LoadedChec
 			const once = checkpoint.consumeOnUse ? muted("/once") : "";
 			const note = checkpoint.note ? dim(` · ${truncateToWidth(checkpoint.note, 48)}`) : "";
 			const container = new Container();
-			container.addChild(new Text(`${accent(theme.bold("docket"))} ${dim("·")} ${accent(`@ckpt:${checkpoint.id}`)}${muted(`/${checkpoint.mode}`)}${once} ${dim("loaded in context")}${note}`, 0, 0));
+			container.addChild(new Text(`${accent(theme.bold("docket"))} ${dim("·")} ${accent(`@legacy-bundle:${checkpoint.id}`)}${muted("/legacy")}${once} ${dim("loaded in context")}${note}`, 0, 0));
 			return container;
 		},
 		{ placement: "aboveEditor" },
 	);
 }
 
-async function startCheckpointSession(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	checkpoint: CheckpointIndexEntry,
-	content: string,
-	queueConsume: (checkpoint: CheckpointIndexEntry) => void,
-): Promise<void> {
-	const parentSession = ctx.sessionManager.getSessionFile();
-	const checkpointMeta = loadedCheckpointMeta(checkpoint);
-	const result = await ctx.newSession({
-		parentSession,
-		setup: async (sessionManager) => {
-			sessionManager.appendCustomMessageEntry(DOCKET_CHECKPOINT_CONTEXT_TYPE, checkpointContextContent(checkpoint, content), false, checkpointMeta);
-		},
-		withSession: async (replacementCtx) => {
-			setLoadedCheckpointWidget(replacementCtx, checkpointMeta);
-			if (checkpoint.consumeOnUse) {
-				queueConsume(checkpoint);
-				replacementCtx.ui.notify(`Docket loaded checkpoint ${checkpoint.id} (consume on session end)`, "info");
-			} else {
-				replacementCtx.ui.notify(`Docket loaded checkpoint ${checkpoint.id}`, "info");
-			}
-		},
-	});
-	if (result.cancelled) notifyDocket(pi, ctx, "Docket continue cancelled", "info");
-}
-
 async function confirmDeleteCheckpoint(ctx: ExtensionCommandContext, checkpoint: CheckpointIndexEntry): Promise<boolean> {
 	if (!ctx.hasUI) return true;
-	return ctx.ui.confirm("Delete Docket checkpoint?", `Delete checkpoint ${checkpoint.id}? This cannot be undone.`);
+	return ctx.ui.confirm("Delete Docket legacy bundle?", `Delete legacy bundle ${checkpoint.id}? This cannot be undone.`);
 }
-
-type QueueConsume = (checkpoint: CheckpointIndexEntry) => void;
 
 type CompletionCandidate = { value: string; label: string };
 
@@ -2256,14 +2194,24 @@ async function checkpointAndWorkerCandidates(subcommand: string, projectRoot?: s
 	const workerOnly = subcommand === "tell" || subcommand === "verdict";
 	const wantWorkers = subcommand === "load" || subcommand === "unload" || subcommand === "delete" || workerOnly;
 	const wantCheckpoints = subcommand !== "unload" && !workerOnly;
+	const wantDeliverables = subcommand === "load" || subcommand === "unload" || subcommand === "delete";
 	const out: CompletionCandidate[] = [];
+
+	if (wantDeliverables) {
+		try {
+			const deliverables = await createDeliverableStore().list();
+			const recent = deliverables.slice(-10).reverse();
+			if (recent.length > 0) out.push({ value: "last", label: `last → ${recent[0]!.ref}` });
+			for (const entry of recent) out.push({ value: entry.ref, label: `${entry.ref}  ${entry.source.kind === "worker" ? entry.source.workerLabel : "parent"}  ${entry.summary}` });
+		} catch { /* ignore */ }
+	}
 
 	if (wantCheckpoints) {
 		try {
 			const store = createCheckpointStore();
 			const list = await store.list({ includeConsumed: true });
 			const recent = list.slice(-10).reverse();
-			if (recent.length > 0) out.push({ value: "last", label: `last → ${recent[0]!.id}` });
+			if (recent.length > 0 && !out.some((candidate) => candidate.value === "last")) out.push({ value: "last", label: `last → ${recent[0]!.id}` });
 			for (const entry of recent) {
 				const tag = entry.consumedAt ? ":consumed" : entry.consumeOnUse ? ":once" : "";
 				out.push({ value: entry.id, label: `${entry.id}  ${entry.mode}${tag}  ${entry.note ?? ""}`.trim() });
@@ -2374,7 +2322,7 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 export default function docketExtension(pi: ExtensionAPI) {
 	let loadedCheckpoint: LoadedCheckpoint | undefined;
 	let activeCtx: ExtensionContext | undefined;
-	let sweptOnce = false;
+	let configMigrationWarned = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let lastHeartbeatSignature: string | undefined;
 	let workerDockUnwatch: Unwatcher | undefined;
@@ -2410,16 +2358,13 @@ export default function docketExtension(pi: ExtensionAPI) {
 		readWorkerArtifacts: readWorkerArtifactsForReview,
 	});
 
-	const queueShutdownConsume: QueueConsume = (checkpoint) => loadedArtifacts.queueCheckpointConsume(checkpoint);
-
 	const drainShutdownConsume = async (): Promise<void> => {
 		const store = createCheckpointStore();
 		await loadedArtifacts.drainCheckpointConsumes((checkpoint) => store.markConsumed(checkpoint));
 	};
 
-	// Continue composes load: a continued session auto-mounts the checkpoint's bundle at zero token
-	// cost, so the orientation header's artifact refs resolve via /docket ref. Survives restarts
-	// because it keys off the checkpoint marker left in the session branch. See ADR-0001.
+	// Historical continued sessions auto-mount their legacy bundle at zero token
+	// cost by recognizing the marker already present in the session branch.
 	const mountLoadedCheckpoint = async (id: string): Promise<void> => {
 		try {
 			const entry = await createCheckpointStore().find(id, { includeConsumed: true });
@@ -2428,12 +2373,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 	};
 
 	const maybeSweep = async (cwd: string): Promise<void> => {
-		if (sweptOnce) return;
-		sweptOnce = true;
-		try {
-			const config = await loadConfig(cwd);
-			await createCheckpointStore().sweepConsumed(config.consumedRetentionDays);
-		} catch { /* best-effort */ }
 		await maybeSweepWorkers(cwd);
 	};
 
@@ -2637,26 +2576,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 		return kindRegistry.get(status.kind);
 	}
 
-	const updateTmuxStatusLine = (workers: WorkerStatus[]): void => {
-		const counts = { needs_input: 0, ready: 0, failed: 0, active: 0 };
-		const now = Date.now();
-		for (const worker of workers) {
-			const state = deriveWorkerState(worker, now);
-			if (state === "needs_input") counts.needs_input++;
-			else if (state === "ready" || state === "ready_open_todos") counts.ready++;
-			else if (state === "failed") counts.failed++;
-			else if (state === "thinking" || state === "starting") counts.active++;
-		}
-		const parts: string[] = [];
-		if (counts.needs_input > 0) parts.push(`#[fg=yellow,bold]?${counts.needs_input}#[default]`);
-		if (counts.failed > 0) parts.push(`#[fg=red,bold]✗${counts.failed}#[default]`);
-		if (counts.ready > 0) parts.push(`#[fg=green]✓${counts.ready}#[default]`);
-		if (counts.active > 0) parts.push(`#[fg=blue]●${counts.active}#[default]`);
-		const line = parts.length > 0 ? `docket ${parts.join(" ")} ` : "docket · idle ";
-		spawnSync("tmux", ["set-option", "-t", "docket-workers", "status-right", line], { stdio: "ignore" });
-		spawnSync("tmux", ["set-option", "-t", "docket-workers", "status", "on"], { stdio: "ignore" });
-	};
-
 	const reconcileOrphanedWorkers = async (workers: WorkerStatus[]): Promise<void> => {
 		const ACTIVE_STATES: Array<WorkerStatus["state"]> = ["starting", "active", "idle", "needs_input"];
 		const sharedTargets = workers.filter((w) => isSharedSessionTarget(w.tmuxSession) && ACTIVE_STATES.includes(w.state));
@@ -2705,8 +2624,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 			for (const [id, events] of newEventsByWorker) {
 				for (const ev of events) docketSurface.emitWorkerEvent(id, ev);
 			}
-			const tmuxStatusEnabled = await loadConfig(ctx.cwd).then((c) => c.worker?.tmuxStatusLine === true).catch(() => false);
-			if (tmuxStatusEnabled && sharedSessionExists()) updateTmuxStatusLine(allWorkers);
 			await reconcileOrphanedWorkers(allWorkers);
 			await harvestDeadWorkerPanes(allWorkers);
 			const now = Date.now();
@@ -3264,10 +3181,51 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const intent = parsed.intent;
 			const workerStore = createWorkerStore();
 			const checkpointStore = createCheckpointStore();
+			const deliverableStore = createDeliverableStore();
 			await ensureKindRegistryLoaded(ctx.cwd);
 			const docketConfig = await loadConfig(ctx.cwd).catch(() => undefined);
+			if (!configMigrationWarned && docketConfig?.migrationWarnings?.length) {
+				configMigrationWarned = true;
+				for (const warning of docketConfig.migrationWarnings) notifyDocket(pi, ctx, `Docket migration: ${warning}`, "warning");
+			}
 			const maxActive = typeof docketConfig?.worker?.maxActive === "number" ? docketConfig.worker.maxActive : 8;
-			const captureTerminal = docketConfig?.worker?.captureTerminal === true;
+			const deliverableLifecycle = createDeliverableLifecycle({
+				store: deliverableStore,
+				workerStore,
+				readDecisionEvents: () => createDecisionLog().read(),
+				catalog: async () => createArtifactCatalog(ctx, await loadConfig(ctx.cwd), loadedArtifacts.carryoverArtifacts()),
+				cwd: ctx.cwd,
+				...(ctx.sessionManager.getSessionFile?.() ? { parentSession: ctx.sessionManager.getSessionFile() } : {}),
+				hasUI: ctx.hasUI,
+				edit: (title, content) => ctx.hasUI ? ctx.ui.editor(title, content) : Promise.resolve(undefined),
+				selectOutcome: async (): Promise<ParentDeliverableOutcome | undefined> => {
+					if (!ctx.hasUI) return undefined;
+					const selected = await ctx.ui.select("Deliverable outcome", ["Proposal", "Findings", "Completed"]);
+					return selected === "Proposal" ? "proposal" : selected === "Findings" ? "findings" : selected === "Completed" ? "completed" : undefined;
+				},
+				selectSource: async () => {
+					if (!ctx.hasUI) return undefined;
+					const choices: string[] = [];
+					const sources = new Map<string, { kind: "worker" | "artifact"; ref: string }>();
+					const workers = await workerStore.list({ projectRoot: sessionProjectKey ?? projectKey(ctx.cwd) });
+					for (const worker of workers.slice(-12).reverse()) {
+						const current = await workerStore.readCurrentDeliverable(worker);
+						if (!current) continue;
+						choices.push(`${workerSourceLabel(worker)} · ${current.ref}`);
+						sources.set(choices[choices.length - 1]!, { kind: "worker", ref: workerSourceLabel(worker) });
+					}
+					const catalog = await createArtifactCatalog(ctx, await loadConfig(ctx.cwd), loadedArtifacts.carryoverArtifacts());
+					for (const artifact of catalog.list().slice(0, 40)) {
+						const label = `artifact · ${artifact.displayId} · ${artifact.title}`;
+						choices.push(label);
+						sources.set(label, { kind: "artifact", ref: artifact.ref });
+					}
+					if (choices.length === 0) return undefined;
+					const selected = await ctx.ui.select("Save deliverable from", choices);
+					return selected ? sources.get(selected) : undefined;
+				},
+				notify: (text, level) => notifyDocket(pi, ctx, text, level),
+			});
 			const workerCommands = createWorkerCommands({
 				store: workerStore,
 				loadedArtifacts,
@@ -3279,7 +3237,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 				availableModels: () => ctx.modelRegistry.getAvailable(),
 				kinds: kindRegistry,
 				maxActive: () => maxActive,
-				captureTerminal: () => captureTerminal,
 				defaultKind: () => docketConfig?.worker?.defaultKind,
 				parentSeedPolicy: () => docketConfig?.worker?.parentSeedPolicy,
 				hasUI: ctx.hasUI,
@@ -3290,14 +3247,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 			});
 			const checkpointCommands = createCheckpointCommands({
 				store: checkpointStore,
-				hasUI: ctx.hasUI,
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 				confirmDelete: (checkpoint) => confirmDeleteCheckpoint(ctx, checkpoint),
-				selectCheckpoint: (summaries, selected, mode) => showCheckpointResumeSelector(ctx, summaries, selected, mode),
-				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
-				editText: (title, text) => ctx.hasUI ? ctx.ui.editor(title, text) : Promise.resolve(undefined),
-				startSession: (checkpoint, content) => startCheckpointSession(pi, ctx, checkpoint, content, queueShutdownConsume),
 			});
 			await createDocketCommandRouter({
 				hasUI: ctx.hasUI,
@@ -3308,6 +3260,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				loadedArtifacts,
 				workerStore,
 				checkpointStore,
+				deliverableStore,
+				deliverableLifecycle,
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 				announce: (subject, detail, kind) => announceAction(pi, ctx, subject, detail, kind),
@@ -3370,21 +3324,13 @@ export default function docketExtension(pi: ExtensionAPI) {
 					notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				}, worker, changeSet, options),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
-				createCheckpoint: async (options) => {
-					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-					await checkpointLifecycle.create(options);
-				},
-				createHandoffCheckpoint: async () => {
-					const checkpointLifecycle = await createCheckpointLifecycle(pi, ctx);
-					await checkpointLifecycle.create({ note: "", consumeOnUse: false, summarize: false });
-				},
 				catalog: async () => {
 					const config = await loadConfig(ctx.cwd);
 					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());
 				},
 				readWorkersWithArtifacts: (options) => readWorkersWithArtifacts(workerStore, options?.allProjects ? undefined : sessionProjectKey ?? projectKey(ctx.cwd)),
 				showParallelWorkDashboard: (workers, artifactsByWorker, options) => showParallelWorkDashboard(ctx, workers, artifactsByWorker, options?.groupByProject === true, explicitlyLoadedWorkerIds),
-				showLoadPicker: (summaries, workers, initialMode) => showLoadPicker(ctx, summaries, workers, initialMode),
+				showLoadPicker: (summaries, workers, initialMode, deliverables) => showLoadPicker(ctx, summaries, workers, initialMode, deliverables),
 				showText: (title, text, options) => showTextViewer(ctx, title, text, options?.diff ? "diff" : undefined),
 				showDocketBrowser: (catalog, artifacts, initialMode) => showDocketBrowser(ctx, catalog, artifacts, pinnedRefs, completedRefs, initialMode),
 				showVerdict: (worker, remaining) => showWorkerVerdict(ctx, worker, remaining),
@@ -3477,7 +3423,48 @@ export default function docketExtension(pi: ExtensionAPI) {
 					});
 					if (spawned) await refreshWorkerDockWidget();
 				},
+				useStoredDeliverable: async (stored) => {
+					if (!ctx.hasUI) {
+						notifyDocket(pi, ctx, "Docket Use needs interactive UI. Use only queues a parent chip or starts a confirmed worker.", "error");
+						return;
+					}
+					const destination = await ctx.ui.select(`Use ${stored.ref}`, ["Parent", "Worker"]);
+					if (!destination) return;
+					if (destination === "Parent") {
+						const slot = await loadedArtifacts.loadStoredDeliverable(stored);
+						const artifact = slot.artifacts.find((item) => item.ref === stored.ref);
+						if (!artifact) return;
+						const result = loadedArtifacts.toggleChip(artifact, "full");
+						refreshChipWidget();
+						announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, result);
+						return;
+					}
+					const task = (await ctx.ui.editor(`Handoff task · ${stored.ref}`, ""))?.trim();
+					if (!task) return;
+					const models = availableHandoffModels(ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })));
+					if (models.length === 0) {
+						notifyDocket(pi, ctx, "Docket handoff found no available model.", "error");
+						return;
+					}
+					const modelLabels = models.map((model) => `${handoffModelRef(model)}${model.name ? ` · ${model.name}` : ""}`);
+					const pickedLabel = await ctx.ui.select("Handoff model", modelLabels);
+					const model = models[pickedLabel ? modelLabels.indexOf(pickedLabel) : -1];
+					if (!model) return;
+					const thinkingChoices = handoffThinkingChoices(model);
+					const thinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
+					if (!thinking || !thinkingChoices.includes(thinking as typeof thinkingChoices[number])) return;
+					const spawned = await workerCommands.spawn(task, {
+						model: handoffModelRef(model),
+						thinking: thinking as WorkerThinking,
+						sourceDeliverable: { body: stored.body, provenance: storedDeliverableHandoffProvenance(stored) },
+					});
+					if (spawned) await refreshWorkerDockWidget();
+				},
+				saveWorkerDeliverable: async (_sourceWorker, deliverable) => {
+					await deliverableLifecycle.saveWorker(deliverable.source.workerId, workerDeliverablePointer(deliverable));
+				},
 				confirmDeleteWorker: (worker) => ctx.hasUI ? ctx.ui.confirm("Stop Docket worker?", `Stop ${workerSourceLabel(worker)} and remove its workspace? This cannot be undone.`) : Promise.resolve(true),
+				confirmDeleteDeliverable: (deliverable) => ctx.hasUI ? ctx.ui.confirm("Delete Docket deliverable?", `Delete ${deliverable.ref}? This immutable record cannot be recovered.`) : Promise.resolve(true),
 				copyText: copyToClipboard,
 				announceChipChange: (artifact, mode, result) => announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title }, result),
 				parallelKindLabel,

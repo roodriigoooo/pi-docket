@@ -18,6 +18,8 @@ export type ReviewActionId =
 	| "attachReference"
 	| "injectFull"
 	| "copyArtifact"
+	| "save"
+	| "useDeliverable"
 	| "pin"
 	| "markDone";
 export type ReviewReasonId =
@@ -82,13 +84,13 @@ export type NavigatorIntent =
 	| { kind: "toggleDetail" }
 	| { kind: "activatePrimary" }
 	| { kind: "runAction"; action: ReviewActionId }
-	| { kind: "createCheckpoint" }
+	| { kind: "save" }
 	| { kind: "search" }
 	| { kind: "close" };
 
 export type NavigatorAction =
 	| { action: "runReviewAction"; id: ReviewActionId; item: ReviewItem }
-	| { action: "createCheckpoint" }
+	| { action: "save" }
 	| { action: "search" }
 	| { action: "close" };
 
@@ -248,7 +250,7 @@ export function reviewCategoryLabel(category: ReviewCategory | undefined): strin
 	if (category === "ready-for-review") return "Ready for review";
 	if (category === "failed-blocked") return "Failed / blocked";
 	if (category === "patch-proposed") return "Patch proposed";
-	if (category === "checkpoint-available") return "Checkpoint available";
+	if (category === "checkpoint-available") return "Legacy bundle available";
 	if (category === "pinned") return "Pinned";
 	if (category === "recent") return "Recently reviewed";
 	return "Other";
@@ -324,7 +326,8 @@ function reviewActions(artifact: Artifact): ReviewActionId[] {
 	if (isWorkerChangeSet(artifact)) actions.push("promoteWorker");
 	if (artifact.kind === "file") actions.push("openFile");
 	if (artifactWorkerRef(artifact)) actions.push("tellWorker");
-	actions.push("attachReference", "injectFull", "copyArtifact", "pin", "markDone");
+	actions.push("attachReference", "injectFull", "copyArtifact", "save", "pin", "markDone");
+	if (artifact.meta?.storedDeliverable === true) actions.push("useDeliverable");
 	return [...new Set(actions)];
 }
 
@@ -482,7 +485,7 @@ export function handleNavigatorIntent(state: NavigatorState, artifacts: Artifact
 
 	if (intent.kind === "close") return { state: normalizedState, action: { action: "close" } };
 	if (intent.kind === "search") return { state: normalizedState, action: { action: "search" } };
-	if (intent.kind === "createCheckpoint") return { state: normalizedState, action: { action: "createCheckpoint" } };
+	if (intent.kind === "save") return { state: normalizedState, action: { action: "save" } };
 	if (intent.kind === "move") return { state: { ...normalizedState, selected: clampSelected(selected + intent.by, items) } };
 	if (intent.kind === "top") return { state: { ...normalizedState, selected: 0 } };
 	if (intent.kind === "bottom") return { state: { ...normalizedState, selected: Math.max(0, items.length - 1) } };

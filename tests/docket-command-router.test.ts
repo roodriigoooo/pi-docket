@@ -10,6 +10,8 @@ import type { WorkerCommands } from "../extensions/worker-commands.js";
 import type { WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import type { DecisionEvent, DecisionRecord } from "../extensions/decision-log.js";
 import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
+import type { DeliverableLifecycle } from "../extensions/deliverable-lifecycle.js";
+import type { DeliverableStore, StoredDeliverable } from "../extensions/deliverable-store.js";
 import { findVerdictWorker, type WorkerVerdictDeps } from "../extensions/worker-verdict.js";
 
 const artifact: Artifact = { id: "a1", displayId: "a1", ref: "command:1", kind: "command", title: "npm test", subtitle: "", body: "passed", timestamp: 1 };
@@ -17,6 +19,28 @@ const checkpoint: CheckpointIndexEntry = { id: "ck-1", mode: "handoff", file: "/
 const summary: CheckpointSummary = { entry: checkpoint, artifactCount: 1, estimatedTokens: 1, files: 0, errors: 0, commands: 0 };
 const worker: WorkerStatus = { id: "worker-1", index: 2, tmuxSession: "docket-worker-1", task: "inspect bug", cwd: "/repo", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", state: "ready", summary: "ship the fix" };
 const workerStatus: Artifact = { id: "w2.status", displayId: "w2.status", ref: "worker-status:worker-1:0", kind: "response", title: "w2 ready: ship the fix", subtitle: "inspect bug", body: "worker: w2\nstate: ready\nmessage:\nship the fix", timestamp: 1, meta: { workerId: "worker-1", workerLabel: "w2", workerStatus: "ready", summary: "ship the fix" } };
+const storedDeliverable: StoredDeliverable = {
+	schemaVersion: 1,
+	id: "parent-20260101-abcdef",
+	version: 1,
+	ref: "deliverable:parent-20260101-abcdef:1",
+	createdAt: "2026-01-01T00:00:00.000Z",
+	savedAt: "2026-01-01T00:01:00.000Z",
+	body: "durable exact body",
+	summary: "durable result",
+	outcome: "findings",
+	evidence: [],
+	recommendations: [],
+	refs: [],
+	source: {
+		kind: "parent",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		cwd: "/repo",
+		selectedArtifact: { displayId: "a1", ref: artifact.ref, kind: artifact.kind, title: artifact.title, subtitle: artifact.subtitle, timestamp: artifact.timestamp },
+	},
+	reviewNotes: [],
+	approval: { kind: "human", decisionId: "human-authorship:parent-20260101-abcdef", decidedAt: "2026-01-01T00:01:00.000Z", reason: "parent-authorship" },
+};
 
 function fakeCatalog(): ArtifactCatalog {
 	return {
@@ -26,8 +50,6 @@ function fakeCatalog(): ArtifactCatalog {
 		fullText: (item) => `full:${item.displayId}`,
 		inspect: async () => ({ title: "", text: "" }),
 		search: async () => [artifact],
-		selectForCheckpoint: () => [],
-		checkpointPayload: () => [],
 		summary: (item) => item,
 	};
 }
@@ -40,12 +62,16 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		defaultLoadSource: ({ checkpoints, workers }: { checkpoints: CheckpointIndexEntry[]; workers: WorkerStatus[] }): LoadableSource | undefined => checkpoints[0] ? { kind: "checkpoint", checkpoint: checkpoints[0] } : workers[0] ? { kind: "worker", worker: workers[0] } : undefined,
 		loadSource: async (source: LoadableSource) => {
 			calls.push(`loadSource:${source.kind}`);
-			return { source, queuedConsume: source.kind === "checkpoint", slot: { slot: source.kind === "checkpoint" ? "c1" : "w2", kind: source.kind, sourceId: source.kind === "checkpoint" ? source.checkpoint.id : source.worker.id, artifacts: source.kind === "worker" ? [workerStatus] : [artifact] } };
+			const slot = source.kind === "checkpoint" ? "c1" : source.kind === "stored-deliverable" ? "d1" : "w2";
+			const kind = source.kind === "stored-deliverable" ? "deliverable" : source.kind;
+			const sourceId = source.kind === "checkpoint" ? source.checkpoint.id : source.kind === "stored-deliverable" ? source.deliverable.ref : source.worker.id;
+			const artifacts = source.kind === "worker" ? [workerStatus] : source.kind === "stored-deliverable" ? [{ ...artifact, ref: source.deliverable.ref, body: source.deliverable.body }] : [artifact];
+			return { source, queuedConsume: source.kind === "checkpoint", slot: { slot, kind, sourceId, artifacts } };
 		},
 		toggleChip: () => { calls.push("toggleChip"); return "added" as const; },
 		slots: () => [],
 		unloadSlot: () => undefined,
-		unloadSource: () => undefined,
+		unloadSource: (kind: string, sourceId: string) => { calls.push(`unloadSource:${kind}:${sourceId}`); return undefined; },
 		chips: () => [],
 		carryoverArtifacts: () => [],
 		reset: () => {},
@@ -67,7 +93,6 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		completionCandidates: async () => [],
 	} satisfies WorkerCommands;
 	const checkpointCommands = {
-		continue: async () => { calls.push("checkpoint.continue"); },
 		delete: async () => true,
 		list: async () => { calls.push("checkpoint.list"); },
 	} satisfies CheckpointCommands;
@@ -108,8 +133,6 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		promoteWorkerChangeSet: async (item) => { calls.push(`promote:${item.ref}`); return true; },
 		reviewWorkerChangeSet: async () => ({ kind: "returned" }),
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
-		createCheckpoint: async () => { calls.push("createCheckpoint"); },
-		createHandoffCheckpoint: async () => { calls.push("createHandoffCheckpoint"); },
 		catalog: async () => fakeCatalog(),
 		readWorkersWithArtifacts: async () => ({ workers: [worker], artifactsByWorker: new Map([[worker.id, [artifact]]]) }),
 		showParallelWorkDashboard: async () => null,
@@ -182,6 +205,67 @@ test("Docket Command Router loads immutable deliverable instead of competing wor
 	await router.handle({ kind: "load", refKind: "worker", ref: "w2", includeConsumed: false });
 
 	assert.deepEqual(calls, ["loadSource:deliverable", "loaded:worker-1", "announce:loaded w2 · 1 artifact", "refreshWorkers"]);
+});
+
+test("Docket Command Router routes save to the durable lifecycle", async () => {
+	const saved: unknown[] = [];
+	const deliverableLifecycle = {
+		save: async (source: unknown) => { saved.push(source); return undefined; },
+		saveWorker: async () => undefined,
+		saveArtifact: async () => undefined,
+	} as DeliverableLifecycle;
+	const { router } = harness({ deliverableLifecycle });
+
+	await router.handle({ kind: "save", source: { kind: "worker", ref: "w2" } });
+
+	assert.deepEqual(saved, [{ kind: "worker", ref: "w2" }]);
+});
+
+test("Docket Command Router mounts a stored deliverable without queuing model context", async () => {
+	const deliverableStore = {
+		find: async () => storedDeliverable,
+		list: async () => [storedDeliverable],
+	} as unknown as DeliverableStore;
+	const { calls, router } = harness({ deliverableStore });
+
+	await router.handle({ kind: "load", ref: storedDeliverable.ref, refKind: "deliverable" });
+
+	assert.deepEqual(calls, ["loadSource:stored-deliverable", "announce:loaded d1 · 1 artifact"]);
+	assert.equal(calls.includes("toggleChip"), false);
+});
+
+test("Docket Command Router lists and explicitly deletes durable records alongside legacy bundles", async () => {
+	let listing = "";
+	const deleted: string[] = [];
+	const deliverableStore = {
+		find: async () => storedDeliverable,
+		list: async () => [storedDeliverable],
+		delete: async (deliverable: StoredDeliverable) => { deleted.push(deliverable.ref); return true; },
+	} as unknown as DeliverableStore;
+	const checkpointStore = {
+		find: async () => checkpoint,
+		list: async () => [checkpoint],
+		listSummaries: async () => [summary],
+		readMarkdown: async () => "markdown",
+	} as unknown as CheckpointStore;
+	const { calls, router } = harness({
+		hasUI: true,
+		deliverableStore,
+		checkpointStore,
+		confirmDeleteDeliverable: async () => true,
+		emitText: (text) => { listing = text; },
+	});
+
+	await router.handle({ kind: "list", includeConsumed: true });
+	assert.match(listing, new RegExp(storedDeliverable.ref));
+	assert.match(listing, /legacy bundle/);
+
+	await router.handle({ kind: "delete", target: storedDeliverable.ref, targetKind: "deliverable" });
+	assert.deepEqual(deleted, [storedDeliverable.ref]);
+	assert.deepEqual(calls, [
+		`unloadSource:deliverable:${storedDeliverable.ref}`,
+		`notify:Docket deliverable deleted: ${storedDeliverable.ref}`,
+	]);
 });
 
 test("Docket Command Router routes worker delete and refreshes dock", async () => {

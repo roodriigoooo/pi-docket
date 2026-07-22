@@ -10,7 +10,7 @@ import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./
 import { isReviewableWorker, verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use" | "save";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
 	deliverable?: WorkerDeliverable;
@@ -35,6 +35,7 @@ export type WorkerVerdictDeps = {
 	reviewNote?(title: string, prefill: string): Promise<string | undefined>;
 	/** Use is separate from approval and never writes a verdict/lifecycle state. */
 	useDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
+	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	markArtifactDone(artifact: Artifact): void;
@@ -163,6 +164,12 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 				continue;
 			}
 			await deps.useDeliverable(latest, deliverable);
+			await deps.refreshWorkerDockWidget();
+			return "stop";
+		}
+		if (result.verb === "save") {
+			if (!deliverable || !deps.saveWorkerDeliverable) continue;
+			await deps.saveWorkerDeliverable(latest, deliverable);
 			await deps.refreshWorkerDockWidget();
 			return "stop";
 		}

@@ -6,17 +6,19 @@ import { isSharedSessionTarget, SHARED_TMUX_SESSION } from "./worker-store.js";
 import type { CheckpointCommands } from "./checkpoint-commands.js";
 import type { CheckpointStore, CheckpointSummary } from "./checkpoint-store.js";
 import type { ArtifactCatalog } from "./artifact-catalog.js";
-import type { LoadedArtifactContext, LoadResult } from "./loaded-artifact-context.js";
+import { storedDeliverableWorkerProjection, type LoadedArtifactContext, type LoadResult } from "./loaded-artifact-context.js";
 import type { NavigatorMode } from "./docket-navigator.js";
-import type { CheckpointCreateOptions, DocketIntent } from "./docket-command-grammar.js";
+import type { DocketIntent } from "./docket-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
 import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
+import type { DeliverableLifecycle } from "./deliverable-lifecycle.js";
+import type { DeliverableStore, StoredDeliverable } from "./deliverable-store.js";
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
 
-export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "save" | "search" | "tellWorker" | "verdict"; artifact?: Artifact };
+export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "search" | "tellWorker" | "verdict" | "useDeliverable"; artifact?: Artifact } | { action: "save"; artifact?: Artifact };
 
 export type { DocketVerdictAction } from "./worker-verdict.js";
 
@@ -30,10 +32,11 @@ export type ParallelWorkAction =
 	| { action: "details" | "verdict" | "load" | "copyAttach" | "tell" | "stop"; worker: WorkerStatus }
 	| null;
 
-export type LoadPickerMode = "checkpoint" | "worker";
+export type LoadPickerMode = "checkpoint" | "worker" | "deliverable";
 export type LoadPickerSelection =
 	| { kind: "checkpoint"; action: "load" | "preview"; summary: CheckpointSummary }
 	| { kind: "worker"; action: "load"; worker: WorkerStatus }
+	| { kind: "stored-deliverable"; action: "load" | "preview"; deliverable: StoredDeliverable }
 	| null;
 
 type NotifyLevel = "info" | "warning" | "error";
@@ -48,6 +51,8 @@ export type DocketCommandRouterDeps = {
 	loadedArtifacts: LoadedArtifactContext;
 	workerStore: WorkerStore;
 	checkpointStore: CheckpointStore;
+	deliverableStore?: DeliverableStore;
+	deliverableLifecycle?: DeliverableLifecycle;
 	notify(text: string, level: NotifyLevel): void;
 	emitText(text: string, kind: DocketMessageKind, heading?: string): void;
 	announce(subject: string, detail?: string, kind?: DocketMessageKind): void;
@@ -67,12 +72,10 @@ export type DocketCommandRouterDeps = {
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
-	createCheckpoint(options: CheckpointCreateOptions): Promise<void>;
-	createHandoffCheckpoint(): Promise<void>;
 	catalog(): Promise<ArtifactCatalog>;
 	readWorkersWithArtifacts(options?: { allProjects?: boolean }): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }>;
 	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): Promise<ParallelWorkAction>;
-	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode): Promise<LoadPickerSelection>;
+	showLoadPicker(summaries: CheckpointSummary[], workers: WorkerStatus[], initialMode: LoadPickerMode, deliverables?: StoredDeliverable[]): Promise<LoadPickerSelection>;
 	showText(title: string, text: string, options?: { diff?: boolean }): Promise<void>;
 	showDocketBrowser(catalog: ArtifactCatalog, artifacts: Artifact[], initialMode: NavigatorMode): Promise<DocketBrowserAction | null>;
 	showVerdict(worker: WorkerStatus, remaining?: number): Promise<DocketVerdictAction | null>;
@@ -82,8 +85,11 @@ export type DocketCommandRouterDeps = {
 	input(title: string, placeholder: string): Promise<string | undefined>;
 	reviewNote?(title: string, prefill: string): Promise<string | undefined>;
 	useDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
+	useStoredDeliverable?(deliverable: StoredDeliverable): Promise<void>;
+	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	confirmDeleteWorker(worker: WorkerStatus): Promise<boolean>;
+	confirmDeleteDeliverable?(deliverable: StoredDeliverable): Promise<boolean>;
 	copyText(text: string): Promise<boolean>;
 	announceChipChange(artifact: Artifact, mode: "ref" | "full", result: ReturnType<LoadedArtifactContext["toggleChip"]>): void;
 	parallelKindLabel(kind: Artifact["kind"]): string;
@@ -167,8 +173,9 @@ function loadResultDetail(result: LoadResult): string {
 	const slot = result.slot;
 	if (result.source.kind === "worker") return `${workerSummaryName(result.source.worker)}\nrefs: @${slot.slot}.<id>`;
 	if (result.source.kind === "deliverable") return `${result.source.deliverable.ref}\nreviewed deliverable\nrefs: @${slot.slot}.<id>`;
+	if (result.source.kind === "stored-deliverable") return `${result.source.deliverable.ref}\ndurable deliverable\nrefs: @${slot.slot}.<id>`;
 	const checkpoint = result.source.checkpoint;
-	const tag = result.queuedConsume ? "consume on session end" : `${checkpoint.mode} bundle`;
+	const tag = result.queuedConsume ? "legacy bundle · consume on session end" : "legacy bundle";
 	return `${checkpoint.id}\n${tag}\nrefs: @${slot.slot}.<id>`;
 }
 
@@ -188,6 +195,11 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 		if (removed) deps.announce(`unloaded ${removed.slot}`, workerSummaryName(worker));
 		else deps.notify("Docket worker not loaded", "warning");
 		await deps.refreshWorkerDockWidget();
+	};
+	const explicitlyLoadStoredDeliverable = async (deliverable: StoredDeliverable): Promise<LoadResult> => {
+		const result = await deps.loadedArtifacts.loadSource({ kind: "stored-deliverable", deliverable, worker: storedDeliverableWorkerProjection(deliverable) });
+		announceLoadResult(result);
+		return result;
 	};
 	const navigateTmux = async (target: string): Promise<void> => {
 		const nav = buildTmuxNavigation(target);
@@ -320,7 +332,8 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			}
 
 			if (intent.kind === "save") {
-				await deps.createCheckpoint(intent.options);
+				if (deps.deliverableLifecycle) await deps.deliverableLifecycle.save(intent.source);
+				else deps.notify("Docket deliverable saving is unavailable in this runtime; legacy bundle writes are disabled.", "error");
 				return;
 			}
 
@@ -328,13 +341,31 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				if (intent.targetKind === "worker") {
 					await deps.workerCommands.delete(intent.target);
 					await deps.refreshWorkerDockWidget();
+				} else if (deps.deliverableStore) {
+					const deliverable = await deps.deliverableStore.find(intent.target ?? "last");
+					if (deliverable) {
+						if (!deps.hasUI || await (deps.confirmDeleteDeliverable?.(deliverable) ?? Promise.resolve(true))) {
+							deps.loadedArtifacts.unloadSource("deliverable", deliverable.ref);
+							await deps.deliverableStore.delete(deliverable);
+							deps.notify(`Docket deliverable deleted: ${deliverable.ref}`, "info");
+						}
+					} else if (intent.targetKind === "deliverable") deps.notify("Docket deliverable not found", "error");
+					else await deps.checkpointCommands.delete(intent.target);
 				} else await deps.checkpointCommands.delete(intent.target);
 				return;
 			}
 
 			if (intent.kind === "list") {
 				if (intent.workers === true) await deps.workerCommands.list({ allProjects: intent.allProjects === true });
-				else await deps.checkpointCommands.list(intent.includeConsumed === true);
+				else if (deps.deliverableStore) {
+					const deliverables = await deps.deliverableStore.list();
+					const legacy = await deps.checkpointStore.list({ includeConsumed: intent.includeConsumed === true });
+					const lines = [
+						...deliverables.map((item) => `${item.ref}\tdeliverable\t${item.source.kind === "worker" ? item.source.workerLabel : "parent"}\t${item.summary}`),
+						...legacy.map((item) => `${item.id}\tlegacy bundle${item.consumedAt ? ":consumed" : ""}\t${item.cwd}\t${item.note ?? ""}`),
+					];
+					deps.emitText(lines.length ? lines.join("\n") : "No Docket deliverables or legacy bundles", "list", "docket · deliverables");
+				} else await deps.checkpointCommands.list(intent.includeConsumed === true);
 				return;
 			}
 
@@ -427,27 +458,32 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				const opts = { includeConsumed: intent.includeConsumed === true };
 				let source: Parameters<LoadedArtifactContext["loadSource"]>[0] | undefined;
 				if (intent.ref) {
-					const checkpoint = await deps.checkpointStore.find(intent.ref, opts);
-					if (!checkpoint) {
-						deps.notify("Docket bundle not found", "error");
-						return;
+					const deliverable = await deps.deliverableStore?.find(intent.ref);
+					if (deliverable) source = { kind: "stored-deliverable", deliverable, worker: storedDeliverableWorkerProjection(deliverable) };
+					else {
+						const checkpoint = await deps.checkpointStore.find(intent.ref, opts);
+						if (!checkpoint) {
+							deps.notify("Docket deliverable or legacy bundle not found", "error");
+							return;
+						}
+						source = { kind: "checkpoint", checkpoint };
 					}
-					source = { kind: "checkpoint", checkpoint };
 				} else {
-					const [summaries, workers] = await Promise.all([
+					const [summaries, workers, deliverables] = await Promise.all([
 						deps.checkpointStore.listSummaries(opts),
 						deps.workerStore.list({ ...(deps.projectRoot ? { projectRoot: deps.projectRoot } : {}) }),
+						deps.deliverableStore?.list() ?? Promise.resolve([]),
 					]);
-					if (summaries.length === 0 && workers.length === 0) {
+					if (summaries.length === 0 && workers.length === 0 && deliverables.length === 0) {
 						deps.notify("Docket has nothing to load — try /docket save or /docket spawn", "error");
 						return;
 					}
 					if (!deps.hasUI) {
-						source = deps.loadedArtifacts.defaultLoadSource({ checkpoints: summaries.map((summary) => summary.entry), workers });
+						source = deps.loadedArtifacts.defaultLoadSource({ checkpoints: summaries.map((summary) => summary.entry), workers, deliverables });
 					} else {
-						const initial: LoadPickerMode = summaries.length > 0 ? "checkpoint" : "worker";
+						const initial: LoadPickerMode = deliverables.length > 0 ? "deliverable" : summaries.length > 0 ? "checkpoint" : "worker";
 						while (true) {
-							const selected = await deps.showLoadPicker(summaries, workers, initial);
+							const selected = await deps.showLoadPicker(summaries, workers, initial, deliverables);
 							if (!selected) {
 								deps.notify("Docket load cancelled", "info");
 								return;
@@ -456,9 +492,17 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 								source = { kind: "worker", worker: selected.worker };
 								break;
 							}
+							if (selected.kind === "stored-deliverable") {
+								if (selected.action === "preview") {
+									await deps.showText(`Docket deliverable ${selected.deliverable.ref}`, selected.deliverable.body);
+									continue;
+								}
+								source = { kind: "stored-deliverable", deliverable: selected.deliverable, worker: storedDeliverableWorkerProjection(selected.deliverable) };
+								break;
+							}
 							if (selected.action === "preview") {
 								const md = await deps.checkpointStore.readMarkdown(selected.summary.entry);
-								await deps.showText(`Docket checkpoint ${selected.summary.entry.id}`, md);
+								await deps.showText(`Docket legacy bundle ${selected.summary.entry.id}`, md);
 								continue;
 							}
 							source = { kind: "checkpoint", checkpoint: selected.summary.entry };
@@ -470,6 +514,8 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				try {
 					if (source.kind === "worker") {
 						await explicitlyLoadWorker(source.worker);
+					} else if (source.kind === "stored-deliverable") {
+						await explicitlyLoadStoredDeliverable(source.deliverable);
 					} else {
 						const result = await deps.loadedArtifacts.loadSource(source);
 						announceLoadResult(result);
@@ -496,11 +542,30 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					else deps.notify("Docket worker not found", "error");
 					return;
 				}
+				if (/^d\d+$/i.test(intent.target)) {
+					const removed = deps.loadedArtifacts.unloadSlot(intent.target);
+					if (removed) deps.announce(`unloaded ${removed.slot}`, removed.sourceId);
+					else deps.notify("Docket deliverable not loaded", "warning");
+					return;
+				}
+				if (deps.deliverableStore) {
+					const deliverable = await deps.deliverableStore.find(intent.target);
+					if (deliverable) {
+						const removed = deps.loadedArtifacts.unloadSource("deliverable", deliverable.ref);
+						if (removed) deps.announce(`unloaded ${removed.slot}`, deliverable.ref);
+						else deps.notify("Docket deliverable not loaded", "warning");
+						return;
+					}
+					if (intent.targetKind === "deliverable") {
+						deps.notify("Docket deliverable not loaded", "warning");
+						return;
+					}
+				}
 				const checkpoint = await deps.checkpointStore.find(intent.target, { includeConsumed: true });
 				const targetId = checkpoint?.id ?? intent.target;
 				const removed = deps.loadedArtifacts.unloadSource("checkpoint", targetId);
 				if (removed) deps.announce(`unloaded ${removed.slot}`, removed.sourceId);
-				else deps.notify("Docket checkpoint not loaded", "warning");
+				else deps.notify("Docket legacy bundle not loaded", "warning");
 				return;
 			}
 
@@ -568,7 +633,9 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				const result = await deps.showDocketBrowser(catalog, artifacts, initialMode);
 				if (!result) return;
 				if (result.action === "save") {
-					await deps.createHandoffCheckpoint();
+					if (deps.deliverableLifecycle && result.artifact) await deps.deliverableLifecycle.saveArtifact(result.artifact.ref);
+					else if (deps.deliverableLifecycle) await deps.deliverableLifecycle.save();
+					else deps.notify("Docket deliverable saving is unavailable in this runtime; legacy bundle writes are disabled.", "error");
 					return;
 				}
 				if (result.action === "search") {
@@ -603,6 +670,12 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					return;
 				}
 				if (!result.artifact) return;
+				if (result.action === "useDeliverable") {
+					const deliverable = await deps.deliverableStore?.find(result.artifact.ref);
+					if (deliverable && deps.useStoredDeliverable) await deps.useStoredDeliverable(deliverable);
+					else deps.notify("Docket stored deliverable not found", "error");
+					return;
+				}
 				deps.markArtifactDone(result.artifact);
 				if (result.action === "inspect") {
 					await deps.showArtifact(catalog, result.artifact);

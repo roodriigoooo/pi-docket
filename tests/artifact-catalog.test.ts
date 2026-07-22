@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildReferenceList, createArtifactCatalog } from "../extensions/artifact-catalog.js";
+import { createArtifactCatalog } from "../extensions/artifact-catalog.js";
 
 function text(text: string) {
 	return [{ type: "text", text }];
@@ -95,6 +95,7 @@ test("Artifact Catalog extracts artifacts and supports stable lookup/reference/s
 	assert.equal(catalog.find(error.ref), error);
 	assert.match(catalog.reference(error), /Avoid repeating this failure/);
 	assert.match(catalog.fullText(error), /# Docket artifact/);
+	assert.equal(catalog.fullText(error).includes("[Docket truncated"), false);
 
 	const matches = await catalog.search("boom");
 	assert.ok(matches.some((artifact) => artifact.ref === error.ref));
@@ -124,17 +125,6 @@ test("Artifact Catalog inspects edit file artifacts as diffs", async () => {
 	assert.match(inspected.text, /\+export const current = true/);
 });
 
-test("Artifact Catalog selects restart-oriented artifacts and shapes checkpoint payloads", async () => {
-	const { catalog } = await fixtureCatalog();
-	const selected = catalog.selectForCheckpoint(3);
-	// One ordering: errors first (avoid repeats), then files, then the rest.
-	assert.deepEqual(selected.map((artifact) => artifact.kind), ["error", "file", "file"]);
-
-	const payload = catalog.checkpointPayload(selected);
-	assert.equal(payload[0]?.kind, "error");
-	assert.match(String(payload[0]?.body), /boom/);
-});
-
 test("Artifact Catalog accepts explicit Docket producer metadata on custom messages", () => {
 	const branch = [
 		entry("m1", "2026-01-01T00:00:00.000Z", {
@@ -150,13 +140,4 @@ test("Artifact Catalog accepts explicit Docket producer metadata on custom messa
 	assert.equal(artifact.kind, "response");
 	assert.equal(artifact.title, "Worker: auth plan");
 	assert.equal(artifact.subtitle, "pi-subagents worker");
-});
-
-test("Reference lists keep file guidance once", async () => {
-	const { cwd, catalog } = await fixtureCatalog();
-	const files = catalog.list().filter((artifact) => artifact.kind === "file" && artifact.meta?.tool === "read");
-	const refs = buildReferenceList([...files, ...files], cwd);
-	assert.equal((refs.match(/Use current file contents/g) ?? []).length, 0);
-	assert.equal((refs.match(/File refs point to current disk paths/g) ?? []).length, 1);
-	assert.equal((refs.match(/Reference Docket/g) ?? []).length, 2);
 });

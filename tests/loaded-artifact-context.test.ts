@@ -4,6 +4,7 @@ import { createLoadedArtifactContext } from "../extensions/loaded-artifact-conte
 import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 import type { WorkerStatus } from "../extensions/worker-store.js";
 import type { WorkerDeliverable } from "../extensions/worker-deliverable.js";
+import type { StoredDeliverable } from "../extensions/deliverable-store.js";
 
 const commandArtifact: Artifact = {
 	id: "c1",
@@ -49,13 +50,7 @@ function context(artifacts = [commandArtifact, fileArtifact]) {
 	return createLoadedArtifactContext({
 		readCheckpointArtifacts: async () => [fileArtifact],
 		readWorkerArtifacts: async () => [commandArtifact],
-		loadConfig: async () => ({
-			maxArtifacts: 50,
-			maxBodyChars: 1000,
-			checkpointArtifacts: 10,
-			consumedRetentionDays: 7,
-			summarizer: { enabled: false, maxOutputTokens: 1000, maxInputChars: 10000, timeoutMs: 1000 },
-		}),
+		loadConfig: async () => ({ maxArtifacts: 50, maxBodyChars: 1000 }),
 		createCatalog: (_ctx, _config, carryover) => {
 			const all = [...artifacts, ...carryover];
 			return {
@@ -65,8 +60,6 @@ function context(artifacts = [commandArtifact, fileArtifact]) {
 				fullText: (artifact: Artifact) => `full:${artifact.displayId}`,
 				inspect: async () => ({ title: "", text: "" }),
 				search: async () => [],
-				selectForCheckpoint: () => [],
-				checkpointPayload: () => [],
 				summary: (artifact: Artifact) => artifact,
 			};
 		},
@@ -209,6 +202,40 @@ test("mounting a newer deliverable preserves an already queued approved version"
 	assert.equal(loaded.carryoverArtifacts()[0]?.ref, v2.ref);
 });
 
+test("stored deliverables mount at zero context and Use can queue their exact body", async () => {
+	const loaded = context([]);
+	const deliverable: StoredDeliverable = {
+		schemaVersion: 1,
+		id: "parent-20260101-abcdef",
+		version: 1,
+		ref: "deliverable:parent-20260101-abcdef:1",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		savedAt: "2026-01-01T00:01:00.000Z",
+		body: "  exact durable bytes\nwith trailing space \n",
+		summary: "durable",
+		outcome: "proposal",
+		evidence: [],
+		recommendations: [],
+		refs: [],
+		source: {
+			kind: "parent",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			cwd: "/repo",
+			selectedArtifact: { displayId: "a1", ref: "response:1", kind: "response", title: "answer", subtitle: "parent" },
+		},
+		reviewNotes: [],
+		approval: { kind: "human", decisionId: "human-authorship:parent-20260101-abcdef", decidedAt: "2026-01-01T00:01:00.000Z", reason: "parent-authorship" },
+	};
+	const slot = await loaded.loadStoredDeliverable(deliverable);
+
+	assert.equal(slot.slot, "d1");
+	assert.equal(loaded.chips().length, 0, "mounting alone must not enter model context");
+	assert.equal(slot.artifacts[0]?.body, deliverable.body);
+	loaded.toggleChip(slot.artifacts[0]!, "full");
+	const expanded = await loaded.expandChipsForSubmit({ cwd: "/repo", sessionManager: { getBranch: () => [] } }, "next");
+	assert.match(expanded.text, /  exact durable bytes\nwith trailing space \n/);
+});
+
 test("queued deliverable body survives a worker slot refresh", async () => {
 	const loaded = context([]);
 	const v1: WorkerDeliverable = {
@@ -229,7 +256,7 @@ test("full deliverable chip expands approved bytes once on next submit", async (
 	const loaded = createLoadedArtifactContext({
 		readCheckpointArtifacts: async () => [],
 		readWorkerArtifacts: async () => [commandArtifact],
-		loadConfig: async () => ({ maxArtifacts: 50, maxBodyChars: 1000, checkpointArtifacts: 10, consumedRetentionDays: 7, summarizer: { enabled: false, maxOutputTokens: 1, maxInputChars: 1, timeoutMs: 1 } }),
+		loadConfig: async () => ({ maxArtifacts: 50, maxBodyChars: 1000 }),
 		createCatalog: (_ctx, _config, carryover) => ({
 			list: () => carryover,
 			find: (id) => carryover.find((artifact) => artifact.ref === id || artifact.displayId === id),
@@ -237,8 +264,6 @@ test("full deliverable chip expands approved bytes once on next submit", async (
 			fullText: (artifact) => artifact.body,
 			inspect: async () => ({ title: "", text: "" }),
 			search: async () => [],
-			selectForCheckpoint: () => [],
-			checkpointPayload: () => [],
 			summary: (artifact) => artifact,
 		}),
 	});

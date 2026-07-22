@@ -346,7 +346,10 @@ export function formatWorkerReportText(report: WorkerReport): string {
 	lines.push(`Updated: ${report.updatedAt}`);
 	if (report.scopeConfidence) lines.push(`Scope confidence: ${report.scopeConfidence}`);
 	lines.push(`Progress: ${report.progressLine}`);
-	if (report.sourceHandoff) lines.push(`Handoff source: ${report.sourceHandoff.sourceRef} from ${report.sourceHandoff.sourceWorkerLabel} · approved ${report.sourceHandoff.approvedAt} (${report.sourceHandoff.approvingDecisionId})`);
+	if (report.sourceHandoff) {
+		const sourceLabel = report.sourceHandoff.sourceWorkerLabel ?? report.sourceHandoff.sourceKind ?? report.sourceHandoff.sourceCwd ?? "parent";
+		lines.push(`Handoff source: ${report.sourceHandoff.sourceRef} from ${sourceLabel} · approved ${report.sourceHandoff.approvedAt} (${report.sourceHandoff.approvingDecisionId})`);
+	}
 	lines.push("");
 	lines.push("Evidence");
 	if (report.changeTotals.files > 0) {

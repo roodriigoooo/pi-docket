@@ -12,17 +12,17 @@
 
 Docket's promise: **delegate safely without losing control.**
 
-Spawn explicit workers, watch them in the dock, peek or tell when needed, then decide from an evidence-first verdict — optionally opening Report for the full `docket_done` payload without injecting model context. Evidence bundles are supporting infrastructure for durable capture beside that loop.
+Spawn explicit workers, watch them in the dock, peek or tell when needed, then decide from an evidence-first verdict — optionally opening Report for the full `docket_done` payload without injecting model context. Durable deliverables preserve approved work beside that loop.
 
 It is not a transcript browser, not a memory system, and not a task manager.
 
-> Formerly `trail`. The rename is intentional: the product is no longer framed as a history trail or session-resume system. Docket is a docket of cases needing judgment, with evidence bundles attached.
+> Formerly `trail`. The rename is intentional: the product is no longer framed as a history trail or session-resume system. Docket is a docket of cases needing judgment, with deliverables attached.
 
 ## Core philosophy
 
 - **Pi owns sessions.** Use pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for conversation topology and context-window management.
 - **Docket owns decisions.** It ranks artifacts into review items, shows cards, and keeps evidence out of model context until you attach it.
-- **tmux owns parallel visibility.** Workers are visible pi processes in one shared tmux session. You can attach and inspect them directly.
+- **tmux is an implementation detail.** Workers remain visible pi processes in one shared session, with attach and advanced troubleshooting available as an escape hatch.
 - **Workers are explicit and independent.** Every Worker comes from human `/docket spawn` or approved Use → Worker. Workers have no spawn tool; deleting one never deletes another.
 
 ## Install
@@ -45,13 +45,19 @@ Spawn a worker explicitly:
 /docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth
 ```
 
-Save evidence as a zero-token bundle:
+Save an approved worker deliverable:
 
 ```bash
-/docket save auth investigation findings
+/docket save --from w1
 ```
 
-Load a bundle or worker artifacts:
+Save parent-authored content with the interactive source picker:
+
+```bash
+/docket save
+```
+
+Load a deliverable or worker artifacts:
 
 ```bash
 /docket load last
@@ -98,7 +104,7 @@ cp .pi/trail.json .pi/docket.json 2>/dev/null || true
 
 Every accepted `docket_done` freezes one immutable **Worker Deliverable Version** before review. Report, diff, Hunk, overlap checks, and promotion read that version, not live worker output. Approval is generation-bound and never injects context or starts work; patch promotion remains its own explicit verdict action. Reopen an approved card and press `u Use` to queue its full body for next parent prompt or start one fresh worker with byte-exact `source-deliverable.md` input; both paths stay human-started and transcript-free.
 
-Evidence bundles (`/docket save` / `/docket load`) support durable capture beside that worker loop.
+Deliverables (`/docket save` / `/docket load`) support durable capture beside that worker loop.
 
 ## Commands
 
@@ -110,8 +116,8 @@ Primary commands:
 | `f8` | Open worker progress lens. |
 | `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed\|--fresh] [--as <kind>] [--worktree] [--] <task>` | Start explicit worker. Model/thinking inherit parent; context defaults fresh; workspace derives from kind intent. |
 | `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
-| `/docket save [flags] [note]` | Save selected evidence as bundle and label current pi tree leaf. |
-| `/docket load [id\|last\|w<N>]` | Mount bundle or worker artifacts at zero model-context cost. |
+| `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker generation or author a deliverable interactively. |
+| `/docket load [ref\|last\|w<N>]` | Mount a deliverable or worker artifacts at zero model-context cost. |
 
 Advanced commands:
 
@@ -126,9 +132,9 @@ Advanced commands:
 | `/docket log` | Audit timeline grouped by episode. |
 | `/docket log decisions` | Verdict ledger plus workers evicted unreviewed. |
 | `/docket search <query>` | Ranked artifact search. |
-| `/docket list [--include-consumed] [--workers\|--all]` | List saved bundles or workers. |
-| `/docket unload <id\|w<N>\|all>` | Drop mounted bundle/worker artifacts. |
-| `/docket delete [id\|last\|w<N>]` | Delete bundle or one worker. Other workers remain independent. |
+| `/docket list [--include-consumed] [--workers\|--all]` | List deliverables, legacy bundles, or workers. |
+| `/docket unload <id\|w<N>\|all>` | Drop mounted deliverable/legacy-bundle/worker artifacts. |
+| `/docket delete [id\|last\|w<N>]` | Delete a deliverable, legacy bundle, or one worker. Other workers remain independent. |
 | `/docket ref <artifact-id>` | Attach compact artifact reference to next prompt. |
 | `/docket inject-full <artifact-id>` | Attach full artifact text to next prompt. |
 | `/docket copy <artifact-id>` | Copy artifact text. |
@@ -151,7 +157,7 @@ Docket slash commands are Pi extension commands, so Pi executes them immediately
                                            │ at middleware (src/app.ts:10)
 ```
 
-The preview is read from disk. Browsing costs zero model context; attaching still requires an explicit `a` (compact ref) or `I` (full text). Reply to a worker with `r`, save a bundle with `b`, copy with `y`, mark done with `Space`. Press `?` for the full key list.
+The preview is read from disk. Browsing costs zero model context; attaching still requires an explicit `a` (compact ref) or `I` (full text). Reply to a worker with `r`, save with `s`, copy with `y`, mark done with `Space`. Press `?` for the full key list.
 
 ## The verdict card
 
@@ -193,30 +199,27 @@ Recent (8 of 8):
 
 The last line is decision debt: a worker reached a terminal state and was pruned with no verdict ever recorded, so it aged out before anyone looked. Counting it keeps automation bias visible rather than silent.
 
-## Evidence bundles
+## Durable deliverables
 
-A Docket bundle is a frozen artifact sidecar plus a small orientation markdown file. It is not a model-written summary by default.
+A deliverable is an immutable, versioned record. An approved Worker Deliverable is copied byte-for-byte with its exact generation-bound approval, review notes, evidence references, frozen change set, and source provenance. Parent-authored content is edited interactively, assigned an explicit outcome, and receives synthetic human-authorship approval.
 
-`/docket save`:
+`/docket save --from w<N>` saves only the currently approved exact worker generation. `/docket save --from <artifact-ref>` saves a selected Worker Deliverable exactly when it is a deliverable ref; a non-deliverable artifact opens its full content in an editor before saving it. `/docket save` opens a source picker; parent authoring remains interactive.
 
-- selects relevant artifacts,
-- lets you prune/edit the bundle header,
-- writes `<id>.md` + `<id>.artifacts.json`,
-- labels the current pi session tree leaf as `docket:<id>`.
+`/docket load` mounts one stored deliverable under a `d<N>` slot at zero model-context cost. Listing, previewing, and loading never queue a chip or start work. Open a loaded deliverable and press `u Use`: Parent queues the exact full body for the next human submission; Worker follows the existing fresh-session, human-confirmed model/thinking flow and records generalized handoff provenance.
 
-`/docket load` mounts bundle artifacts into the current session's Docket navigator at zero model-context cost. Nothing enters the model prompt until you explicitly attach a compact ref or full artifact. Loading a worker makes its evidence available and adds a `loaded` marker; it does not resolve unresolved review work. Only a verdict records judgment and clears that decision debt.
+Legacy bundles remain listable, loadable, previewable, unloadable, and deletable for compatibility. They are never converted or written by the new save path, and their artifacts remain explicitly referenceable or injectable.
 
 This deliberately complements pi:
 
 - use `/tree` to move conversation state,
 - use `/fork` or `/clone` to split sessions,
 - use `/compact` for lossy summary,
-- use `/docket save` for durable evidence,
-- use `/docket load` when that evidence becomes relevant.
+- use `/docket save` for durable deliverables,
+- use `/docket load` when a deliverable becomes relevant.
 
 ## Workers
 
-`/docket spawn <task>` starts a background pi worker as one window in a shared tmux session named `docket-workers`.
+`/docket spawn <task>` starts a background pi worker as one ordinary window in a shared tmux session named `docket-workers`. The session is a worker substrate; Pi continues to own session topology.
 
 Workers have:
 
@@ -224,7 +227,7 @@ Workers have:
 - task file,
 - `status.json`,
 - `artifacts.json`,
-- immutable `deliverables/v<N>.json` sidecars,
+- immutable `workers/<id>/deliverables/v<N>.json` sidecars,
 - append-only `events.ndjson`,
 - protocol tools for parent communication.
 
@@ -316,8 +319,9 @@ tmux attach -t docket-workers
 - **Spawn**: the first worker creates `docket-workers` with `new-session -d -s`; later workers use `new-window -d`. Windows are named `w<N>`, and Docket records tmux's stable `#{window_id}` (`@7`, `@8`, etc.) so renamed windows still resolve.
 - **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
 - **Peek**: `/docket workers` uses `capture-pane -p` to render a bounded selected-worker pane snapshot inside the dashboard. It does not attach, focus the pane, or add anything to model context.
-- **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes panes with `list-panes -F "#{pane_id} #{pane_dead}"`, captures the dead worker pane with `capture-pane`, writes `pane-tail.txt`, then kills the stale window. Split layouts are probed per pane because an event-tail helper pane may still be alive.
-- **Optional tmux surfaces**: legacy `layout: split-events` remains compatibility-only until layout work lands; `worker.captureTerminal` uses `pipe-pane` for `pane.log`; `worker.tmuxStatusLine` writes compact fleet status into tmux status bar.
+- **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes the recorded worker pane, captures its bounded tail, writes `pane-tail.txt`, then kills the stale window. A companion may add panes, but it cannot redirect Docket's tell, peek, or harvest target.
+- **Adapter seam**: a companion may register one `globalThis.__docket.registerTmuxAdapter(adapter)` callback. Docket invokes it after spawn or respawn IDs are persisted with the worker/window/pane metadata; adapter failures are warned and isolated from the worker lifecycle.
+- **Legacy layouts**: old `layout` declarations are recognized only to emit a migration diagnostic and are ignored. Core Docket does not create split panes, pipe terminal output, or write tmux status content.
 
 Silence warnings do not poll `capture-pane`. Docket reads the worker's `events.ndjson`; if nothing useful appears for a few minutes, the dock shows `silent Nm`. Use peek when you want scrollback. Use attach when you need full terminal control.
 

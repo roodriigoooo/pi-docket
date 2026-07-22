@@ -13,17 +13,6 @@ Both optional. Defaults below.
 {
   "maxArtifacts": 300,
   "maxBodyChars": 6000,
-  "bundleArtifacts": 24,
-  "consumedRetentionDays": 7,
-
-  "summarizer": {
-    "enabled": true,
-    "provider": "openai",
-    "model": "gpt-5.2",
-    "maxOutputTokens": 1200,
-    "maxInputChars": 36000,
-    "timeoutMs": 120000
-  },
 
   "worker": {
     "maxActive": 8,
@@ -31,36 +20,22 @@ Both optional. Defaults below.
     "parentSeedPolicy": "none",
     "dockIdleHideMinutes": 30,
     "pruneAfterHours": 24,
-    "tmuxStatusLine": false,
-    "captureTerminal": false,
     "guardrailsPath": "~/.pi/agent/docket/my-worker-rules.md"
   }
 }
 ```
 
-## Core artifact + bundle knobs
+## Core artifact knobs
 
 | key | default | meaning |
 |---|---|---|
 | `maxArtifacts` | 300 | hard cap on artifacts kept per session. older entries fall off. |
 | `maxBodyChars` | 6000 | truncate any single artifact body to this many chars before storing. |
-| `bundleArtifacts` | 24 | initial artifact pool a saved bundle considers before user prune. `checkpointArtifacts` is accepted as a deprecated alias. |
-| `consumedRetentionDays` | 7 | how long `--once` bundles stay on disk after first use. |
+Deliverables do not use an artifact pool, summarizer, retention sweep, or event-backed index. The old `bundleArtifacts`, `checkpointArtifacts`, `consumedRetentionDays`, and `summarizer` keys are diagnosed once and ignored; old bundle files remain readable through the compatibility reader.
 
-## Summarizer (opt-in)
+## Durable deliverables
 
-Evidence bundles are bundle-first: by default `/docket save` writes a deterministic orientation header and never calls a model ([ADR-0001](./adr/0001-bundle-first-checkpoints.md)). The summarizer only runs when you pass `--summarize`; these keys tune it when you do.
-
-| key | default | meaning |
-|---|---|---|
-| `summarizer.enabled` | true | when false, `--summarize` is ignored and the bundle header is always used. |
-| `summarizer.provider` | — | provider id (`openai`, `anthropic`, …). inferred from `model` when omitted. |
-| `summarizer.model` | active session model | provider/model string used for summarization. |
-| `summarizer.maxOutputTokens` | 1200 | cap summary length. |
-| `summarizer.maxInputChars` | 36000 | cap input fed into summarizer. |
-| `summarizer.timeoutMs` | 120000 | abort summarization after this many ms; fall back to the bundle header. |
-
-`/docket save --model <provider/model>` and `--max-output <tokens>` override per call.
+New saves live at `~/.pi/agent/docket/deliverables/<safe-id>/v<N>.json`. Worker-backed ids are deterministic from the worker id; parent-authored ids contain a timestamp and entropy. Each claimed version is immutable and saves of the same worker generation are idempotent.
 
 ## Worker fleet
 
@@ -71,8 +46,6 @@ Evidence bundles are bundle-first: by default `/docket save` writes a determinis
 | `worker.parentSeedPolicy` | `none` | `"full"` seeds parent JSONL when no per-spawn context flag is present; explicit `"none"` keeps workers fresh and overrides legacy kind seeding. |
 | `worker.dockIdleHideMinutes` | 30 | hide ended workers from dock after this many minutes; 0 keeps them. |
 | `worker.pruneAfterHours` | 24 | auto-prune ended worker dirs after this many hours; 0 disables. |
-| `worker.tmuxStatusLine` | false | write compact fleet state to `docket-workers` `status-right`. |
-| `worker.captureTerminal` | false | enable `tmux pipe-pane` to `<worker-dir>/pane.log`. |
 | `worker.guardrailsPath` | bundled | absolute or cwd-relative universal guardrail replacement. |
 
 `worker.maxSpawnDepth` is removed. Existing JSON keys are ignored. Workers cannot create workers, and delete/prune affects one requested worker only.
@@ -100,7 +73,7 @@ Execution precedence:
 | thinking | `--thinking` / handoff choice → legacy kind thinking → parent thinking |
 | context | handoff forced-fresh / `--fresh` → `--seed` → `worker.parentSeedPolicy` → legacy `parent_seed` → fresh |
 | workspace | `--worktree` → legacy `default_worktree` → writable isolated / read-only shared |
-| tmux layout | legacy compatibility value → single |
+| tmux | implementation detail; one shared session/window per worker, stable pane targeting, durable PTY, and remain-on-exit |
 
 ## Worker kinds
 
@@ -150,11 +123,11 @@ Choose spend at launch, not in kind:
 
 ### Legacy execution frontmatter
 
-Through next major release Docket still reads `model`, `thinking`, `parent_seed`, `default_worktree`, and `layout`. `/docket kinds`, confirmation, warnings, and launch details mark these deprecated; valid values keep their precedence shown above. Migrate model/thinking to spawn flags, seeding to `worker.parentSeedPolicy` or context flags, and rely on intent-derived workspace.
+Through next major release Docket still reads `model`, `thinking`, `parent_seed`, and `default_worktree`. `/docket kinds`, confirmation, warnings, and launch details mark these deprecated; valid values keep their precedence shown above. Migrate model/thinking to spawn flags, seeding to `worker.parentSeedPolicy` or context flags, and rely on intent-derived workspace.
 
 `can_spawn` is different: it is ignored immediately and diagnosed as `can_spawn ignored; worker creation is human-only.` No worker receives a spawn tool. Legacy hierarchy fields in status JSON remain harmless extra data and are never used for list, respawn, attach fallback, or deletion.
 
-`layout` remains compatibility-only until dedicated tmux layout work; new kinds cannot advertise it.
+Legacy `layout` declarations are recognized only to emit `layout ignored; operator layouts moved out of core.` They never affect spawn policy, confirmation, or tmux behavior.
 
 ### Runtime registration
 
@@ -173,7 +146,11 @@ Pre-0.8 runtime objects remain normalized through compatibility metadata and pro
 
 ## Storage paths
 
-Bundle state:
+New deliverable state:
+
+- `~/.pi/agent/docket/deliverables/<safe-id>/v<N>.json`
+
+Legacy bundle compatibility state (never created or converted by the new save path; consume metadata and explicit delete may still update it):
 
 - `~/.pi/agent/docket/checkpoints/<id>.md`
 - `~/.pi/agent/docket/checkpoints/<id>.artifacts.json`

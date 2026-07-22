@@ -8,13 +8,13 @@
 
 Docket lets you spawn visible background workers, watch them calmly, and decide from evidence — without smuggling worker claims into your parent session.
 
-Evidence bundles matter, but they are supporting infrastructure. The first-use story is workers: spawn → watch / peek / tell → verdict → Report / diff / Hunk → decide.
+Durable deliverables matter, but they are supporting infrastructure. The first-use story is workers: spawn → watch / peek / tell → verdict → Report / diff / Hunk → decide.
 
 ## What Docket helps with
 
 - **Workers:** start an explicit scout or patcher, peek without attaching, then resolve a verdict card.
 - **Control:** automatic worker → parent flow is metadata only. Content enters model context only when you attach it.
-- **Evidence:** save useful artifacts on disk and load them later without spending model context.
+- **Deliverables:** save approved worker output or explicitly author selected content as an immutable record.
 - **Decisions:** promote, discard, reply, or acknowledge from cards — you keep the final say.
 
 Docket keeps three things separate:
@@ -46,7 +46,7 @@ Shows:
 
 - Ask Pi to run tests and explain failures.
 - Docket turns the failed command and model answer into review cards.
-- Save useful bits as a bundle, then open the inbox.
+- Save an immutable deliverable, then open the inbox.
 
 ## What it is not
 
@@ -84,7 +84,7 @@ spawn worker -> watch / peek / tell -> verdict -> Report / diff / Hunk -> decide
 4. Press `r` for Report if you need full immutable deliverable body, then `d`/`h` for frozen diff/Hunk, then promote, approve, or reject.
 5. Approval records judgment for exact deliverable version. It does not inject context or start work. Reopen an approved result and press `u Use`: queue its full body for next parent prompt, or start one fresh reviewed-input worker.
 
-Evidence bundles (`/docket save` / `/docket load`) sit beside that loop when you want durable capture outside a worker.
+Deliverables (`/docket save` / `/docket load`) sit beside that loop when you want durable, reusable output outside a worker.
 
 ## Quick start
 
@@ -132,10 +132,16 @@ Reply to a worker:
 /docket tell w1 focus only on src/auth and tests/auth
 ```
 
-Save useful evidence:
+Save an approved worker deliverable:
 
 ```text
-/docket save auth middleware notes
+/docket save --from w1
+```
+
+Save selected parent content:
+
+```text
+/docket save
 ```
 
 Load it later:
@@ -144,7 +150,7 @@ Load it later:
 /docket load last
 ```
 
-## tmux, in plain terms
+## tmux, as an implementation detail
 
 Docket uses tmux so background workers stay visible and controllable.
 
@@ -167,7 +173,9 @@ Why tmux:
 - **Safe inspection:** you can attach when a worker looks stuck or strange.
 - **Crash evidence:** if a worker dies, Docket captures the final pane output before cleanup.
 
-Docket stores status, artifacts, verdicts, and bundles on disk. tmux owns only the live worker terminals and scrollback.
+Docket stores status, artifacts, verdicts, and deliverables on disk. tmux is only the live worker-terminal substrate and scrollback store.
+
+Core worker operations target the pane Docket recorded at launch. A companion may register an operator-owned window adapter and add panes, but it cannot redirect tell, peek, or post-mortem harvesting. Advanced tmux layouts are intentionally outside Docket’s core seam.
 
 If you run `/docket attach [w<N>]` from inside tmux, Docket switches you to the worker session with `tmux switch-client`. From a worker, `/docket attach parent` switches back to the parent tmux target recorded at spawn. Outside tmux, Docket copies the normal `tmux attach` command.
 
@@ -224,11 +232,15 @@ Configured `worker.defaultKind` values are deliberate power-user overrides: Dock
 
 Ready review loop: accepted `docket_done` freezes a Worker Deliverable version → verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for exact frozen diff/Hunk → promote, approve, or reject. Approval never injects context. After approval, `u Use` either queues one full immutable body for next parent prompt or starts one fresh worker with `source-deliverable.md` input and recorded provenance. Attach is a secondary debug escape hatch, not the normal path.
 
-## Evidence bundles
+## Durable deliverables
 
-`/docket save` writes a small markdown note plus an artifact sidecar. It preserves evidence. It does not move your Pi session.
+`/docket save --from w<N>` copies an approved exact Worker Deliverable—including its body, frozen patch, approval, review notes, refs, and provenance—to an immutable durable record. Re-saving the same worker generation is idempotent.
 
-`/docket load` mounts a bundle or worker artifacts into the current Docket view. Mounting costs zero model-context tokens. Loading a worker makes its evidence available and adds a `loaded` marker; it does not resolve the worker's decision debt. Only a verdict clears unresolved review attention.
+`/docket save` with no source opens a picker. Selecting a non-deliverable artifact opens its full content in an editor; the returned bytes and a human-selected Proposal, Findings, or Completed outcome become a parent-authored deliverable. Parent-authored records are immediately eligible for Use.
+
+`/docket load` mounts a deliverable under a `d<N>` slot, or reads an older legacy bundle/worker source. Mounting costs zero model-context tokens and never queues a chip. Use → Parent queues only the exact full body for the next human submission; Use → Worker starts a fresh, confirmed worker with the exact sidecar input.
+
+New records live under `~/.pi/agent/docket/deliverables/<safe-id>/v<N>.json`. Older checkpoint/bundle files remain readable for compatibility, but Docket never creates or converts them.
 
 Only these commands send evidence to the model:
 
@@ -247,8 +259,8 @@ Main rule: keep evidence available, not automatically injected.
 | `/docket spawn <task>` | Start a background worker. Fresh session by default; `--seed` inherits parent context. |
 | `f8` | Open worker progress lens. |
 | `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
-| `/docket save [note]` | Save selected evidence as a bundle. |
-| `/docket load [id\|last\|w<N>]` | Mount bundle or worker artifacts. |
+| `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker or author a deliverable interactively. |
+| `/docket load [ref\|last\|w<N>]` | Mount a deliverable, legacy bundle, or worker artifacts. |
 
 For full command reference, see [docs/full-reference.md](./docs/full-reference.md).
 
@@ -269,6 +281,8 @@ Default local data lives here:
 
 ```text
 ~/.pi/agent/docket/
+
+deliverables/<safe-id>/v<N>.json  # immutable durable records
 ```
 
 Project config can live here:

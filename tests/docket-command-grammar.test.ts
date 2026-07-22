@@ -7,16 +7,22 @@ test("Docket grammar parses bundle and worker delete", () => {
 	assert.deepEqual(parseDocketCommand("delete last"), { ok: true, intent: { kind: "delete", target: "last", targetKind: "checkpoint" } });
 	assert.deepEqual(parseDocketCommand("delete w:auth-bug-a3b1"), { ok: true, intent: { kind: "delete", target: "auth-bug-a3b1", targetKind: "worker" } });
 	assert.deepEqual(parseDocketCommand("delete w3"), { ok: true, intent: { kind: "delete", target: "w3", targetKind: "worker" } });
+	assert.deepEqual(parseDocketCommand("delete deliverable:parent-20260721-abc123:1"), { ok: true, intent: { kind: "delete", target: "deliverable:parent-20260721-abc123:1", targetKind: "deliverable" } });
 
 	const invalid = parseDocketCommand("delete one two");
 	assert.equal(invalid.ok, false);
-	if (!invalid.ok) assert.match(invalid.message, /Usage: \/docket delete \[id\|last\|w:<worker>\]/);
+	if (!invalid.ok) assert.match(invalid.message, /Usage: \/docket delete \[id\|last\|w:<worker>\|deliverable/);
 });
 
 test("Docket grammar parses save", () => {
-	assert.deepEqual(parseDocketCommand("save note"), { ok: true, intent: { kind: "save", options: { note: "note", consumeOnUse: false, summarize: false, model: undefined, maxOutputTokens: undefined } } });
-	assert.deepEqual(parseDocketCommand("save --summarize --model openai/gpt-5 --max-output 900 note"), { ok: true, intent: { kind: "save", options: { note: "note", consumeOnUse: false, summarize: true, model: "openai/gpt-5", maxOutputTokens: 900 } } });
-	assert.deepEqual(parseDocketCommand("save --once -- note starts -- literal"), { ok: true, intent: { kind: "save", options: { note: "note starts -- literal", consumeOnUse: true, summarize: false, model: undefined, maxOutputTokens: undefined } } });
+	assert.deepEqual(parseDocketCommand("save"), { ok: true, intent: { kind: "save" } });
+	assert.deepEqual(parseDocketCommand("save --from w:auth-bug-a3b1"), { ok: true, intent: { kind: "save", source: { kind: "worker", ref: "auth-bug-a3b1" } } });
+	assert.deepEqual(parseDocketCommand("save --from artifact:file-1"), { ok: true, intent: { kind: "save", source: { kind: "artifact", ref: "artifact:file-1" } } });
+	for (const flag of ["--once", "--delete-on-use", "--summarize", "--model", "--max-output"]) {
+		const removed = parseDocketCommand(`save ${flag}`);
+		assert.equal(removed.ok, false);
+		if (!removed.ok) assert.match(removed.message, new RegExp(`${flag} was removed`));
+	}
 	assert.equal(parseDocketCommand("checkpoint note").ok, false);
 	assert.equal(parseDocketCommand("ckpt note").ok, false);
 });
@@ -27,10 +33,12 @@ test("Docket grammar parses load and unload commands", () => {
 	assert.deepEqual(parseDocketCommand("load ck-1 --include-consumed"), { ok: true, intent: { kind: "load", ref: "ck-1", includeConsumed: true, refKind: "checkpoint" } });
 	assert.deepEqual(parseDocketCommand("load w1"), { ok: true, intent: { kind: "load", ref: "w1", includeConsumed: false, refKind: "worker" } });
 	assert.deepEqual(parseDocketCommand("load w:auth-bug-a3b1"), { ok: true, intent: { kind: "load", ref: "auth-bug-a3b1", includeConsumed: false, refKind: "worker" } });
+	assert.deepEqual(parseDocketCommand("load deliverable:parent-20260721-abc123:1"), { ok: true, intent: { kind: "load", ref: "deliverable:parent-20260721-abc123:1", includeConsumed: false, refKind: "deliverable" } });
 
 	assert.deepEqual(parseDocketCommand("unload all"), { ok: true, intent: { kind: "unload", target: "all", targetKind: "all" } });
 	assert.deepEqual(parseDocketCommand("unload ck-9"), { ok: true, intent: { kind: "unload", target: "ck-9", targetKind: "checkpoint" } });
 	assert.deepEqual(parseDocketCommand("unload w12"), { ok: true, intent: { kind: "unload", target: "w12", targetKind: "worker" } });
+	assert.deepEqual(parseDocketCommand("unload deliverable:parent-20260721-abc123:1"), { ok: true, intent: { kind: "unload", target: "deliverable:parent-20260721-abc123:1", targetKind: "deliverable" } });
 
 	const invalid = parseDocketCommand("unload");
 	assert.equal(invalid.ok, false);

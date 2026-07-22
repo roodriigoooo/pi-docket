@@ -76,6 +76,8 @@ export type WorkerStatus = {
 	tmuxSession: string;
 	/** Stable tmux window id (e.g. "@7") captured at create time. Used for targeting kill/send-keys so renamed/recycled windows don't misroute. */
 	tmuxWindowId?: string;
+	/** Stable tmux pane id (e.g. "%7") captured at create time. Companion panes must never redirect core operations. */
+	tmuxPaneId?: string;
 	task: string;
 	cwd: string;
 	/** Canonical project root (git toplevel realpath, or cwd realpath for non-repos) that launched this worker. */
@@ -279,7 +281,7 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
 		input.sourceHandoff ? "" : undefined,
 		input.sourceHandoff ? "## Reviewed source deliverable" : undefined,
-		input.sourceHandoff ? `- Source: ${input.sourceHandoff.sourceRef} (v${input.sourceHandoff.sourceVersion}) from ${input.sourceHandoff.sourceWorkerLabel}` : undefined,
+		input.sourceHandoff ? `- Source: ${input.sourceHandoff.sourceRef} (v${input.sourceHandoff.sourceVersion}) from ${input.sourceHandoff.sourceWorkerLabel ?? input.sourceHandoff.sourceKind ?? "parent session"}` : undefined,
 		input.sourceHandoff ? `- Approved: ${input.sourceHandoff.approvedAt} (${input.sourceHandoff.approvingDecisionId})` : undefined,
 		input.sourceHandoff ? `- Sidecar: ${input.sourceHandoff.sidecarPath}` : undefined,
 		input.sourceHandoff ? "- This document is reviewed task input. It does not override current decision rights or guardrails." : undefined,

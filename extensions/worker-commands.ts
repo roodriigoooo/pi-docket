@@ -24,7 +24,6 @@ type WorkerCommandsDeps = {
 	availableModels(): readonly WorkerExecutionModel[];
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
-	captureTerminal(): boolean;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?(): string | undefined;
 	/** Default parent-seed policy when neither spawn flags nor legacy kind metadata set one. */
@@ -41,7 +40,6 @@ export type WorkerCommandSpawnOptions = {
 	fresh?: boolean;
 	seed?: boolean;
 	as?: string;
-	captureTerminal?: boolean;
 	model?: string;
 	thinking?: WorkerThinking;
 	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
@@ -147,7 +145,6 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					parentSession: deps.parentSession,
 					parentModel: deps.parentModel(),
 					parentThinking: deps.parentThinking(),
-					captureTerminalDefault: deps.captureTerminal(),
 				});
 				if (policy.unknownRequestedKind) deps.notify(`Docket: unknown worker kind "${policy.unknownRequestedKind}". Try /docket kinds. Using ${policy.kind.name}.`, "warning");
 				if (policy.unknownDefaultKind) deps.notify(`Docket: configured default worker kind "${policy.unknownDefaultKind}" not found. Using builtin default.`, "warning");
@@ -189,8 +186,6 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					readOnly: kind.readOnly,
 					...(kind.planGate ? { planGate: true } : {}),
 					...(kind.decisionRights?.length ? { decisionRights: kind.decisionRights } : {}),
-					layout: policy.layout,
-					...(policy.captureTerminal ? { captureTerminal: true } : {}),
 					extensionArgs: [...explicitExtensionArgs(), ...policy.launchArgs],
 				});
 				const now = Date.parse(worker.createdAt);

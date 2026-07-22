@@ -124,6 +124,7 @@ function compatibilityDiagnostics(executionFields: string[], canSpawnPresent: bo
 	if (executionFields.length > 0) {
 		diagnostics.push(`deprecated execution frontmatter (${executionFields.join(", ")}); move execution choices to /docket spawn flags or worker config before the next major release.`);
 	}
+	if (executionFields.includes("layout")) diagnostics.push("layout ignored; operator layouts moved out of core.");
 	if (canSpawnPresent) diagnostics.push("can_spawn ignored; worker creation is human-only.");
 	return diagnostics;
 }

@@ -4,7 +4,9 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, projectKey, readWorkerStatusSync, workerInProject, workerProjectKey, workerShortLabel, workerSummaryName, type WorkerStatus } from "../extensions/worker-store.js";
+import { buildWorkerInitialPrompt, buildWorkerLaunchCommand, createWorkerStore, createWorkerWorkspace, currentPiCommandParts, explicitExtensionArgs, projectKey, readWorkerStatusSync, workerCoreTmuxTarget, workerInProject, workerProjectKey, workerShortLabel, workerSummaryName, type SpawnInput, type WorkerStatus } from "../extensions/worker-store.js";
+import { installDocketExtensionSurface } from "../extensions/docket-extension-surface.js";
+import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
 
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
@@ -46,6 +48,12 @@ test("workerShortLabel + workerSummaryName format consistently", () => {
 	const trimmed = workerSummaryName({ task: "investigate the auth middleware token expiry edge case here" } as WorkerStatus, 24);
 	assert.equal(trimmed.length <= 24, true);
 	assert.match(trimmed, /investigate/);
+});
+
+test("worker core tmux targeting prefers the persisted pane over companion panes", () => {
+	assert.equal(workerCoreTmuxTarget({ tmuxSession: "docket-workers:w1", tmuxWindowId: "@7", tmuxPaneId: "%9" }), "%9");
+	assert.equal(workerCoreTmuxTarget({ tmuxSession: "docket-workers:w1", tmuxWindowId: "@7" }), "@7");
+	assert.equal(workerCoreTmuxTarget({ tmuxSession: "legacy-session" }), "legacy-session");
 });
 
 test("packaged worker guardrails file ships with protocol contract", async () => {
@@ -181,6 +189,78 @@ test("worker handoff writes exact sidecar and retry preserves selected model", a
 			else process.env.TMUX = oldTmux;
 			if (oldTmuxLog === undefined) delete process.env.TMUX_LOG;
 			else process.env.TMUX_LOG = oldTmuxLog;
+			await rm(tmp, { recursive: true, force: true });
+		}
+	});
+});
+
+test("worker spawn and respawn persist pane ids, do not await adapters, and ignore legacy layouts", async () => {
+	await withTempHome(async () => {
+		const tmp = await mkdtemp(path.join(os.tmpdir(), "docket-worker-adapter-test-"));
+		const bin = path.join(tmp, "bin");
+		const log = path.join(tmp, "tmux.log");
+		const tmux = path.join(bin, "tmux");
+		const oldPath = process.env.PATH;
+		const oldTmux = process.env.TMUX;
+		const oldTmuxLog = process.env.TMUX_LOG;
+		const originalWarn = console.warn;
+		const surface = installDocketExtensionSurface(createWorkerKindRegistry());
+		const ready: string[] = [];
+		let releaseSpawnAdapter!: () => void;
+		const spawnAdapterGate = new Promise<void>((resolve) => { releaseSpawnAdapter = resolve; });
+		console.warn = () => {};
+		try {
+			await mkdir(bin, { recursive: true });
+			await writeFile(tmux, `#!/bin/sh
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  -V) echo 'tmux 3.4'; exit 0 ;;
+  has-session) exit 1 ;;
+  display-message)
+    case "$*" in
+      *window_id*) echo '@7' ;;
+      *pane_id*) echo '%9' ;;
+      *) echo 'docket-workers:w1.0' ;;
+    esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+`, "utf8");
+			await chmod(tmux, 0o755);
+			process.env.PATH = `${bin}:${oldPath ?? ""}`;
+			process.env.TMUX_LOG = log;
+			delete process.env.TMUX;
+			surface.registerTmuxAdapter((event) => {
+				ready.push(`${event.reason}:${event.windowId}:${event.paneId}`);
+				if (event.reason === "spawn") return spawnAdapterGate;
+			});
+
+			const store = createWorkerStore();
+			let timeout: NodeJS.Timeout | undefined;
+			const created = await Promise.race([
+				store.spawn(({ task: "adapter test", cwd: tmp, worktree: false, fresh: true, layout: "split-events", captureTerminal: true } as unknown) as SpawnInput),
+				new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("spawn waited for optional tmux adapter")), 500); }),
+			]).finally(() => { if (timeout) clearTimeout(timeout); });
+			releaseSpawnAdapter();
+			assert.equal(created.tmuxWindowId, "@7");
+			assert.equal(created.tmuxPaneId, "%9");
+			assert.deepEqual(ready, ["spawn:@7:%9"]);
+			assert.equal((await store.find(created.id))?.tmuxPaneId, "%9");
+
+			const respawned = await store.respawn(created.id);
+			assert.equal(respawned?.tmuxPaneId, "%9");
+			assert.deepEqual(ready, ["spawn:@7:%9", "respawn:@7:%9"]);
+			const tmuxLog = await readFile(log, "utf8");
+			assert.doesNotMatch(tmuxLog, /split-window|pipe-pane|status-right/);
+		} finally {
+			console.warn = originalWarn;
+			if (oldPath === undefined) delete process.env.PATH;
+			else process.env.PATH = oldPath;
+			if (oldTmux === undefined) delete process.env.TMUX;
+			else process.env.TMUX = oldTmux;
+			if (oldTmuxLog === undefined) delete process.env.TMUX_LOG;
+			else process.env.TMUX_LOG = oldTmuxLog;
+			delete (globalThis as Record<string, unknown>).__docket;
 			await rm(tmp, { recursive: true, force: true });
 		}
 	});

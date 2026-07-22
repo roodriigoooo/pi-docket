@@ -156,9 +156,9 @@ export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | 
 	return defineKeymap("worker dashboard", bindings);
 }
 
-export type PickerKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "preview" | "edit" | "delete" | "switchCheckpoint" | "switchWorker" | "switch";
+export type PickerKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "preview" | "edit" | "delete" | "switchCheckpoint" | "switchWorker" | "switchDeliverable" | "switch";
 
-export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"; canSwitch?: boolean; canPreview?: boolean }): DocketKeymap<PickerKeyAction> {
+export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"; canSwitch?: boolean; canPreview?: boolean; canCheckpoint?: boolean; canWorker?: boolean; canDeliverable?: boolean }): DocketKeymap<PickerKeyAction> {
 	const bindings: KeyBinding<PickerKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -175,9 +175,10 @@ export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"
 	if (options.mode === "delete") bindings.push({ keys: "d", action: "delete", label: "delete", slots: ["footer"] });
 	if (options.canSwitch) {
 		bindings.push({ keys: "tab", action: "switch", label: "switch", slots: ["footer"] });
-		bindings.push({ keys: "1", action: "switchCheckpoint", label: "checkpoints" });
-		bindings.push({ keys: "2", action: "switchWorker", label: "workers" });
 	}
+	if (options.canSwitch || options.canCheckpoint) bindings.push({ keys: "1", action: "switchCheckpoint", label: "legacy bundles" });
+	if (options.canSwitch || options.canWorker) bindings.push({ keys: "2", action: "switchWorker", label: "workers" });
+	if (options.canDeliverable) bindings.push({ keys: "3", action: "switchDeliverable", label: "deliverables" });
 	return defineKeymap(`picker:${options.mode}`, bindings);
 }
 
@@ -197,9 +198,9 @@ export function createEvidenceBundleKeymap(): DocketKeymap<EvidenceBundleKeyActi
 	]);
 }
 
-export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
+export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
 
-export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean }): DocketKeymap<VerdictKeyAction> {
+export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean }): DocketKeymap<VerdictKeyAction> {
 	const bindings: KeyBinding<VerdictKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -212,6 +213,7 @@ export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCoun
 		bindings.push({ keys: "r", action: "report", label: "Report", slots: ["footer"] });
 	}
 	if (options.canUse) bindings.push({ keys: "u", action: "use", label: "Use", slots: ["footer"] });
+	if (options.canSave ?? options.canUse) bindings.push({ keys: "s", action: "save", label: "Save", slots: ["footer"] });
 	if (options.hasChangeSet) {
 		bindings.push({ keys: "d", action: "diff", label: "full diff", slots: ["footer"] });
 		bindings.push({ keys: "h", action: "hunk", label: "Hunk review", slots: ["footer"] });

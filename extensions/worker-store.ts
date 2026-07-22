@@ -8,6 +8,7 @@ import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundW
 import { paneHarvestedTransition, parentReplyAcceptedTransition, respawnFailedTransition, respawnStartedTransition, type WorkerTransition } from "./worker-lifecycle.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 import { readCurrentWorkerDeliverable, readWorkerDeliverable, workerDeliverableFile, workerDeliverablesDir, type WorkerDeliverable, type WorkerHandoffProvenance } from "./worker-deliverable.js";
+import { notifyTmuxAdapter } from "./docket-extension-surface.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
 
@@ -82,10 +83,6 @@ export type SpawnInput = {
 	planGate?: boolean;
 	/** Scope-specific authority lines surfaced in task.md. */
 	decisionRights?: string[];
-	/** Optional tmux layout. */
-	layout?: "single" | "split-events";
-	/** When true, run tmux pipe-pane to capture terminal output to pane.log. */
-	captureTerminal?: boolean;
 	/** Canonical resolved provider/model persisted for visibility and exact respawn. */
 	model?: string;
 	/** Resolved effective thinking persisted for visibility and exact respawn. */
@@ -180,6 +177,13 @@ function readWindowId(target: string): string | undefined {
 	return trimmed.startsWith("@") ? trimmed : undefined;
 }
 
+function readPaneId(target: string): string | undefined {
+	const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id}"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) return undefined;
+	const trimmed = result.stdout.trim();
+	return trimmed.startsWith("%") ? trimmed : undefined;
+}
+
 function currentTmuxTarget(): string | undefined {
 	if (!process.env.TMUX) return undefined;
 	const result = spawnSync("tmux", ["display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}"], { encoding: "utf8" });
@@ -196,8 +200,13 @@ export function sharedSessionExists(): boolean {
  * Read-only snapshot of a worker's tmux pane (live or dead) for in-TUI peeking —
  * the "glass wall": observe without attaching. Undefined when the window is gone.
  */
-export function captureWorkerPane(worker: Pick<WorkerStatus, "tmuxSession" | "tmuxWindowId">, lines = 60): string | undefined {
-	return capturePaneTail(worker.tmuxWindowId ?? worker.tmuxSession, lines);
+export function captureWorkerPane(worker: Pick<WorkerStatus, "tmuxSession" | "tmuxWindowId" | "tmuxPaneId">, lines = 60): string | undefined {
+	return capturePaneTail(workerCoreTmuxTarget(worker), lines);
+}
+
+/** Core pane target: stable worker pane first, with legacy window/session fallback. */
+export function workerCoreTmuxTarget(worker: Pick<WorkerStatus, "tmuxSession" | "tmuxWindowId" | "tmuxPaneId">): string {
+	return worker.tmuxPaneId ?? worker.tmuxWindowId ?? worker.tmuxSession;
 }
 
 function gitOutput(cwd: string, args: string[], options: { input?: string; env?: NodeJS.ProcessEnv } = {}): string | undefined {
@@ -544,7 +553,7 @@ export function createWorkerStore(): WorkerStore {
 			const multiline = isMultilineInput(text);
 			const payload = multiline ? normalizeMultilineInput(text) : sanitizeSingleLineInput(text);
 			if (!payload) return false;
-			const ok = sendKeysToWindow(status.tmuxSession, payload, status.tmuxWindowId, multiline);
+			const ok = sendKeysToWindow(status.tmuxSession, payload, status.tmuxWindowId, status.tmuxPaneId, multiline);
 			if (!ok) return false;
 			await this.updateStatus(status.id, parentReplyAcceptedTransition(status));
 			return true;
@@ -627,20 +636,24 @@ export function createWorkerStore(): WorkerStore {
 			}
 
 			const windowId = readWindowId(target);
-			if (windowId) await this.patchStatus(id, { tmuxWindowId: windowId });
+			const paneId = readPaneId(windowId ?? target);
+			const persisted = await this.patchStatus(id, { ...(windowId ? { tmuxWindowId: windowId } : {}), ...(paneId ? { tmuxPaneId: paneId } : {}) });
+			// The operator companion is best-effort. Dispatch only after the stable
+			// identifiers are persisted, but never make worker creation wait for a
+			// slow or stalled third-party callback.
+			void notifyTmuxAdapter({
+				reason: "spawn",
+				workerId: id,
+				workerLabel: workerShortLabel(index),
+				workerDir: dir,
+				eventsFile: path.join(dir, "events.ndjson"),
+				sessionName: SHARED_TMUX_SESSION,
+				windowTarget: target,
+				...(windowId ? { windowId } : {}),
+				...(paneId ? { paneId } : {}),
+			});
 
-			if (input.captureTerminal) {
-				const log = path.join(dir, "pane.log");
-				spawnSync("tmux", ["pipe-pane", "-o", "-t", windowId ?? target, `cat > ${shellQuote(log)}`], { stdio: "ignore" });
-			}
-
-			if (input.layout === "split-events") {
-				const eventsPath = path.join(dir, "events.ndjson");
-				const splitCmd = `touch ${shellQuote(eventsPath)} && tail -F ${shellQuote(eventsPath)}`;
-				spawnSync("tmux", ["split-window", "-h", "-d", "-l", "30%", "-t", windowId ?? target, splitCmd], { stdio: "ignore" });
-			}
-
-			return windowId ? { ...status, tmuxWindowId: windowId } : status;
+			return persisted ?? (windowId || paneId ? { ...status, ...(windowId ? { tmuxWindowId: windowId } : {}), ...(paneId ? { tmuxPaneId: paneId } : {}) } : status);
 		},
 
 		async kill(id: string): Promise<boolean> {
@@ -655,7 +668,7 @@ export function createWorkerStore(): WorkerStore {
 			const status = await this.find(id);
 			if (!status) return "not_found";
 			if (status.paneCapturedAt) return "window_gone";
-			const target = status.tmuxWindowId ?? status.tmuxSession;
+			const target = workerCoreTmuxTarget(status);
 			const probe = probeWorkerPane(target);
 			if (probe.kind === "alive") return "alive";
 			if (probe.kind === "dead") {
@@ -707,9 +720,23 @@ export function createWorkerStore(): WorkerStore {
 				throw new Error(launch.error);
 			}
 			const windowId = readWindowId(target);
+			const paneId = readPaneId(windowId ?? target);
 			const launched = await this.updateStatus(status.id, (current) => current.state === "starting"
-				? { ...(windowId ? { tmuxWindowId: windowId } : {}) }
+				? { ...(windowId ? { tmuxWindowId: windowId } : {}), ...(paneId ? { tmuxPaneId: paneId } : {}) }
 				: undefined);
+			// Respawn has already succeeded and its stable targets are persisted.
+			// Optional operator UI must not become part of that lifecycle boundary.
+			void notifyTmuxAdapter({
+				reason: "respawn",
+				workerId: status.id,
+				workerLabel: workerShortLabel(status.index),
+				workerDir: dir,
+				eventsFile: path.join(dir, "events.ndjson"),
+				sessionName: SHARED_TMUX_SESSION,
+				windowTarget: target,
+				...(windowId ? { windowId } : {}),
+				...(paneId ? { paneId } : {}),
+			});
 			return launched.after;
 		},
 
@@ -742,48 +769,53 @@ export function normalizeMultilineInput(text: string): string {
 	return text.replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").replace(/^\n+|\n+$/g, "");
 }
 
-function sendKeysToWindow(target: string, text: string, windowId?: string, multiline = false): boolean {
+function sendKeysToWindow(target: string, text: string, windowId?: string, paneId?: string, multiline = false): boolean {
 	if (!target) return false;
-	const sendTarget = windowId ?? target;
-	const shared = isSharedSessionTarget(target) || Boolean(windowId);
+	const sendTarget = paneId ?? windowId ?? target;
+	const shared = isSharedSessionTarget(target) || Boolean(windowId) || Boolean(paneId);
 	const literal = shared ? `${DOCKET_INJECT_MARK}${text}` : text;
 	// Multiline payloads go through a tmux buffer + bracketed paste so the worker's input
 	// reader receives the whole block at once instead of executing on the first newline.
-	if (multiline) return pasteToWindow(sendTarget, target, literal, Boolean(windowId));
+	// A persisted pane id is authoritative. The window/name fallback is only for
+	// legacy statuses that predate tmuxPaneId; it must never redirect a companion
+	// layout when the worker pane is known.
+	const fallbackTarget = paneId ? sendTarget : windowId ? target : sendTarget;
+	const hasFallback = !paneId && Boolean(windowId);
+	if (multiline) return pasteToWindow(sendTarget, fallbackTarget, literal, hasFallback);
 	const literalResult = shared
 		? spawnSync("tmux", ["send-keys", "-t", sendTarget, "-l", literal], { stdio: "ignore" })
 		: spawnSync("tmux", ["send-keys", "-t", sendTarget, literal], { stdio: "ignore" });
 	if (literalResult.status !== 0) {
-		if (windowId) {
+		if (hasFallback) {
 			// Fall back to name target if id resolution failed (e.g. window was renamed and id stale).
-			const retry = spawnSync("tmux", ["send-keys", "-t", target, "-l", literal], { stdio: "ignore" });
+			const retry = spawnSync("tmux", ["send-keys", "-t", fallbackTarget, "-l", literal], { stdio: "ignore" });
 			if (retry.status !== 0) return false;
 		} else {
 			return false;
 		}
 	}
 	const enterResult = spawnSync("tmux", ["send-keys", "-t", sendTarget, "Enter"], { stdio: "ignore" });
-	if (enterResult.status !== 0 && windowId) {
-		const retry = spawnSync("tmux", ["send-keys", "-t", target, "Enter"], { stdio: "ignore" });
+	if (enterResult.status !== 0 && hasFallback) {
+		const retry = spawnSync("tmux", ["send-keys", "-t", fallbackTarget, "Enter"], { stdio: "ignore" });
 		return retry.status === 0;
 	}
 	return enterResult.status === 0;
 }
 
-function pasteToWindow(sendTarget: string, fallbackTarget: string, payload: string, hasWindowId: boolean): boolean {
+function pasteToWindow(sendTarget: string, fallbackTarget: string, payload: string, hasStableTarget: boolean): boolean {
 	// Load the payload into a named buffer via stdin (no shell quoting hazards), then paste it
 	// with -p (bracketed) and -d (delete the buffer afterwards). Enter submits the block.
 	const load = spawnSync("tmux", ["load-buffer", "-b", DOCKET_PASTE_BUFFER, "-"], { input: payload, stdio: ["pipe", "ignore", "ignore"] });
 	if (load.status !== 0) return false;
 	const pasteArgs = (t: string) => ["paste-buffer", "-d", "-p", "-b", DOCKET_PASTE_BUFFER, "-t", t];
 	let paste = spawnSync("tmux", pasteArgs(sendTarget), { stdio: "ignore" });
-	if (paste.status !== 0 && hasWindowId) paste = spawnSync("tmux", pasteArgs(fallbackTarget), { stdio: "ignore" });
+	if (paste.status !== 0 && hasStableTarget) paste = spawnSync("tmux", pasteArgs(fallbackTarget), { stdio: "ignore" });
 	if (paste.status !== 0) {
 		spawnSync("tmux", ["delete-buffer", "-b", DOCKET_PASTE_BUFFER], { stdio: "ignore" });
 		return false;
 	}
 	const enterResult = spawnSync("tmux", ["send-keys", "-t", sendTarget, "Enter"], { stdio: "ignore" });
-	if (enterResult.status !== 0 && hasWindowId) {
+	if (enterResult.status !== 0 && hasStableTarget) {
 		const retry = spawnSync("tmux", ["send-keys", "-t", fallbackTarget, "Enter"], { stdio: "ignore" });
 		return retry.status === 0;
 	}
@@ -814,20 +846,24 @@ function launchSharedWindow(input: { windowName: string; cwd: string; command: s
 
 type PaneProbe = { kind: "window_gone" } | { kind: "alive" } | { kind: "dead"; paneId: string };
 
-/**
- * Probe per pane, not per window: split layouts (e.g. split-events) keep a live
- * helper pane next to the worker pane, so the window-level flag would lie.
- */
+/** Probe the persisted worker pane. Legacy statuses fall back to the first pane
+ * in the named window, which is the pane created with the worker command; panes
+ * added later by companions are never candidates for core operations. */
 function probeWorkerPane(target: string): PaneProbe {
+	if (target.startsWith("%")) {
+		const result = spawnSync("tmux", ["display-message", "-p", "-t", target, "#{pane_id} #{pane_dead}"], { encoding: "utf8" });
+		if (result.error || result.status !== 0) return { kind: "window_gone" };
+		const [paneId, dead] = result.stdout.trim().split(/\s+/);
+		if (!paneId?.startsWith("%")) return { kind: "window_gone" };
+		return dead === "1" ? { kind: "dead", paneId } : { kind: "alive" };
+	}
 	const result = spawnSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_id} #{pane_dead}"], { encoding: "utf8" });
 	if (result.error || result.status !== 0) return { kind: "window_gone" };
-	const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-	if (lines.length === 0) return { kind: "window_gone" };
-	for (const line of lines) {
-		const [paneId, dead] = line.split(" ");
-		if (dead === "1" && paneId?.startsWith("%")) return { kind: "dead", paneId };
-	}
-	return { kind: "alive" };
+	const [first] = result.stdout.trim().split(/\r?\n/).filter(Boolean);
+	if (!first) return { kind: "window_gone" };
+	const [paneId, dead] = first.split(/\s+/);
+	if (!paneId?.startsWith("%")) return { kind: "window_gone" };
+	return dead === "1" ? { kind: "dead", paneId } : { kind: "alive" };
 }
 
 function capturePaneTail(target: string, lines = 200, options: { collapseBlankRuns?: boolean } = {}): string | undefined {

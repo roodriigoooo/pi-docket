@@ -137,8 +137,8 @@ export function verdictResolvedTransition(at: string, deliverable?: WorkerDelive
 	};
 }
 
-export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string }): WorkerTransition {
-	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
+export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string; tmuxPaneId?: string }): WorkerTransition {
+	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, tmuxWindowId: input.tmuxWindowId, tmuxPaneId: input.tmuxPaneId });
 }
 
 export function respawnFailedTransition(message: string): WorkerTransition {

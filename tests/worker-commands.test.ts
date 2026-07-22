@@ -106,7 +106,6 @@ function deps(
 		parentSession: "/session.json",
 			kinds,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: (text) => notifications.push(text),
 		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
@@ -172,7 +171,7 @@ test("Worker Commands --fresh overrides a full kind", async () => {
 	reg.register({ name: "seedy", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
 	const commands = createWorkerCommands({
 		...defaultExecutionDeps,
-		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, captureTerminal: () => false, notify: () => {}, announce: () => {}, emitText: () => {},
+		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, notify: () => {}, announce: () => {}, emitText: () => {},
 	});
 
 	await commands.spawn("x", { as: "seedy" });
@@ -205,7 +204,6 @@ test("Worker Commands passes kind decision-rights and plan gate into spawn", asy
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -239,7 +237,6 @@ test("Worker Commands uses configured default kind", async () => {
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		defaultKind: () => "planner",
 		notify: () => {},
 		announce: () => {},
@@ -251,7 +248,7 @@ test("Worker Commands uses configured default kind", async () => {
 	assert.equal(setup.spawned[0]?.kind, "planner");
 	assert.equal(setup.spawned[0]?.readOnly, true);
 	assert.equal(setup.spawned[0]?.worktree, false);
-	assert.equal(setup.spawned[0]?.layout, "split-events");
+	assert.equal("layout" in (setup.spawned[0] ?? {}), false);
 	assert.equal(setup.spawned[0]?.planGate, undefined);
 });
 
@@ -290,7 +287,6 @@ test("Worker Commands passes kind model and thinking to worker launch", async ()
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -314,7 +310,6 @@ test("Worker Commands inherits parent model when kind has no model override", as
 		parentModel: () => "google/gemini-3-pro",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -461,7 +456,6 @@ test("Worker Commands warns and falls back when configured default kind is missi
 		parentSession: "/session.json",
 		kinds: createWorkerKindRegistry(),
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		defaultKind: () => "ghost",
 		notify: (text) => notifications.push(text),
 		announce: () => {},

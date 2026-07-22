@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **durable deliverable store**: `/docket save` now writes immutable, inspectable deliverable versions from an exact approved worker generation or explicit parent authorship. `/docket load` mounts them at zero model-context cost and `Use` explicitly queues the exact body or starts a fresh confirmed handoff worker. Existing bundles remain compatibility data; new saves no longer use bundle selection, session markers, consume-on-use flags, or model summaries.
+- **tmux back behind the substrate boundary**: core removes split-event layouts, status-right rendering, terminal `pipe-pane` capture, and their configuration paths while retaining shared windows, literal/paste input, peek, durable dead-pane tails, and attach. Stable pane IDs protect core targeting, and one exclusive non-blocking `registerTmuxAdapter` seam lets an optional companion own operator layouts without delaying workers.
+
 ## 0.8.0
 
 - **human-started workers only (breaking)**: workers no longer receive `docket_spawn_child`; `can_spawn` is ignored with a migration diagnostic, persisted hierarchy fields are ignored, and `worker.maxSpawnDepth` has no effect. Workers are independent: list/respawn are flat and delete/prune removes only requested worker.
