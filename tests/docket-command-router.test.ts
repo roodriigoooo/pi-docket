@@ -240,6 +240,14 @@ test("Docket Command Router lists and explicitly deletes durable records alongsi
 	const deliverableStore = {
 		find: async () => storedDeliverable,
 		list: async () => [storedDeliverable],
+		listUnsupported: async () => [{
+			id: "d2",
+			version: 1,
+			ref: "deliverable:d2:1",
+			file: "/root/d2/v1.json",
+			schemaVersion: 2,
+			reason: "newer-schema" as const,
+		}],
 		delete: async (deliverable: StoredDeliverable) => { deleted.push(deliverable.ref); return true; },
 	} as unknown as DeliverableStore;
 	const checkpointStore = {
@@ -258,6 +266,7 @@ test("Docket Command Router lists and explicitly deletes durable records alongsi
 
 	await router.handle({ kind: "list", includeConsumed: true });
 	assert.match(listing, new RegExp(storedDeliverable.ref));
+	assert.match(listing, /deliverable:unreadable\twritten by a newer Docket \(schema 2 > 1\)/);
 	assert.match(listing, /legacy bundle/);
 
 	await router.handle({ kind: "delete", target: storedDeliverable.ref, targetKind: "deliverable" });

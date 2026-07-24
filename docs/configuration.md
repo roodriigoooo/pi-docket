@@ -37,6 +37,8 @@ Deliverables do not use an artifact pool, summarizer, retention sweep, or event-
 
 New saves live at `~/.pi/agent/docket/deliverables/<safe-id>/v<N>.json`. Worker-backed ids are deterministic from the worker id; parent-authored ids contain a timestamp and entropy. Each claimed version is immutable and saves of the same worker generation are idempotent.
 
+Each record carries a `schemaVersion`. Older versions are upgraded when read; a record this build cannot load (written by a newer Docket, or with no upgrade path) is listed by `/docket list` as `deliverable:unreadable` with the reason and file path rather than disappearing, and its version slot is never overwritten.
+
 ## Worker fleet
 
 | key | default | meaning |

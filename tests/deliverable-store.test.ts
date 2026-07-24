@@ -7,10 +7,12 @@ import {
 	approvedWorkerDecision,
 	artifactSummaryFromArtifact,
 	createDeliverableStore,
+	describeUnsupportedDeliverable,
 	makeParentDeliverableId,
 	reviewNotesForWorkerDeliverable,
 	safeDeliverableIdFromWorker,
 	storedDeliverableHandoffProvenance,
+	storedDeliverableIssues,
 	storedDeliverableRef,
 	type StoredDeliverable,
 } from "../extensions/deliverable-store.js";
@@ -232,6 +234,65 @@ test("DeliverableStore serializes concurrent saves and parent authorship is imme
 		reason: "parent-authorship",
 	});
 	assert.equal(storedDeliverableHandoffProvenance(parent.deliverable).sourceKind, "parent");
+});
+
+test("DeliverableStore surfaces records written by a newer schema instead of orphaning them", async (t) => {
+	const root = await tempRoot();
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = createDeliverableStore(root);
+	const parent = await store.saveParent({
+		body: "Parent-authored exact bytes\n",
+		summary: "Parent proposal",
+		outcome: "proposal",
+		cwd: "/repo",
+		selectedArtifact,
+		id: "parent-schema-drift",
+	});
+	const file = store.fileFor(parent.deliverable.id, parent.deliverable.version);
+	await writeFile(file, `${JSON.stringify({ ...JSON.parse(await readFile(file, "utf8")), schemaVersion: 2 })}\n`, "utf8");
+
+	assert.deepEqual(await store.list(), []);
+	assert.equal(await store.find("last"), undefined);
+	assert.deepEqual(await store.listUnsupported(), [{
+		id: parent.deliverable.id,
+		version: 1,
+		ref: parent.deliverable.ref,
+		file,
+		schemaVersion: 2,
+		reason: "newer-schema",
+	}]);
+	assert.equal(describeUnsupportedDeliverable((await store.listUnsupported())[0]!), "written by a newer Docket (schema 2 > 1)");
+	await assert.rejects(() => store.saveParent({
+		body: "replacement bytes\n",
+		summary: "Parent proposal",
+		outcome: "proposal",
+		cwd: "/repo",
+		selectedArtifact,
+		id: "parent-schema-drift",
+	}), /written by a newer Docket/);
+});
+
+test("stored deliverable validation names every failing invariant", async (t) => {
+	const root = await tempRoot();
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = createDeliverableStore(root);
+	const worker = workerStatus("worker-4");
+	const deliverable = workerDeliverable("worker-4", 1);
+	const decision = accepted(worker, deliverable, "decision");
+	const saved = await store.saveWorker({
+		deliverable,
+		worker,
+		approval: { kind: "worker", decisionId: "decision", decidedAt: decision.timestamp, verdict: "accept", workerDeliverable: workerDeliverablePointer(deliverable), decision },
+	});
+
+	assert.deepEqual(storedDeliverableIssues(saved.deliverable), []);
+	assert.deepEqual(storedDeliverableIssues({ ...saved.deliverable, body: "   ", summary: 7 }), ["body", "summary"]);
+	assert.deepEqual(storedDeliverableIssues({ ...saved.deliverable, source: { ...saved.deliverable.source, kind: "elsewhere" } }), ["source.kind"]);
+	assert.deepEqual(
+		storedDeliverableIssues({ ...saved.deliverable, approval: { ...saved.deliverable.approval, decision: { ...decision, task: "different task" } } }),
+		["approval.decision.task-matches-source"],
+	);
+	await assert.rejects(() => store.save({ ...saved.deliverable, version: 2, ref: storedDeliverableRef(saved.deliverable.id, 2), body: "" }), /Invalid stored deliverable: body/);
 });
 
 test("approval extraction rejects stale, rejected, and merely-ready generations", () => {

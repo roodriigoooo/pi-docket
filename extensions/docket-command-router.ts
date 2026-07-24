@@ -14,7 +14,7 @@ import type { WorkerCommands } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 import type { DeliverableLifecycle } from "./deliverable-lifecycle.js";
-import type { DeliverableStore, StoredDeliverable } from "./deliverable-store.js";
+import { describeUnsupportedDeliverable, type DeliverableStore, type StoredDeliverable } from "./deliverable-store.js";
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
 
@@ -359,9 +359,11 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				if (intent.workers === true) await deps.workerCommands.list({ allProjects: intent.allProjects === true });
 				else if (deps.deliverableStore) {
 					const deliverables = await deps.deliverableStore.list();
+					const unsupported = await deps.deliverableStore.listUnsupported();
 					const legacy = await deps.checkpointStore.list({ includeConsumed: intent.includeConsumed === true });
 					const lines = [
 						...deliverables.map((item) => `${item.ref}\tdeliverable\t${item.source.kind === "worker" ? item.source.workerLabel : "parent"}\t${item.summary}`),
+						...unsupported.map((item) => `${item.ref}\tdeliverable:unreadable\t${describeUnsupportedDeliverable(item)}\t${item.file}`),
 						...legacy.map((item) => `${item.id}\tlegacy bundle${item.consumedAt ? ":consumed" : ""}\t${item.cwd}\t${item.note ?? ""}`),
 					];
 					deps.emitText(lines.length ? lines.join("\n") : "No Docket deliverables or legacy bundles", "list", "docket · deliverables");
