@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 - **plans hand off to implementation without a second gate**: an approved plan deliverable now offers `Use → Implement`, which resolves `worker.implementKind` (default `implementer`), seeds the task from the plan's goal, inherits parent model/thinking, and carries the plan as the byte-exact launch sidecar. Approving a plan and handing it off no longer produces a worker that immediately asks you to approve a plan.
 - **plan gate discharge is recorded, not skipped**: only a reviewed handoff can discharge a gate. `task.md` names the approval and decision that satisfied it, tells the worker to publish the plan's steps with `docket_todos`, and re-arms the gate for unnamed files, destructive/external writes, dependency changes, scope growth, or a step that proves wrong. `planAuthorized` without a source deliverable is ignored.
@@ -9,6 +9,7 @@
 - **plan coverage on the verdict card and Report**: a ready deliverable that executes an approved plan is compared against the launch sidecar, showing `plan <ref> · N steps · X/Y planned files touched · … off-plan · … untouched`, warning-colored when either drift figure is non-zero. Derived at card-open from data already on disk: no new storage, no decision type, zero model context.
 - **kind-aware handoffs**: `Use → Worker` now selects a kind instead of silently landing on the default one. Worker and stored-deliverable handoffs share one path.
 - **no new plan object**: a plan is a Worker Deliverable, reusing immutability, versions, generation-bound approval, review notes, and provenance unchanged. See [docs/adr/0007-plan-to-implementation-handoff.md](docs/adr/0007-plan-to-implementation-handoff.md).
+- **release notes**: see [docs/releases/0.8.1.md](docs/releases/0.8.1.md).
 
 ## 0.8.0
 

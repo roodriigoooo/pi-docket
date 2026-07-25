@@ -1,16 +1,16 @@
 {
   "name": "@roodriigoooo/pi-docket",
-  "version": "0.8.0",
-	"description": "Delegate safely without losing control — visible workers, evidence-first verdicts, and durable deliverables outside model context",
-	"keywords": [
-		"pi-package",
-		"pi-extension",
-		"docket",
-		"workers",
-		"deliverables",
-		"context",
-		"coding-agent"
-	],
+  "version": "0.8.1",
+  "description": "Delegate safely without losing control — visible workers, evidence-first verdicts, and durable deliverables outside model context",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "docket",
+    "workers",
+    "deliverables",
+    "context",
+    "coding-agent"
+  ],
   "license": "MIT",
   "type": "module",
   "repository": {
