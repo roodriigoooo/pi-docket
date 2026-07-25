@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { createWorkerKindRegistry, workerKindCompatibility } from "../extensions/worker-kinds.js";
+import { createWorkerKindRegistry, parseWorkerKindMarkdown, workerKindCompatibility } from "../extensions/worker-kinds.js";
 import { installDocketExtensionSurface, getDocketExtensionSurface } from "../extensions/docket-extension-surface.js";
+import { DEFAULT_IMPLEMENT_KIND } from "../extensions/plan-contract.js";
 
 test("installDocketExtensionSurface exposes globalThis.__docket", () => {
 	const registry = createWorkerKindRegistry();
@@ -53,10 +54,33 @@ test("worker extension source exposes no autonomous spawn tool", async () => {
 });
 
 test("bundled kinds contain intent-only frontmatter", async () => {
-	for (const name of ["scout", "patcher"]) {
+	for (const name of ["scout", "patcher", "architect", "implementer"]) {
 		const source = await readFile(path.join(process.cwd(), "extensions", "worker-kinds", `${name}.md`), "utf8");
 		assert.doesNotMatch(source, /^(model|thinking|parent_seed|default_worktree|can_spawn|layout):/m);
 	}
+});
+
+/** Broken frontmatter makes a kind vanish silently at runtime, so parse the shipped files. */
+test("bundled plan kinds declare the authorities the plan handoff depends on", async () => {
+	const read = async (name: string) => parseWorkerKindMarkdown(
+		await readFile(path.join(process.cwd(), "extensions", "worker-kinds", `${name}.md`), "utf8"),
+		"builtin",
+	);
+
+	const architect = await read("architect");
+	assert.equal(architect?.name, "architect");
+	assert.equal(architect?.readOnly, true);
+	assert.equal(architect?.planGate, undefined);
+	assert.match(architect?.systemPrompt ?? "", /outcome: proposal/);
+	assert.match(architect?.systemPrompt ?? "", /files:/);
+
+	const implementer = await read("implementer");
+	assert.equal(implementer?.name, "implementer");
+	assert.equal(implementer?.readOnly, false);
+	assert.equal(implementer?.planGate, true);
+	assert.ok((implementer?.decisionRights?.length ?? 0) >= 3);
+	assert.match(implementer?.systemPrompt ?? "", /docket_todos/);
+	assert.equal(implementer?.name, DEFAULT_IMPLEMENT_KIND);
 });
 
 test("onWorkerEvent receives emitted events and unsubscribes cleanly", () => {

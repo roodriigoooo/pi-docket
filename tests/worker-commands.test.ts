@@ -567,3 +567,40 @@ test("workerCompletionCandidates returns recent worker labels", async () => {
 
 	assert.deepEqual(await workerCompletionCandidates(store), [{ value: "w2", label: "w2  active  inspect bug now please" }]);
 });
+
+const PLAN_PROVENANCE = {
+	sourceDeliverableId: "worker-deliverable:w1",
+	sourceVersion: 2,
+	sourceRef: "worker-deliverable:w1:2",
+	sourceKind: "worker" as const,
+	sourceWorkerLabel: "w1",
+	approvingDecisionId: "dec-9",
+	approvedAt: "2026-01-01T00:00:00.000Z",
+	sidecarPath: "/tmp/source-deliverable.md",
+};
+
+test("Worker Commands routes a reviewed handoff to a chosen kind and discharges its plan gate", async () => {
+	const { commands, spawned, kinds, confirmations } = deps([worker], createWorkerKindRegistry(), { hasUI: true });
+	kinds.register({ name: "implementer", readOnly: false, planGate: true });
+
+	await commands.spawn("Implement approved plan worker-deliverable:w1:2", {
+		as: "implementer",
+		sourceDeliverable: { body: "## Steps\n1. Do it — files: a.ts", provenance: PLAN_PROVENANCE },
+		planAuthorized: true,
+	});
+
+	assert.equal(spawned.length, 1);
+	assert.equal(spawned[0]?.kind, "implementer");
+	assert.equal(spawned[0]?.planAuthorized, true);
+	assert.equal(spawned[0]?.planGate, true);
+	assert.match(confirmations[0]?.detail ?? "", /Reviewed source: worker-deliverable:w1:2/);
+	assert.match(confirmations[0]?.detail ?? "", /Plan gate: satisfied at launch by worker-deliverable:w1:2/);
+});
+
+test("Worker Commands never marks a launch plan-authorized without a reviewed source", async () => {
+	const { commands, spawned } = deps();
+
+	await commands.spawn("do the work", { planAuthorized: true });
+
+	assert.equal(spawned[0]?.planAuthorized, undefined);
+});

@@ -207,6 +207,24 @@ A deliverable is an immutable, versioned record. An approved Worker Deliverable 
 
 `/docket load` mounts one stored deliverable under a `d<N>` slot at zero model-context cost. Listing, previewing, and loading never queue a chip or start work. Open a loaded deliverable and press `u Use`: Parent queues the exact full body for the next human submission; Worker follows the existing fresh-session, human-confirmed model/thinking flow and records generalized handoff provenance.
 
+### Plans and the Implement handoff
+
+A plan is a deliverable that proposes work rather than carrying one: no frozen change set, and either `outcome: proposal` or a body that parses as a plan. Docket adds no plan record, store, or slot — a plan reuses deliverable immutability, versioning, generation-bound approval, review notes, and provenance unchanged.
+
+The plan contract is a body shape, not a schema: `## Goal`, `## Constraints`, `## Steps` (numbered; each code-touching step declares `files: a.ts, b.ts`), `## Verification`, `## Risks`. Bare `Plan:` / `Goal:` label lines are accepted alongside markdown headings. A body that declares no numbered step simply does not parse, and everything downstream degrades to ordinary proposal behavior.
+
+`u Use` on an approved plan offers **Implement** ahead of Parent and Worker:
+
+| Destination | Kind | Execution | Plan gate |
+|---|---|---|---|
+| Implement | `worker.implementKind`, default `implementer` | inherits parent model/thinking | discharged at launch by the approving decision |
+| Worker | chosen from the kind list | chosen model and thinking | left armed |
+| Parent | — | — | — |
+
+Implement seeds the task editor with `Implement approved plan <ref>: <goal>` and still routes through the one launch-confirmation card, which names the approval that discharged the gate. A discharged gate is recorded in `task.md`, not merely dropped: the worker executes the approved plan, publishes its steps with `docket_todos`, and must call `docket_wait` before editing an unnamed file, growing scope, changing dependencies, running anything destructive, or abandoning a step that turns out to be wrong. Only a reviewed handoff can discharge a gate; `planAuthorized` without a source deliverable is ignored.
+
+**Plan coverage.** When a ready deliverable carries handoff provenance, Docket parses the byte-exact `source-deliverable.md` written at launch and compares the files the plan named against the change set. The verdict card's Evidence section and Report print `plan <ref> · N steps · X/Y planned files touched · … off-plan · … untouched`, colored as a warning when either drift figure is non-zero. This is derived at card-open time from data already on disk: no new storage, no decision type, and no model context.
+
 Legacy bundles remain listable, loadable, previewable, unloadable, and deletable for compatibility. They are never converted or written by the new save path, and their artifacts remain explicitly referenceable or injectable.
 
 This deliberately complements pi:
@@ -274,12 +292,15 @@ Bundled kinds:
 - `default`: general worker, edits allowed when task asks.
 - `scout`: fast read-only recon.
 - `patcher`: plan-gated edits in a worker worktree, then proposes a change set.
+- `architect`: read-only planning; publishes an approvable plan as `docket_done outcome: proposal`.
+- `implementer`: executes an approved plan received through Use → Implement.
 
 Examples:
 
 ```bash
 /docket spawn --as scout find route handlers that touch auth cookies
 /docket spawn --as patcher rename AccountService in src only
+/docket spawn --as architect plan rate limiting for the public API
 ```
 
 Custom kinds live in:

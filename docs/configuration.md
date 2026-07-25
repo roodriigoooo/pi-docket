@@ -17,6 +17,7 @@ Both optional. Defaults below.
   "worker": {
     "maxActive": 8,
     "defaultKind": "default",
+    "implementKind": "implementer",
     "parentSeedPolicy": "none",
     "dockIdleHideMinutes": 30,
     "pruneAfterHours": 24,
@@ -45,6 +46,7 @@ Each record carries a `schemaVersion`. Older versions are upgraded when read; a 
 |---|---|---|
 | `worker.maxActive` | 8 | reject `/docket spawn` once this many workers are starting/active/idle/needs_input. |
 | `worker.defaultKind` | `default` | kind used when `/docket spawn` omits `--as`. |
+| `worker.implementKind` | `implementer` | kind used by Use → Implement on an approved plan. |
 | `worker.parentSeedPolicy` | `none` | `"full"` seeds parent JSONL when no per-spawn context flag is present; explicit `"none"` keeps workers fresh and overrides legacy kind seeding. |
 | `worker.dockIdleHideMinutes` | 30 | hide ended workers from dock after this many minutes; 0 keeps them. |
 | `worker.pruneAfterHours` | 24 | auto-prune ended worker dirs after this many hours; 0 disables. |
@@ -52,7 +54,7 @@ Each record carries a `schemaVersion`. Older versions are upgraded when read; a 
 
 `worker.maxSpawnDepth` is removed. Existing JSON keys are ignored. Workers cannot create workers, and delete/prune affects one requested worker only.
 
-`worker.defaultKind` preserves that kind's declared rights; Docket does not add an implicit plan gate. `worker.guardrailsPath` replaces packaged `extensions/worker-guardrails.md` for every worker.
+`worker.defaultKind` preserves that kind's declared rights; Docket does not add an implicit plan gate. `worker.implementKind` names the kind Use → Implement launches; an approved plan discharges that kind's plan gate at launch, so point it at a kind whose declared rights you accept for plan-scoped edits. An unregistered value warns and falls back to the builtin default. `worker.guardrailsPath` replaces packaged `extensions/worker-guardrails.md` for every worker.
 
 ### Per-spawn execution
 

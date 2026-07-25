@@ -10,6 +10,7 @@ import {
 import type { Artifact, ArtifactSummary } from "./types.js";
 import { workerChangeSetArtifact } from "./worker-changes.js";
 import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
+import { formatPlanCoverageLine, type PlanCoverage } from "./plan-contract.js";
 import {
 	extractWorkerRecommendations,
 	firstWorkerReviewLine,
@@ -82,6 +83,8 @@ export type WorkerReport = {
 	deliverableVersion?: number;
 	deliverableRef?: string;
 	sourceHandoff?: WorkerDeliverable["sourceHandoff"];
+	/** Present only when this deliverable executes an approved plan that parsed. */
+	planCoverage?: PlanCoverage;
 };
 
 const VERDICT_FILE_CAP = 5;
@@ -204,6 +207,7 @@ export function projectWorkerReport(
 	artifacts: Artifact[] = [],
 	changeSet?: Artifact,
 	deliverable?: WorkerDeliverable,
+	coverage?: PlanCoverage,
 ): WorkerReport {
 	const resolvedDeliverable = deliverable ?? artifacts.map((artifact) => workerDeliverableFromArtifact(artifact)).find((item): item is WorkerDeliverable => item !== undefined);
 	const resolvedChangeSet = changeSet ?? workerChangeSetArtifact(worker, resolvedDeliverable);
@@ -274,6 +278,7 @@ export function projectWorkerReport(
 		primaryBody,
 		...(resolvedDeliverable ? { deliverableId: resolvedDeliverable.id, deliverableVersion: resolvedDeliverable.version, deliverableRef: resolvedDeliverable.ref } : {}),
 		...(resolvedDeliverable?.sourceHandoff ? { sourceHandoff: resolvedDeliverable.sourceHandoff } : {}),
+		...(coverage ? { planCoverage: coverage } : {}),
 	};
 }
 
@@ -367,6 +372,11 @@ export function formatWorkerReportText(report: WorkerReport): string {
 		}
 	} else {
 		lines.push("Changes: none");
+	}
+	if (report.planCoverage) {
+		lines.push(`Plan coverage: ${formatPlanCoverageLine(report.planCoverage)}`);
+		if (report.planCoverage.offPlan.length > 0) lines.push(`  off-plan: ${report.planCoverage.offPlan.join(", ")}`);
+		if (report.planCoverage.untouched.length > 0) lines.push(`  planned but untouched: ${report.planCoverage.untouched.join(", ")}`);
 	}
 	if (report.checks.total > 0) {
 		lines.push(

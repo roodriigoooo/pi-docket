@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { workerSourceLabel, type WorkerDoneInput, type WorkerDoneOutcome, type WorkerStatus } from "./background-work.js";
+import { parsePlan } from "./plan-contract.js";
 import type { Artifact, ArtifactSummary } from "./types.js";
 
 export const WORKER_DELIVERABLE_SCHEMA_VERSION = 1 as const;
@@ -73,7 +74,7 @@ export type WorkerDeliverable = {
 	sourceHandoff?: WorkerHandoffProvenance;
 };
 
-export type WorkerDeliverablePresentation = "document" | "findings" | "changes";
+export type WorkerDeliverablePresentation = "plan" | "document" | "findings" | "changes";
 
 export type WorkerDeliverablePublicationInput = {
 	root: string;
@@ -162,8 +163,11 @@ export function sameWorkerDeliverablePointer(a: WorkerDeliverablePointer | undef
 	return Boolean(a && b && a.id === b.id && a.version === b.version && a.ref === b.ref);
 }
 
-export function classifyWorkerDeliverable(deliverable: Pick<WorkerDeliverable, "outcome" | "changeSet">): WorkerDeliverablePresentation {
+export function classifyWorkerDeliverable(deliverable: Pick<WorkerDeliverable, "outcome" | "changeSet" | "body">): WorkerDeliverablePresentation {
 	if (deliverable.changeSet?.patch) return "changes";
+	// A plan is a proposal whose body follows the plan contract; the distinction is
+	// presentation only, so an unparseable proposal still reads as a proposal.
+	if (parsePlan(deliverable.body)) return "plan";
 	if (deliverable.outcome === "proposal") return "document";
 	return "findings";
 }

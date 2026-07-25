@@ -89,6 +89,9 @@ export type SpawnInput = {
 	thinking?: WorkerStatus["thinking"];
 	/** Exact reviewed body and provenance for a human-started handoff worker. */
 	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
+	/** Discharge this worker's plan gate at launch because the human approved the exact
+	 * plan in `sourceDeliverable` and started this worker to execute it. Ignored without one. */
+	planAuthorized?: boolean;
 };
 
 function workersRoot(): string {
@@ -609,6 +612,7 @@ export function createWorkerStore(): WorkerStore {
 				...(input.planGate ? { planGate: true } : {}),
 				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
 				...(sourceHandoff ? { sourceHandoff } : {}),
+				...(sourceHandoff && input.planAuthorized ? { planAuthorized: true } : {}),
 			}), "utf8");
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind });

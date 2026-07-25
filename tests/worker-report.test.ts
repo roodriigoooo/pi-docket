@@ -9,6 +9,7 @@ import {
 	projectWorkerReport,
 	verdictReadyPreview,
 } from "../extensions/worker-report.js";
+import { parsePlan, planCoverage } from "../extensions/plan-contract.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
 	return {
@@ -195,4 +196,26 @@ test("formatWorkerReportText deduplicates refs and omits event telemetry", () =>
 	assert.equal((text.match(/worker-changes:worker-1:0/g) ?? []).length, 0); // refs use @displayId
 	assert.equal((text.match(/@w1\.changes/g) ?? []).length, 1);
 	assert.doesNotMatch(text, /events\.ndjson|structured event/i);
+});
+
+test("Report prints plan coverage and names the drift", () => {
+	const plan = parsePlan(["## Steps", "1. Edit auth — files: src/auth.ts", "2. Edit routes — files: src/routes.ts"].join("\n"))!;
+	const coverage = planCoverage(plan, ["src/auth.ts", "src/extra.ts"], "worker-deliverable:w1:2");
+	const report = projectWorkerReport(
+		worker({ state: "ready" }),
+		[],
+		changeSet([{ path: "src/auth.ts", additions: 4, deletions: 1 }, { path: "src/extra.ts", additions: 9, deletions: 0 }]),
+		undefined,
+		coverage,
+	);
+	const text = formatWorkerReportText(report);
+	assert.match(text, /Plan coverage: plan worker-deliverable:w1:2 · 2 steps · 1\/2 planned files touched · 1 untouched · 1 off-plan/);
+	assert.match(text, /off-plan: src\/extra\.ts/);
+	assert.match(text, /planned but untouched: src\/routes\.ts/);
+});
+
+test("Report omits plan coverage when no plan was handed off", () => {
+	const report = projectWorkerReport(worker({ state: "ready" }), [], changeSet([{ path: "src/auth.ts", additions: 1, deletions: 0 }]));
+	assert.equal(report.planCoverage, undefined);
+	assert.doesNotMatch(formatWorkerReportText(report), /Plan coverage/);
 });

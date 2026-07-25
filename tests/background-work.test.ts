@@ -267,3 +267,47 @@ test("Background Work task doc names reviewed handoff source without changing au
 	assert.match(doc, /worker-deliverable:w1:2/);
 	assert.match(doc, /does not override current decision rights or guardrails/);
 });
+
+const APPROVED_PLAN_HANDOFF = {
+	sourceDeliverableId: "worker-deliverable:w1",
+	sourceVersion: 2,
+	sourceRef: "worker-deliverable:w1:2",
+	sourceKind: "worker" as const,
+	sourceWorkerLabel: "w1",
+	approvingDecisionId: "dec-9",
+	approvedAt: "2026-01-01T00:00:00.000Z",
+	sidecarPath: "/tmp/w2/source-deliverable.md",
+};
+
+test("Background Work discharges the plan gate for an approved plan handoff", () => {
+	const doc = buildWorkerTaskDocument({
+		task: "Implement approved plan worker-deliverable:w1:2",
+		kind: "implementer",
+		worktree: true,
+		planGate: true,
+		sourceHandoff: APPROVED_PLAN_HANDOFF,
+		planAuthorized: true,
+	});
+
+	assert.match(doc, /## Approved plan/);
+	assert.match(doc, /Read the sidecar before your first move/);
+	assert.match(doc, /Satisfied at launch by approved worker-deliverable:w1:2 \(v2, decision dec-9\)/);
+	assert.match(doc, /Publish the plan's numbered steps with `docket_todos`/);
+	assert.match(doc, /The gate re-opens for anything the approved plan does not cover/);
+	assert.match(doc, /Edit the files the approved plan names/);
+	// The discharged gate replaces the ask-first gate rather than sitting beside it.
+	assert.doesNotMatch(doc, /After read-only discovery and before the first file edit/);
+});
+
+test("Background Work never discharges a plan gate without a reviewed handoff", () => {
+	const doc = buildWorkerTaskDocument({ task: "Implement something", kind: "implementer", worktree: true, planGate: true, planAuthorized: true });
+	assert.match(doc, /After read-only discovery and before the first file edit/);
+	assert.doesNotMatch(doc, /Satisfied at launch/);
+});
+
+test("Background Work keeps the ask-first gate on an unauthorized handoff", () => {
+	const doc = buildWorkerTaskDocument({ task: "Use these findings", kind: "patcher", worktree: true, planGate: true, sourceHandoff: APPROVED_PLAN_HANDOFF });
+	assert.match(doc, /## Reviewed source deliverable/);
+	assert.match(doc, /After read-only discovery and before the first file edit/);
+	assert.doesNotMatch(doc, /Satisfied at launch/);
+});

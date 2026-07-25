@@ -38,6 +38,22 @@ _Avoid_: latest answer, worker result, live output.
 One accepted ready generation of a Worker Deliverable. `v1` never changes when a revision produces `v2`.
 _Avoid_: edit, overwrite, current output.
 
+**Plan deliverable**:
+A Worker Deliverable that proposes work instead of carrying it: no frozen change set, and either `proposal` outcome or a body following the plan contract (Goal, Constraints, numbered Steps with `files:` clauses, Verification, Risks). It is a shape and a presentation, never a separate artifact class or store.
+_Avoid_: plan artifact, plan record, spec object.
+
+**Implement handoff**:
+The Use destination offered only for an approved Plan deliverable. It selects the configured implement kind, seeds the task from the plan's goal, inherits parent execution, and carries the plan as the byte-exact sidecar. Still human-started and still confirmed.
+_Avoid_: auto-implement, execute plan, run plan.
+
+**Plan gate discharge**:
+A plan gate resolved at launch because the human approved that exact Deliverable Version and started the worker to execute it. The gate is recorded as satisfied in `task.md` with the approving decision, and re-opens for anything the plan does not cover. Only a reviewed handoff can discharge one.
+_Avoid_: skipped gate, disabled gate, trusted worker.
+
+**Plan coverage**:
+A derived comparison between the files an approved plan named and the files the resulting change set touched, shown on the verdict card and in Report. Read from the launch sidecar at card-open time; it stores nothing and records no decision.
+_Avoid_: plan compliance, conformance check, plan lint.
+
 **Approval**:
 A generation-bound verdict accepting one exact Deliverable Version. It never injects context or starts work; patch promotion remains an explicit verdict action.
 _Avoid_: use, handoff, auto-promote.
@@ -125,6 +141,8 @@ _Avoid_: continue, resume, restore.
 - A **Worker** starts from a **Pre-flight brief** and may be constrained by **Decision rights** or a **Plan gate**.
 - A **Worker** produces **Artifacts** and one primary **Worker Deliverable** per accepted ready generation; supporting artifacts remain evidence.
 - An **Approval** judges one **Deliverable Version**. **Use / Handoff** is separate and remains human-started.
+- A **Plan deliverable** is a Worker Deliverable, not a new type; only an approved one offers the **Implement handoff**, and only that handoff produces a **Plan gate discharge**.
+- **Plan coverage** compares an approved plan against the change set that claims to execute it. It is evidence on the verdict card, never a gate or a verdict of its own.
 - A **Deliverable** freezes exact body bytes plus structured result data, source provenance, approval, and review history.
 - **Save** = copy an approved worker generation or author selected content + write one immutable record.
 - **Load** = **Mount** the deliverable under a `d<N>` slot at zero model-context cost.
@@ -144,3 +162,5 @@ _Avoid_: continue, resume, restore.
 
 - "checkpoint" made Docket sound like a session-resume feature. Resolved: canonical term is **Deliverable**; old bundles are compatibility-only.
 - "continue" duplicated Pi's session vocabulary. Resolved: Docket has **Save**, **Load**, and explicit **Use**; Pi owns continuation.
+- "plan" risked becoming a second artifact class beside Deliverable, forking versioning, approval, and storage for no new capability. Resolved: a plan is a **Plan deliverable** — a shape and a presentation — and the first-class addition is the *transition* (**Implement handoff**, **Plan gate discharge**, **Plan coverage**), not a new object.
+- "plan mode" could have meant Docket restricting the parent's own tools. Resolved: out of scope. Pi owns session and tool policy; Docket owns the resulting artifact, its approval, and its handoff.

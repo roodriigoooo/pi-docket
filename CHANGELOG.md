@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **plans hand off to implementation without a second gate**: an approved plan deliverable now offers `Use → Implement`, which resolves `worker.implementKind` (default `implementer`), seeds the task from the plan's goal, inherits parent model/thinking, and carries the plan as the byte-exact launch sidecar. Approving a plan and handing it off no longer produces a worker that immediately asks you to approve a plan.
+- **plan gate discharge is recorded, not skipped**: only a reviewed handoff can discharge a gate. `task.md` names the approval and decision that satisfied it, tells the worker to publish the plan's steps with `docket_todos`, and re-arms the gate for unnamed files, destructive/external writes, dependency changes, scope growth, or a step that proves wrong. `planAuthorized` without a source deliverable is ignored.
+- **two bundled kinds for the loop**: `architect` (read-only, shared workspace) publishes an approvable plan through `docket_done outcome: proposal` instead of parking it in a `docket_wait` question; `implementer` keeps its plan gate and scopes rights to the files the approved plan names.
+- **plan contract**: `## Goal`, `## Constraints`, `## Steps` (numbered, each optionally `files: a.ts, b.ts`), `## Verification`, `## Risks`. Markdown headings and bare `Plan:` label lines both parse. A body with no numbered step simply does not parse and reviews as an ordinary proposal — no publish-time validation anywhere.
+- **plan coverage on the verdict card and Report**: a ready deliverable that executes an approved plan is compared against the launch sidecar, showing `plan <ref> · N steps · X/Y planned files touched · … off-plan · … untouched`, warning-colored when either drift figure is non-zero. Derived at card-open from data already on disk: no new storage, no decision type, zero model context.
+- **kind-aware handoffs**: `Use → Worker` now selects a kind instead of silently landing on the default one. Worker and stored-deliverable handoffs share one path.
+- **no new plan object**: a plan is a Worker Deliverable, reusing immutability, versions, generation-bound approval, review notes, and provenance unchanged. See [docs/adr/0007-plan-to-implementation-handoff.md](docs/adr/0007-plan-to-implementation-handoff.md).
+
 ## 0.8.0
 
 - **human-started workers only (breaking)**: workers no longer receive `docket_spawn_child`; `can_spawn` is ignored with a migration diagnostic, persisted hierarchy fields are ignored, and `worker.maxSpawnDepth` has no effect. Workers are independent: list/respawn are flat and delete/prune removes only requested worker.

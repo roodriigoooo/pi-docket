@@ -13,6 +13,8 @@ export type DocketWorkerConfig = {
 	maxActive?: number;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?: string;
+	/** Kind used by the Use → Implement handoff on an approved plan. Defaults to `implementer`. */
+	implementKind?: string;
 	/** Parent-seed policy below per-spawn flags and above legacy kind `parent_seed`. Absence resolves fresh after compatibility checks. */
 	parentSeedPolicy?: "full" | "none";
 };

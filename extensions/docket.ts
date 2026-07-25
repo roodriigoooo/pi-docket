@@ -68,7 +68,8 @@ import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
 import { createWorkerKindRegistry, workerKindGuardrailsAppendix, DEFAULT_KIND_NAME, type WorkerKind } from "./worker-kinds.js";
 import { qualifiedModelRef, WORKER_THINKING_LEVELS, type WorkerThinking } from "./worker-spawn-policy.js";
-import { classifyWorkerDeliverable, extractWorkerDeliverableBody, legacyWorkerDeliverableInput, publishWorkerDeliverable, readCurrentWorkerDeliverable, sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable } from "./worker-deliverable.js";
+import { classifyWorkerDeliverable, extractWorkerDeliverableBody, legacyWorkerDeliverableInput, publishWorkerDeliverable, readCurrentWorkerDeliverable, sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable, type WorkerHandoffProvenance } from "./worker-deliverable.js";
+import { DEFAULT_IMPLEMENT_KIND, formatPlanCoverageLine, handoffDestinations, isImplementableDeliverable, parsePlan, planCoverage, planHandoffTaskPrefill, type PlanCoverage } from "./plan-contract.js";
 import { availableHandoffModels, createWorkerHandoffProvenance, handoffModelRef, handoffThinkingChoices } from "./worker-handoff.js";
 import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } from "./docket-extension-surface.js";
 import { createSharedSessionRuntime } from "./shared-session-runtime.js";
@@ -947,6 +948,7 @@ export class DocketVerdictView implements Component {
 		artifacts: Artifact[] = [],
 		deliverable?: WorkerDeliverable,
 		private canUse = false,
+		private planCoverage?: PlanCoverage,
 	) {
 		this.changeSet = changeSet;
 		this.artifacts = artifacts;
@@ -1036,7 +1038,7 @@ export class DocketVerdictView implements Component {
 		const listWidth = Math.max(30, innerWidth);
 		const state = deriveWorkerState(this.worker);
 		const ready = state === "ready" || state === "ready_open_todos" || state === "reviewed";
-		const report = projectWorkerReport(this.worker, this.artifacts, this.changeSet, this.deliverable);
+		const report = projectWorkerReport(this.worker, this.artifacts, this.changeSet, this.deliverable, this.planCoverage);
 		const payload = workerVerdictPayload(this.worker, this.changeSet, this.deliverable);
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options, this.canUse, Boolean(this.deliverable));
 		this.selected = Math.min(this.selected, Math.max(0, verbs.length - 1));
@@ -1078,6 +1080,13 @@ export class DocketVerdictView implements Component {
 			if (preview.evidence.filesOverflow > 0) {
 				this.container.addChild(new Text(truncateToWidth(`   ${muted(`… ${preview.evidence.filesOverflow} more · r Report`)}`, listWidth - 2), 1, 0));
 			}
+			if (report.planCoverage) {
+				// Drift between an approved plan and the diff that claims to execute it is the
+				// one thing this card must not let through quietly.
+				const drift = report.planCoverage.offPlan.length > 0 || report.planCoverage.untouched.length > 0;
+				const coverageLine = formatPlanCoverageLine(report.planCoverage);
+				this.container.addChild(new Text(truncateToWidth(`  ${drift ? warning(coverageLine) : dim(coverageLine)}`, listWidth - 2), 1, 0));
+			}
 			if (preview.evidence.checksLine) this.container.addChild(new Text(truncateToWidth(`  ${dim(preview.evidence.checksLine)}`, listWidth - 2), 1, 0));
 			for (const item of preview.evidence.evidenceLines) {
 				for (const wrapped of wrapPlainText(`· ${item}`, listWidth - 4, 2)) this.container.addChild(new Text(truncateToWidth(`  ${dim(wrapped)}`, listWidth - 2), 1, 0));
@@ -1091,7 +1100,7 @@ export class DocketVerdictView implements Component {
 			}
 			this.container.addChild(new Spacer(1));
 			const presentation = this.deliverable ? classifyWorkerDeliverable(this.deliverable) : undefined;
-			const deliverableHeading = presentation === "document" ? "Proposal" : presentation === "findings" ? "Findings" : "Worker says";
+			const deliverableHeading = presentation === "plan" ? "Plan" : presentation === "document" ? "Proposal" : presentation === "findings" ? "Findings" : "Worker says";
 			this.addSectionHeading(listWidth, muted, deliverableHeading);
 			for (const wrapped of wrapPlainText(preview.workerSays.headline || "Worker ready.", listWidth - 4, 3)) {
 				this.container.addChild(new Text(truncateToWidth(`  ${text(wrapped)}`, listWidth - 2), 1, 0));
@@ -1174,6 +1183,28 @@ export class DocketVerdictView implements Component {
 	}
 }
 
+/**
+ * Compare an implementation deliverable against the plan it was handed. The plan body is
+ * the byte-exact sidecar written at launch, so this reads from disk and never enters model
+ * context. Any failure — no handoff, no diff, unparseable plan — simply yields no coverage.
+ */
+async function readPlanCoverage(deliverable: WorkerDeliverable | undefined, changeSet: Artifact | undefined): Promise<PlanCoverage | undefined> {
+	const handoff = deliverable?.sourceHandoff;
+	if (!handoff?.sidecarPath) return undefined;
+	const fromDeliverable = deliverable?.changeSet?.files.map((file) => file.path) ?? [];
+	const fromArtifact = Array.isArray(changeSet?.meta?.changedFiles)
+		? changeSet!.meta!.changedFiles.flatMap((file: unknown) => (file && typeof file === "object" && typeof (file as { path?: unknown }).path === "string" ? [(file as { path: string }).path] : []))
+		: [];
+	const changedPaths = fromDeliverable.length > 0 ? fromDeliverable : fromArtifact;
+	if (changedPaths.length === 0) return undefined;
+	try {
+		const outline = parsePlan(await fs.readFile(handoff.sidecarPath, "utf8"));
+		return outline ? planCoverage(outline, changedPaths, handoff.sourceRef) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerStatus, remaining = 0): Promise<DocketVerdictAction | null> {
 	const state = deriveWorkerState(worker);
 	const reviewable = state === "ready" || state === "ready_open_todos" || state === "reviewed";
@@ -1189,7 +1220,8 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 	if (deliverable) {
 		try { canUse = isDeliverableApproved(await createDecisionLog().read(), workerDeliverablePointer(deliverable)); } catch { /* ledger is best-effort */ }
 	}
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse), {
+	const coverage = await readPlanCoverage(deliverable, changeSet);
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse, coverage), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
@@ -1204,7 +1236,7 @@ async function showWorkerReport(ctx: ExtensionCommandContext, worker: WorkerStat
 	}
 	const changeSet = workerChangeSetArtifact(worker, deliverable);
 	const artifacts = await readWorkerArtifactsForReview(worker, deliverable);
-	const report = projectWorkerReport(worker, artifacts, changeSet, deliverable);
+	const report = projectWorkerReport(worker, artifacts, changeSet, deliverable, await readPlanCoverage(deliverable, changeSet));
 	const body = formatWorkerReportText(report);
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => new DocketWorkerReportView(tui, theme, `${workerSourceLabel(worker)} · Report`, body, done), {
 		overlay: true,
@@ -3253,6 +3285,58 @@ export default function docketExtension(pi: ExtensionAPI) {
 				announce: (subject, detail, kind, docket, meta) => announceAction(pi, ctx, subject, detail, kind, docket, meta),
 				emitText: (text, kind, heading) => emitText(pi, ctx, text, kind, heading),
 			});
+			/**
+			 * The worker half of Use → Handoff, shared by worker and stored deliverables.
+			 * `implement` is the low-friction path for an approved plan: the kind comes from
+			 * config, execution inherits the parent, and the approval discharges the plan gate.
+			 * `worker` stays the explicit path where every launch choice is made by hand.
+			 */
+			const startHandoffWorker = async (
+				source: { ref: string; body: string; provenance: WorkerHandoffProvenance },
+				mode: "implement" | "worker",
+				options: { authorizeLaunch?: () => Promise<boolean> } = {},
+			): Promise<WorkerStatus | undefined> => {
+				const implement = mode === "implement";
+				let kindName: string | undefined;
+				if (implement) {
+					kindName = docketConfig?.worker?.implementKind?.trim() || DEFAULT_IMPLEMENT_KIND;
+				} else {
+					const kinds = kindRegistry.list();
+					const labels = kinds.map((kind) => `${kind.name} · ${kind.readOnly ? "read-only" : kind.planGate ? "plan-gated" : "writable"}`);
+					const picked = await ctx.ui.select("Handoff kind", labels);
+					kindName = picked ? kinds[labels.indexOf(picked)]?.name : undefined;
+					if (!kindName) return undefined;
+				}
+				const prefill = implement ? planHandoffTaskPrefill(source.ref, parsePlan(source.body)) : "";
+				const task = (await ctx.ui.editor(`Handoff task · ${source.ref}`, prefill))?.trim();
+				if (!task) return undefined;
+				let modelRef: string | undefined;
+				let thinking: WorkerThinking | undefined;
+				if (!implement) {
+					const models = availableHandoffModels(ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })));
+					if (models.length === 0) {
+						notifyDocket(pi, ctx, "Docket handoff found no available model.", "error");
+						return undefined;
+					}
+					const modelLabels = models.map((model) => `${handoffModelRef(model)}${model.name ? ` · ${model.name}` : ""}`);
+					const pickedLabel = await ctx.ui.select("Handoff model", modelLabels);
+					const model = models[pickedLabel ? modelLabels.indexOf(pickedLabel) : -1];
+					if (!model) return undefined;
+					const thinkingChoices = handoffThinkingChoices(model);
+					const pickedThinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
+					if (!pickedThinking || !thinkingChoices.includes(pickedThinking as typeof thinkingChoices[number])) return undefined;
+					modelRef = handoffModelRef(model);
+					thinking = pickedThinking as WorkerThinking;
+				}
+				return workerCommands.spawn(task, {
+					as: kindName,
+					...(modelRef ? { model: modelRef } : {}),
+					...(thinking ? { thinking } : {}),
+					sourceDeliverable: { body: source.body, provenance: source.provenance },
+					...(implement ? { planAuthorized: true } : {}),
+					...(options.authorizeLaunch ? { authorizeLaunch: options.authorizeLaunch } : {}),
+				});
+			};
 			const checkpointCommands = createCheckpointCommands({
 				store: checkpointStore,
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
@@ -3373,7 +3457,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
 						return;
 					}
-					const destination = await ctx.ui.select(`Use ${deliverable.ref}`, ["Parent", "Worker"]);
+					const destination = await ctx.ui.select(`Use ${deliverable.ref}`, handoffDestinations(isImplementableDeliverable(deliverable)));
 					if (!destination) return;
 					if (destination === "Parent") {
 						try { judgment = await currentApproval(); } catch { judgment = undefined; }
@@ -3395,40 +3479,25 @@ export default function docketExtension(pi: ExtensionAPI) {
 						announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, result);
 						return;
 					}
-					const task = (await ctx.ui.editor(`Handoff task · ${deliverable.ref}`, ""))?.trim();
-					if (!task) return;
-					const models = availableHandoffModels(ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })));
-					if (models.length === 0) {
-						notifyDocket(pi, ctx, "Docket handoff found no available model.", "error");
-						return;
-					}
-					const modelLabels = models.map((model) => `${handoffModelRef(model)}${model.name ? ` · ${model.name}` : ""}`);
-					const pickedLabel = await ctx.ui.select("Handoff model", modelLabels);
-					const modelIndex = pickedLabel ? modelLabels.indexOf(pickedLabel) : -1;
-					const model = models[modelIndex];
-					if (!model) return;
-					const thinkingChoices = handoffThinkingChoices(model);
-					const thinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
-					if (!thinking || !thinkingChoices.includes(thinking as typeof thinkingChoices[number])) return;
-					const modelRef = handoffModelRef(model);
 					try { judgment = await currentApproval(); } catch { judgment = undefined; }
 					if (!judgment) {
 						notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
 						return;
 					}
 					const provenance = createWorkerHandoffProvenance(deliverable, { id: judgment.id, timestamp: judgment.timestamp });
-					const spawned = await workerCommands.spawn(task, {
-						model: modelRef,
-						thinking: thinking as WorkerThinking,
-						sourceDeliverable: { body: deliverable.body, provenance },
-						authorizeLaunch: async () => {
-							let approval: ReturnType<typeof latestDeliverableJudgment>;
-							try { approval = await currentApproval(); } catch { approval = undefined; }
-							if (approval) return true;
-							notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
-							return false;
+					const spawned = await startHandoffWorker(
+						{ ref: deliverable.ref, body: deliverable.body, provenance },
+						destination === "Implement" ? "implement" : "worker",
+						{
+							authorizeLaunch: async () => {
+								let approval: ReturnType<typeof latestDeliverableJudgment>;
+								try { approval = await currentApproval(); } catch { approval = undefined; }
+								if (approval) return true;
+								notifyDocket(pi, ctx, "Docket Use requires approval of current deliverable version.", "warning");
+								return false;
+							},
 						},
-					});
+					);
 					if (spawned) await refreshWorkerDockWidget();
 				},
 				useStoredDeliverable: async (stored) => {
@@ -3436,7 +3505,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						notifyDocket(pi, ctx, "Docket Use needs interactive UI. Use only queues a parent chip or starts a confirmed worker.", "error");
 						return;
 					}
-					const destination = await ctx.ui.select(`Use ${stored.ref}`, ["Parent", "Worker"]);
+					const destination = await ctx.ui.select(`Use ${stored.ref}`, handoffDestinations(isImplementableDeliverable(stored)));
 					if (!destination) return;
 					if (destination === "Parent") {
 						const slot = await loadedArtifacts.loadStoredDeliverable(stored);
@@ -3447,25 +3516,10 @@ export default function docketExtension(pi: ExtensionAPI) {
 						announceChipChange(ctx, { displayId: artifact.displayId, ref: artifact.ref, mode: "full", kind: artifact.kind, title: artifact.title }, result);
 						return;
 					}
-					const task = (await ctx.ui.editor(`Handoff task · ${stored.ref}`, ""))?.trim();
-					if (!task) return;
-					const models = availableHandoffModels(ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning })));
-					if (models.length === 0) {
-						notifyDocket(pi, ctx, "Docket handoff found no available model.", "error");
-						return;
-					}
-					const modelLabels = models.map((model) => `${handoffModelRef(model)}${model.name ? ` · ${model.name}` : ""}`);
-					const pickedLabel = await ctx.ui.select("Handoff model", modelLabels);
-					const model = models[pickedLabel ? modelLabels.indexOf(pickedLabel) : -1];
-					if (!model) return;
-					const thinkingChoices = handoffThinkingChoices(model);
-					const thinking = await ctx.ui.select("Handoff thinking", thinkingChoices);
-					if (!thinking || !thinkingChoices.includes(thinking as typeof thinkingChoices[number])) return;
-					const spawned = await workerCommands.spawn(task, {
-						model: handoffModelRef(model),
-						thinking: thinking as WorkerThinking,
-						sourceDeliverable: { body: stored.body, provenance: storedDeliverableHandoffProvenance(stored) },
-					});
+					const spawned = await startHandoffWorker(
+						{ ref: stored.ref, body: stored.body, provenance: storedDeliverableHandoffProvenance(stored) },
+						destination === "Implement" ? "implement" : "worker",
+					);
 					if (spawned) await refreshWorkerDockWidget();
 				},
 				saveWorkerDeliverable: async (_sourceWorker, deliverable) => {

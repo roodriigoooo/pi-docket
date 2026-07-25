@@ -227,11 +227,43 @@ Bundled worker kinds:
 - `default`: plan-gated general work in a fresh isolated workspace.
 - `scout`: read-only investigation.
 - `patcher`: plan-gated edits in an isolated worker workspace.
+- `architect`: read-only planning; publishes an approvable implementation plan.
+- `implementer`: executes an approved plan handed to it.
 
 A plan gate lets a worker inspect first, then requires it to ask before its first edit or mutating command.
 Configured `worker.defaultKind` values are deliberate power-user overrides: Docket preserves the selected kind's declared rights instead of adding an implicit policy on top.
 
 Ready review loop: accepted `docket_done` freezes a Worker Deliverable version → verdict card (Evidence → Worker says → Actions) → `r` Report if needed → `d`/`h` for exact frozen diff/Hunk → promote, approve, or reject. Approval never injects context. After approval, `u Use` either queues one full immutable body for next parent prompt or starts one fresh worker with `source-deliverable.md` input and recorded provenance. Attach is a secondary debug escape hatch, not the normal path.
+
+## Plan, then implement
+
+> A note on why this exists: often, a pattern I use with workers is to send a read-only one out first, make it come back with a plan, argue with it for a round or two, and only then let anything touch the repo. It works, but the seam between those two steps was me — reading the plan in one card, then hand-writing a task for a second worker and hoping I had not paraphrased away the part that mattered. Therefore: the architect kind, and an `Implement` action on an approved plan that carries the exact bytes I approved into the worker that does the work. The approval *is* the handoff. Everything about reviewing the result stayed the same.
+
+A plan is not a separate kind of object: it is a deliverable that proposes work instead of carrying it. That means it gets everything a deliverable already has — one immutable frozen body, versions, approval bound to one exact version, revision notes, provenance, and zero-token mounting.
+
+```text
+/docket spawn --as architect  add rate limiting to the public API
+# worker publishes the plan with docket_done outcome: proposal
+/docket verdict            # read it, approve it, or request a revision
+u  →  Implement            # start the implementation worker from that exact plan
+```
+
+`Implement` appears on an approved plan only. It picks the `implementer` kind, seeds the task from the plan's goal, inherits the parent's model and thinking, and writes the plan byte-exact to the worker's `source-deliverable.md`. One confirmation card shows the resolved launch before anything starts. `Worker` remains the explicit path where you choose kind, model, and thinking by hand; `Parent` still just queues the body for your next prompt.
+
+**The plan gate is discharged, not skipped.** You already approved this exact plan version, so the implementation worker executes it instead of stopping to propose it again. The gate stays armed for everything the plan does not cover: files it never names, destructive commands, dependency changes, scope growth, or a step that turns out to be wrong. Its `task.md` says which approval discharged it and which decision recorded that.
+
+A plan the architect writes in the shape below is machine-checkable at review time — steps become the implementer's progress board, and the verdict card compares the files the plan named against the diff that came back:
+
+```text
+## Goal        one sentence
+## Steps       1. numbered — files: path/one.ts, path/two.ts
+## Verification  exact commands
+## Risks       what could invalidate this
+```
+
+Off-plan or untouched files show as a warning-colored `plan … 3/4 planned files touched · 1 off-plan` line on the verdict card and in Report. A plan that does not follow the shape still works everywhere — it just reviews as an ordinary proposal.
+
+Writing the plan yourself in the parent works the same way: `/docket save --from <artifact-id>`, choose **Proposal**, then `u → Implement`. Docket does not restrict the parent's own tools while you plan; that is Pi's job, and a plan-mode extension composes with this cleanly.
 
 ## Durable deliverables
 

@@ -55,6 +55,9 @@ export type WorkerTaskDocumentInput = {
 	planGate?: boolean;
 	decisionRights?: string[];
 	sourceHandoff?: WorkerHandoffProvenance;
+	/** Human approved this exact plan and started this worker to execute it, so the gate
+	 * is discharged at launch instead of re-asked. Only meaningful with `sourceHandoff`. */
+	planAuthorized?: boolean;
 };
 
 export type WorkerWorkspaceKind = "git" | "copy";
@@ -245,11 +248,20 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 	const task = input.task.trim();
 	const kind = input.kind?.trim() || "default";
 	const rights = normalizedDecisionRights(input.decisionRights);
+	// A gate is discharged only by an approved handoff: the human read that exact plan
+	// version and started this worker to execute it. Nothing else may skip the gate.
+	const planDischarged = input.planGate === true && input.planAuthorized === true && input.sourceHandoff !== undefined;
 	const authority = input.readOnly
 		? [
 			"Read files and run non-mutating discovery commands.",
 			"Do not edit files. If edits are needed, call `docket_wait` and ask for a writable worker.",
 		]
+		: planDischarged
+			? [
+				"Inspect files and run non-mutating discovery commands.",
+				"Edit the files the approved plan names; keep diffs minimal.",
+				"Run local non-destructive checks needed to verify your own changes.",
+			]
 		: input.planGate
 			? [
 				"Before approval, inspect files and run non-mutating discovery commands.",
@@ -261,7 +273,18 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 			"Edit only files needed for the assigned task; keep diffs minimal.",
 			"Run local checks needed to verify your own changes.",
 		];
-	const planGate = input.planGate
+	const planGate = planDischarged
+		? [
+			"## Plan gate",
+			`Satisfied at launch by approved ${input.sourceHandoff!.sourceRef} (v${input.sourceHandoff!.sourceVersion}, decision ${input.sourceHandoff!.approvingDecisionId}). Execute that plan; do not ask again for permission to start it.`,
+			"Publish the plan's numbered steps with `docket_todos` before your first edit, and keep that board current.",
+			"The gate re-opens for anything the approved plan does not cover. Call `docket_wait` before:",
+			"- editing a file the plan does not name",
+			"- a destructive, irreversible, paid, or external write",
+			"- scope growth, a dependency change, or a materially different approach",
+			"- a step the plan describes that turns out to be wrong or impossible",
+		].join("\n")
+		: input.planGate
 		? [
 			"## Plan gate",
 			"After read-only discovery and before the first file edit, mutating shell command, migration, paid/external write, or broad refactor, call `docket_wait` with:",
@@ -283,7 +306,8 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
 		input.sourceHandoff ? "" : undefined,
-		input.sourceHandoff ? "## Reviewed source deliverable" : undefined,
+		input.sourceHandoff ? (planDischarged ? "## Approved plan" : "## Reviewed source deliverable") : undefined,
+		planDischarged ? "- Read the sidecar before your first move; it is the specification for this task." : undefined,
 		input.sourceHandoff ? `- Source: ${input.sourceHandoff.sourceRef} (v${input.sourceHandoff.sourceVersion}) from ${input.sourceHandoff.sourceWorkerLabel ?? input.sourceHandoff.sourceKind ?? "parent session"}` : undefined,
 		input.sourceHandoff ? `- Approved: ${input.sourceHandoff.approvedAt} (${input.sourceHandoff.approvingDecisionId})` : undefined,
 		input.sourceHandoff ? `- Sidecar: ${input.sourceHandoff.sidecarPath}` : undefined,

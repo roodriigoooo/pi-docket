@@ -43,6 +43,8 @@ export type WorkerCommandSpawnOptions = {
 	model?: string;
 	thinking?: WorkerThinking;
 	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
+	/** Reviewed Use → Implement launches: the approved plan discharges the kind's plan gate. */
+	planAuthorized?: boolean;
 	/** Internal handoff guard checked after confirmation and before filesystem/tmux work. */
 	authorizeLaunch?: () => Promise<boolean>;
 };
@@ -181,7 +183,13 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				const launchSummary = formatWorkerLaunchSummary(policy);
 				if (policy.requiresConfirmation && deps.hasUI) {
 					const reviewedSource = options.sourceDeliverable?.provenance.sourceRef;
-					const detail = [`Task: ${task}`, launchSummary, reviewedSource ? `Reviewed source: ${reviewedSource}` : undefined]
+					const gateDischarged = reviewedSource !== undefined && options.planAuthorized === true && policy.kind.planGate === true;
+					const detail = [
+						`Task: ${task}`,
+						launchSummary,
+						reviewedSource ? `Reviewed source: ${reviewedSource}` : undefined,
+						gateDischarged ? `Plan gate: satisfied at launch by ${reviewedSource}` : undefined,
+					]
 						.filter((line): line is string => line !== undefined)
 						.join("\n");
 					const confirmed = await deps.confirmSpawn(handoff ? "Start reviewed handoff worker?" : "Start Docket worker?", detail);
@@ -201,6 +209,8 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					model: policy.model,
 					thinking: policy.thinking,
 					...(options.sourceDeliverable ? { sourceDeliverable: options.sourceDeliverable } : {}),
+					// A plan can only discharge a gate through a reviewed handoff.
+					...(options.sourceDeliverable && options.planAuthorized ? { planAuthorized: true } : {}),
 					kind: kind.name,
 					readOnly: kind.readOnly,
 					...(kind.planGate ? { planGate: true } : {}),
