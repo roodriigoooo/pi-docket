@@ -89,6 +89,9 @@ export type WorkerStatus = {
 	worktree?: WorkerWorktree;
 	createdAt: string;
 	updatedAt: string;
+	/** Last proof-of-life from the worker process. Separate from `updatedAt`, which only moves
+	 * when something about the worker actually changed. */
+	heartbeatAt?: string;
 	state: WorkerState;
 	/** Unique launch generation; prevents an old process-exit hook from changing a respawned worker. */
 	runToken?: string;

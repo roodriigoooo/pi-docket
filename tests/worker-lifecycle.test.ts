@@ -38,6 +38,24 @@ test("heartbeat preserves terminal attention and reviewed state", () => {
 	}
 });
 
+test("a heartbeat keeps a long single turn out of stale", () => {
+	const now = Date.parse("2026-01-01T00:10:00.000Z");
+	// updatedAt is progress, not liveness: nothing about this worker changed for ten minutes.
+	const thinking = worker({ state: "active", updatedAt: "2026-01-01T00:00:00.000Z", heartbeatAt: "2026-01-01T00:09:50.000Z" });
+	const silent = worker({ state: "active", updatedAt: "2026-01-01T00:00:00.000Z", heartbeatAt: "2026-01-01T00:05:00.000Z" });
+
+	assert.equal(deriveWorkerLifecycleState(thinking, now), "thinking");
+	assert.equal(deriveWorkerLifecycleState(silent, now), "stale");
+	// Statuses written before heartbeats existed keep the old updatedAt-only reading.
+	assert.equal(deriveWorkerLifecycleState(worker({ state: "idle", updatedAt: "2026-01-01T00:00:00.000Z" }), now), "stale");
+});
+
+test("heartbeat stamps liveness on every beat", () => {
+	const patch = heartbeatTransition({ pid: 42, artifactCount: 3, at: "2026-01-01T00:00:30.000Z" })(worker())!;
+	assert.equal(patch.heartbeatAt, "2026-01-01T00:00:30.000Z");
+	assert.equal(typeof heartbeatTransition({ pid: 42, artifactCount: 3 })(worker())?.heartbeatAt, "string");
+});
+
 test("heartbeat records canonical model and effective thinking", () => {
 	const patch = heartbeatTransition({ pid: 42, artifactCount: 3, model: "openai/gpt", thinking: "max" })(worker())!;
 	assert.equal(patch.model, "openai/gpt");

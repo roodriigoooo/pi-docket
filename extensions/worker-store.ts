@@ -527,8 +527,17 @@ export function createWorkerStore(): WorkerStore {
 				const patch = transition(before);
 				if (!patch) return { before, after: before, changed: false };
 				const candidate = { ...before, ...patch, id: before.id };
-				const changed = JSON.stringify({ ...before, updatedAt: undefined }) !== JSON.stringify({ ...candidate, updatedAt: undefined });
-				if (!changed) return { before, after: before, changed: false };
+				const changed = JSON.stringify({ ...before, updatedAt: undefined, heartbeatAt: undefined }) !== JSON.stringify({ ...candidate, updatedAt: undefined, heartbeatAt: undefined });
+				if (!changed) {
+					// A heartbeat that reports nothing new still proves the worker is alive. Persist the
+					// proof without advancing updatedAt, which the dock reads as time since real progress.
+					if (typeof patch.heartbeatAt === "string" && patch.heartbeatAt !== before.heartbeatAt) {
+						const touched: WorkerStatus = { ...before, heartbeatAt: patch.heartbeatAt };
+						await writeJsonAtomic(file, touched);
+						return { before, after: touched, changed: false };
+					}
+					return { before, after: before, changed: false };
+				}
 				const after: WorkerStatus = { ...candidate, updatedAt: new Date().toISOString() };
 				await writeJsonAtomic(file, after);
 				return { before, after, changed: true };

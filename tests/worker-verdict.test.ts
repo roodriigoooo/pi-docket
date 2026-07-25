@@ -277,6 +277,55 @@ test("runWorkerVerdict rejects a stale deliverable action and reopens current ve
 	assert.ok(calls.some((call) => call.includes("newer deliverable published")));
 });
 
+test("an answer to a worker that already finished is never sent", async () => {
+	// A plan-gated worker can answer its own docket_wait and publish before the human picks an
+	// option. The answer must not reach it: sending demotes ready back to active, and the same
+	// verb id would land in the judgment family as an unreviewed approval.
+	const blocked = worker({ state: "needs_input", questions: [{ id: "q1", text: "Implement now?", createdAt: "2026-01-01T00:01:00.000Z" }] });
+	const finished = worker({ state: "ready", summary: "implemented" });
+	let cards = 0;
+	const { deps, calls, decisions } = depsFor(finished, {
+		showVerdict: async () => ++cards === 1 ? { verb: "send", worker: blocked, text: "Proceed with minimal implementation" } : null,
+	});
+
+	const outcome = await runWorkerVerdict(deps, blocked);
+
+	assert.equal(outcome, "stop");
+	assert.equal(cards, 2);
+	assert.equal(decisions.length, 0);
+	assert.equal(calls.some((call) => call.startsWith("tell:")), false);
+	assert.ok(calls.some((call) => call.includes("changed state while this card was open")));
+});
+
+test("a question raised while a ready card was open reopens instead of approving", async () => {
+	const ready = worker({ state: "ready" });
+	const asking = worker({ state: "needs_input", questions: [{ id: "q1", text: "Widen scope?", createdAt: "2026-01-01T00:01:00.000Z" }] });
+	let cards = 0;
+	const { deps, calls, decisions } = depsFor(asking, {
+		showVerdict: async () => ++cards === 1 ? { verb: "accept", worker: ready } : null,
+	});
+
+	const outcome = await runWorkerVerdict(deps, ready);
+
+	assert.equal(outcome, "stop");
+	assert.equal(cards, 2);
+	assert.equal(decisions.length, 0);
+	assert.equal(calls.some((call) => call.startsWith("update:")), false);
+});
+
+test("read-only verbs still open on a worker that moved on", async () => {
+	const blocked = worker({ state: "needs_input", questions: [{ id: "q1", text: "Implement now?", createdAt: "2026-01-01T00:01:00.000Z" }] });
+	const finished = worker({ state: "ready", summary: "implemented" });
+	let cards = 0;
+	const { deps, calls } = depsFor(finished, {
+		showVerdict: async () => ++cards === 1 ? { verb: "report", worker: blocked } : null,
+	});
+
+	await runWorkerVerdict(deps, blocked);
+
+	assert.deepEqual(calls, ["showReport"]);
+});
+
 test("request revision sends multiline notes without editable placeholder text", async () => {
 	const current = deliverable(1);
 	const w = worker({ deliverable: { id: current.id, version: current.version, ref: current.ref } });

@@ -536,6 +536,26 @@ test("worker store serializes concurrent status transitions without lost fields"
 	});
 });
 
+test("a heartbeat with nothing new refreshes liveness without faking progress", async () => {
+	await withTempHome(async () => {
+		const store = createWorkerStore();
+		await mkdir(store.root(), { recursive: true });
+		await seedWorker(store.root(), { id: "beating", index: 1, state: "active" });
+		const seeded = await store.find("beating");
+
+		const first = await store.updateStatus("beating", () => ({ pid: 42, heartbeatAt: "2026-05-02T00:00:15.000Z" }));
+		const repeat = await store.updateStatus("beating", () => ({ pid: 42, heartbeatAt: "2026-05-02T00:00:30.000Z" }));
+		const stored = await store.find("beating");
+
+		assert.equal(first.changed, true);
+		// Same worker, later beat: liveness moves, updatedAt stays where the last real change left it.
+		assert.equal(repeat.changed, false);
+		assert.equal(stored?.heartbeatAt, "2026-05-02T00:00:30.000Z");
+		assert.equal(stored?.updatedAt, first.after?.updatedAt);
+		assert.notEqual(stored?.updatedAt, seeded?.updatedAt);
+	});
+});
+
 test("legacy hierarchy statuses list safely and purge removes only requested worker", async () => {
 	await withTempHome(async () => {
 		const store = createWorkerStore();

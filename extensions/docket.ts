@@ -62,7 +62,7 @@ import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition } from "./worker-lifecycle.js";
+import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -2884,7 +2884,13 @@ export default function docketExtension(pi: ExtensionAPI) {
 				await store.updateStatus(workerId, turnEndedTransition());
 				if (workerNudgesThisSession >= MAX_WORKER_NUDGES) return;
 				workerNudgesThisSession++;
-				pi.sendUserMessage("Docket: this turn ended without calling a protocol tool. If the task is complete with useful output, call `docket_done` with a summary (include a `Recommended:` bullet list if you have recommendations). If you are blocked or any non-trivial assumption is needed, call `docket_wait` with a concise question. If you cannot continue and have no useful partial output, call `docket_fail` with a one-sentence reason. Otherwise continue working.");
+				// A parent message can land between agent_end and this send, so the agent may already be
+				// streaming again. deliverAs queues the nudge instead of throwing "Agent is already
+				// processing", which surfaced in the worker pane as a runtime extension error.
+				pi.sendUserMessage(
+					"Docket: this turn ended without calling a protocol tool. If the task is complete with useful output, call `docket_done` with a summary (include a `Recommended:` bullet list if you have recommendations). If you are blocked or any non-trivial assumption is needed, call `docket_wait` with a concise question. If you cannot continue and have no useful partial output, call `docket_fail` with a one-sentence reason. Otherwise continue working.",
+					{ deliverAs: "followUp" },
+				);
 			} catch { /* best-effort */ }
 		});
 
@@ -3014,7 +3020,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 			const ctx = activeCtx;
 			if (!ctx) return;
 			void writeWorkerHeartbeat(ctx);
-			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), 15000);
+			// Six beats inside the staleness window: the parent needs several consecutive misses,
+			// not one slow tick, before it calls a live worker stale.
+			heartbeatTimer = setInterval(() => void writeWorkerHeartbeat(ctx), WORKER_STALE_AFTER_MS / 6);
 			heartbeatTimer.unref?.();
 		},
 		stopHeartbeat: async () => {

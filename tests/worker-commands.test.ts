@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWorkerCommands, workerCompletionCandidates } from "../extensions/worker-commands.js";
+import { createWorkerCommands, formatKindList, workerCompletionCandidates } from "../extensions/worker-commands.js";
 import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
@@ -259,10 +259,30 @@ test("Worker Commands lists explicit worker rights", async () => {
 
 	await setup.commands.listKinds();
 
-	assert.match(setup.emitted[0] ?? "", /default\s+plan-gated\s+\[builtin\]/);
-	assert.match(setup.emitted[0] ?? "", /writer\s+writable\s+\[runtime\]/);
-	assert.match(setup.emitted[0] ?? "", /warning: deprecated execution frontmatter/);
-	assert.match(setup.emitted[0] ?? "", /can_spawn ignored; worker creation is human-only/);
+	const listing = setup.emitted[0] ?? "";
+	assert.match(listing, /^builtin\n {2}default · plan-gated$/m);
+	assert.match(listing, /^runtime\n {2}writer · writable$/m);
+	// Kinds are grouped by where they came from, so a runtime kind never sits inside builtin.
+	assert.equal(listing.indexOf("builtin") < listing.indexOf("runtime"), true);
+	assert.match(listing, /^ {4}warning: deprecated execution frontmatter/m);
+	assert.match(listing, /^ {4}warning: can_spawn ignored; worker creation is human-only/m);
+	assert.match(listing, /Spawn with \/docket spawn --as <kind> <task> · without --as: default$/);
+});
+
+test("Worker Commands separates each kind and hangs its detail under the name", () => {
+	const kinds = createWorkerKindRegistry();
+	kinds.register({ name: "auditor", description: "Reads only.", readOnly: true, decisionRights: ["may read secrets"], source: "user" });
+
+	const listing = formatKindList(kinds.list());
+
+	assert.equal(listing.includes("\n\nuser\n"), true);
+	assert.match(listing, /^ {2}auditor · read-only$/m);
+	assert.match(listing, /^ {4}Reads only\.$/m);
+	assert.match(listing, /^ {4}rights: may read secrets$/m);
+});
+
+test("Worker Commands kind listing stays empty-safe", () => {
+	assert.equal(formatKindList([]), "No Docket worker kinds registered");
 });
 
 test("Worker Commands passes kind model and thinking to worker launch", async () => {

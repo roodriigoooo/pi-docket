@@ -23,6 +23,27 @@ test("defineKeymap resolves aliases but permits them for one action", () => {
 	assert.equal(formatKeyHints(keymap, "footer"), "q/Esc/Esc close");
 });
 
+test("raw arrow sequences reach the same actions as their vim aliases", () => {
+	// Terminals send bytes, not key names. The card advertises "j/down"; pressing Down must work.
+	for (const keymap of [createScrollingKeymap(), createWorkerDashboardKeymap(), createPickerKeymap({ mode: "load" }), createVerdictKeymap({ hasChangeSet: false, optionCount: 0 })]) {
+		assert.equal(keymap.resolve("\u001b[B"), keymap.resolve("j"), `${keymap.name}: CSI down`);
+		assert.equal(keymap.resolve("\u001b[A"), keymap.resolve("k"), `${keymap.name}: CSI up`);
+		// Application-cursor mode (keypad) sends SS3 instead of CSI for the same physical key.
+		assert.equal(keymap.resolve("\u001bOB"), keymap.resolve("j"), `${keymap.name}: SS3 down`);
+		assert.equal(keymap.resolve("\u001bOA"), keymap.resolve("k"), `${keymap.name}: SS3 up`);
+	}
+});
+
+test("scrolling viewer resolves the full navigation set from raw sequences", () => {
+	const keymap = createScrollingKeymap();
+
+	assert.equal(keymap.resolve("\u001b[C"), "right");
+	assert.equal(keymap.resolve("\u001b[D"), "left");
+	assert.equal(keymap.resolve("\u001bOD"), "left");
+	assert.equal(keymap.resolve("\u001b[5~"), "pageUp");
+	assert.equal(keymap.resolve("\u001b[6~"), "pageDown");
+});
+
 test("worker dashboard keeps progress, reply, and hint bindings aligned", () => {
 	const keymap = createWorkerDashboardKeymap();
 
