@@ -21,14 +21,30 @@ function sameWorkerDeliverablePointer(a: WorkerDeliverablePointer | undefined, b
 	return Boolean(a && b && a.id === b.id && a.version === b.version && a.ref === b.ref);
 }
 
+export const WORKER_STALE_AFTER_MS = 90_000;
+
+/**
+ * Liveness, not progress. `updatedAt` only moves when something about the worker changed, so a
+ * healthy worker reasoning through one long turn looks frozen by that measure; its heartbeat is
+ * what proves the process is still there. Statuses written before heartbeats existed fall back
+ * to `updatedAt` and keep their old behavior.
+ */
+function lastSignalAt(worker: WorkerStatus): number {
+	const updated = Date.parse(worker.updatedAt);
+	const heartbeat = worker.heartbeatAt ? Date.parse(worker.heartbeatAt) : Number.NaN;
+	if (!Number.isFinite(heartbeat)) return updated;
+	if (!Number.isFinite(updated)) return heartbeat;
+	return Math.max(updated, heartbeat);
+}
+
 export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	if (worker.state === "needs_input") return "needs_input";
 	if (worker.reviewedAt && TERMINAL_STATES.has(worker.state)) return "reviewed";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
 	if (worker.state === "ready") return "ready";
 	if (worker.state === "ended") return (worker.artifactCount ?? 0) === 0 ? "empty" : "ready";
-	const ageMs = now - Date.parse(worker.updatedAt);
-	if (Number.isFinite(ageMs) && ageMs > 90_000) return "stale";
+	const ageMs = now - lastSignalAt(worker);
+	if (Number.isFinite(ageMs) && ageMs > WORKER_STALE_AFTER_MS) return "stale";
 	if (worker.state === "active") return "thinking";
 	if (worker.state === "starting") return "starting";
 	return "idle";
@@ -61,7 +77,7 @@ export function pruneDisposition(worker: WorkerStatus, now: number, pruneMs: num
 	return hasRecordedVerdict ? "prune" : "prune-with-debt";
 }
 
-export function heartbeatTransition(input: { pid: number; sessionFile?: string; artifactCount: number; model?: string; thinking?: WorkerStatus["thinking"] }): WorkerTransition {
+export function heartbeatTransition(input: { pid: number; sessionFile?: string; artifactCount: number; model?: string; thinking?: WorkerStatus["thinking"]; at?: string }): WorkerTransition {
 	return (current) => {
 		const state = current.state === "starting" || current.state === "active" ? "active" : current.state;
 		return {
@@ -69,6 +85,7 @@ export function heartbeatTransition(input: { pid: number; sessionFile?: string; 
 			pid: input.pid,
 			sessionFile: input.sessionFile,
 			artifactCount: input.artifactCount,
+			heartbeatAt: input.at ?? new Date().toISOString(),
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinking ? { thinking: input.thinking } : {}),
 		};
@@ -137,8 +154,8 @@ export function verdictResolvedTransition(at: string, deliverable?: WorkerDelive
 	};
 }
 
-export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string }): WorkerTransition {
-	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, ...(input.tmuxWindowId ? { tmuxWindowId: input.tmuxWindowId } : {}) });
+export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string; tmuxPaneId?: string }): WorkerTransition {
+	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, tmuxWindowId: input.tmuxWindowId, tmuxPaneId: input.tmuxPaneId });
 }
 
 export function respawnFailedTransition(message: string): WorkerTransition {

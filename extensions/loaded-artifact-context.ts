@@ -3,6 +3,7 @@ import { loadConfig, type DocketConfig } from "./docket-config.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { deriveWorkerState, workerShortLabel, type WorkerStatus } from "./background-work.js";
 import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
+import { storedDeliverableArtifact, type StoredDeliverable } from "./deliverable-store.js";
 
 export type ChipMode = "ref" | "full";
 
@@ -18,7 +19,7 @@ export type Chip = {
 
 export type ChipToggleResult = "added" | "removed" | "upgraded" | "downgraded";
 
-export type CarryoverKind = "checkpoint" | "worker";
+export type CarryoverKind = "checkpoint" | "worker" | "deliverable";
 
 export type CarryoverSlot = {
 	slot: string;
@@ -32,11 +33,13 @@ export type CarryoverSlot = {
 export type LoadableSource =
 	| { kind: "checkpoint"; checkpoint: CheckpointIndexEntry }
 	| { kind: "worker"; worker: WorkerStatus }
-	| { kind: "deliverable"; worker: WorkerStatus; deliverable: WorkerDeliverable };
+	| { kind: "deliverable"; worker: WorkerStatus; deliverable: WorkerDeliverable }
+	| { kind: "stored-deliverable"; deliverable: StoredDeliverable; /** compatibility shape for source projections */ worker: WorkerStatus };
 
 export type LoadableSourceCandidates = {
 	checkpoints: CheckpointIndexEntry[];
 	workers: WorkerStatus[];
+	deliverables?: StoredDeliverable[];
 };
 
 export type LoadResult = {
@@ -69,6 +72,8 @@ export type LoadedArtifactContext = {
 	loadWorker(worker: WorkerStatus): Promise<CarryoverSlot>;
 	/** Mount one immutable reviewed generation under its worker slot. */
 	loadDeliverable(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot>;
+	/** Mount one durable deliverable under a d<N> slot without model context. */
+	loadStoredDeliverable(deliverable: StoredDeliverable): Promise<CarryoverSlot>;
 	unloadSlot(slot: string): CarryoverSlot | undefined;
 	unloadSource(kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined;
 	queueCheckpointConsume(checkpoint: CheckpointIndexEntry): void;
@@ -91,11 +96,25 @@ function renderChipBlock(chip: Chip, content: string): string {
 	return `${opener}\n${content}\n${closer}`;
 }
 
+export function storedDeliverableWorkerProjection(deliverable: StoredDeliverable): WorkerStatus {
+	return {
+		id: deliverable.source.kind === "worker" ? deliverable.source.workerId : deliverable.id,
+		index: 0,
+		tmuxSession: "",
+		task: deliverable.source.kind === "worker" ? deliverable.source.task : deliverable.summary,
+		cwd: deliverable.source.kind === "parent" ? deliverable.source.cwd : "",
+		createdAt: deliverable.createdAt,
+		updatedAt: deliverable.savedAt,
+		state: "ready",
+	};
+}
+
 export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): LoadedArtifactContext {
 	let chips: Chip[] = [];
 	let carryover: Map<string, CarryoverSlot> = new Map();
 	let pendingCheckpointConsumes: Map<string, CheckpointIndexEntry> = new Map();
 	let nextCheckpointSlotIndex = 1;
+	let nextDeliverableSlotIndex = 1;
 
 	const findSlotForSource = (kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined => {
 		for (const slot of carryover.values()) {
@@ -157,10 +176,27 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		return entry;
 	};
 
+	const loadStoredDeliverable = async (deliverable: StoredDeliverable): Promise<CarryoverSlot> => {
+		const existing = findSlotForSource("deliverable", deliverable.ref);
+		if (existing) return existing;
+		const slot = `d${nextDeliverableSlotIndex++}`;
+		const entry: CarryoverSlot = {
+			slot,
+			kind: "deliverable",
+			sourceId: deliverable.ref,
+			deliverableRef: deliverable.ref,
+			artifacts: namespaceCarryover([storedDeliverableArtifact(deliverable)], slot),
+		};
+		carryover.set(slot, entry);
+		return entry;
+	};
+
 	const loadSource = async (source: LoadableSource): Promise<LoadResult> => {
 		const slot = source.kind === "checkpoint"
 			? await loadCheckpoint(source.checkpoint)
-			: source.kind === "deliverable" ? await loadDeliverable(source.worker, source.deliverable) : await loadWorker(source.worker);
+			: source.kind === "deliverable" ? await loadDeliverable(source.worker, source.deliverable)
+				: source.kind === "stored-deliverable" ? await loadStoredDeliverable(source.deliverable)
+					: await loadWorker(source.worker);
 		const queuedConsume = source.kind === "checkpoint" && source.checkpoint.consumeOnUse === true;
 		if (queuedConsume) pendingCheckpointConsumes.set(source.checkpoint.id, source.checkpoint);
 		return { source, slot, queuedConsume };
@@ -179,8 +215,11 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 			carryover = new Map();
 			pendingCheckpointConsumes = new Map();
 			nextCheckpointSlotIndex = 1;
+			nextDeliverableSlotIndex = 1;
 		},
 		defaultLoadSource(candidates: LoadableSourceCandidates): LoadableSource | undefined {
+			const deliverable = candidates.deliverables?.[candidates.deliverables.length - 1];
+			if (deliverable) return { kind: "stored-deliverable", deliverable, worker: storedDeliverableWorkerProjection(deliverable) };
 			const checkpoint = candidates.checkpoints[candidates.checkpoints.length - 1];
 			if (checkpoint) return { kind: "checkpoint", checkpoint };
 			const worker = candidates.workers[candidates.workers.length - 1];
@@ -195,6 +234,9 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		},
 		loadDeliverable(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<CarryoverSlot> {
 			return loadSource({ kind: "deliverable", worker, deliverable }).then((result) => result.slot);
+		},
+		loadStoredDeliverable(deliverable: StoredDeliverable): Promise<CarryoverSlot> {
+			return loadSource({ kind: "stored-deliverable", deliverable, worker: storedDeliverableWorkerProjection(deliverable) }).then((result) => result.slot);
 		},
 		unloadSlot,
 		unloadSource(kind: CarryoverKind, sourceId: string): CarryoverSlot | undefined {
@@ -216,7 +258,7 @@ export function createLoadedArtifactContext(deps: LoadedArtifactContextDeps): Lo
 		},
 		toggleChip(artifact: Artifact, mode: ChipMode): ChipToggleResult {
 			const idx = chips.findIndex((c) => c.ref === artifact.ref);
-			const body = mode === "full" && artifact.meta?.workerDeliverable === true ? artifact.body : undefined;
+			const body = mode === "full" && (artifact.meta?.workerDeliverable === true || artifact.meta?.storedDeliverable === true) ? artifact.body : undefined;
 			if (idx === -1) {
 				chips = [...chips, { displayId: artifact.displayId, ref: artifact.ref, mode, kind: artifact.kind, title: artifact.title, ...(body !== undefined ? { body } : {}) }];
 				return "added";

@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import type { CheckpointSummarizerConfig } from "./checkpoint-summarizer.js";
 
 export type DocketWorkerConfig = {
 	guardrailsPath?: string;
@@ -14,10 +13,6 @@ export type DocketWorkerConfig = {
 	maxActive?: number;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?: string;
-	/** When true, dock writes a compact worker line to tmux status-right so attached panes still see fleet state. */
-	tmuxStatusLine?: boolean;
-	/** When true, every spawned worker also runs tmux pipe-pane to <worker-dir>/pane.log for post-hoc debug. */
-	captureTerminal?: boolean;
 	/** Parent-seed policy below per-spawn flags and above legacy kind `parent_seed`. Absence resolves fresh after compatibility checks. */
 	parentSeedPolicy?: "full" | "none";
 };
@@ -25,32 +20,18 @@ export type DocketWorkerConfig = {
 export type DocketConfig = {
 	maxArtifacts: number;
 	maxBodyChars: number;
-	/** Canonical resolved field: initial artifact pool a saved bundle considers before user prune. */
-	checkpointArtifacts: number;
-	/** Public alias for checkpointArtifacts. Preferred in user config; checkpointArtifacts still accepted for back-compat. */
-	bundleArtifacts?: number;
-	consumedRetentionDays: number;
-	summarizer: CheckpointSummarizerConfig;
 	worker?: DocketWorkerConfig;
+	/** One-shot migration notices discovered while reading legacy config. */
+	migrationWarnings?: string[];
 };
 
 export const DEFAULT_CONFIG: DocketConfig = {
 	maxArtifacts: 300,
 	maxBodyChars: 6000,
-	checkpointArtifacts: 24,
-	consumedRetentionDays: 7,
-	summarizer: {
-		enabled: true,
-		maxOutputTokens: 1200,
-		maxInputChars: 36000,
-		timeoutMs: 120000,
-	},
 	worker: {
 		dockIdleHideMinutes: 30,
 		pruneAfterHours: 24,
 		maxActive: 8,
-		tmuxStatusLine: false,
-		captureTerminal: false,
 	},
 };
 
@@ -63,28 +44,48 @@ async function readJsonFile<T>(file: string, fallback: T): Promise<T> {
 	}
 }
 
+function withoutRemovedTmuxKeys(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const worker = { ...(value as Record<string, unknown>) };
+	delete worker.tmuxStatusLine;
+	delete worker.captureTerminal;
+	delete worker.layout;
+	delete worker.pipePane;
+	delete worker.statusRight;
+	return worker;
+}
+
+function withoutRemovedBundleKeys(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const config = { ...(value as Record<string, unknown>) };
+	delete config.bundleArtifacts;
+	delete config.checkpointArtifacts;
+	delete config.consumedRetentionDays;
+	delete config.summarizer;
+	delete config.migrationWarnings;
+	return config;
+}
+
 export async function loadConfig(cwd: string): Promise<DocketConfig> {
-	const globalConfig = await readJsonFile<Partial<DocketConfig>>(path.join(getAgentDir(), "docket.json"), {});
-	const projectConfig = await readJsonFile<Partial<DocketConfig>>(path.join(cwd, ".pi", "docket.json"), {});
-	// `bundleArtifacts` is the public name; `checkpointArtifacts` stays accepted for back-compat. Project overrides global.
-	const bundleArtifacts =
-		projectConfig.bundleArtifacts ?? projectConfig.checkpointArtifacts ??
-		globalConfig.bundleArtifacts ?? globalConfig.checkpointArtifacts ??
-		DEFAULT_CONFIG.checkpointArtifacts;
+	const globalConfig = await readJsonFile<Record<string, any>>(path.join(getAgentDir(), "docket.json"), {});
+	const projectConfig = await readJsonFile<Record<string, any>>(path.join(cwd, ".pi", "docket.json"), {});
+	const migrationWarnings: string[] = [];
+	const hasRemovedTmuxKey = [globalConfig, projectConfig].some((config) => {
+		const worker = config.worker;
+		return worker && typeof worker === "object" && ["tmuxStatusLine", "captureTerminal", "layout", "pipePane", "statusRight"].some((key) => Object.prototype.hasOwnProperty.call(worker, key));
+	});
+	if (hasRemovedTmuxKey) migrationWarnings.push("obsolete worker tmux config ignored; operator layouts moved out of core.");
+	const hasObsoleteBundleConfig = [globalConfig, projectConfig].some((config) => ["bundleArtifacts", "checkpointArtifacts", "consumedRetentionDays", "summarizer"].some((key) => Object.prototype.hasOwnProperty.call(config, key)));
+	if (hasObsoleteBundleConfig) migrationWarnings.push("obsolete bundle and summarizer config ignored; /docket save now writes durable deliverables.");
 	return {
 		...DEFAULT_CONFIG,
-		...globalConfig,
-		...projectConfig,
-		checkpointArtifacts: bundleArtifacts,
-		summarizer: {
-			...DEFAULT_CONFIG.summarizer,
-			...(globalConfig.summarizer ?? {}),
-			...(projectConfig.summarizer ?? {}),
-		},
+		...withoutRemovedBundleKeys(globalConfig),
+		...withoutRemovedBundleKeys(projectConfig),
 		worker: {
 			...DEFAULT_CONFIG.worker,
-			...(globalConfig.worker ?? {}),
-			...(projectConfig.worker ?? {}),
+			...withoutRemovedTmuxKeys(globalConfig.worker),
+			...withoutRemovedTmuxKeys(projectConfig.worker),
 		},
+		...(migrationWarnings.length ? { migrationWarnings } : {}),
 	};
 }

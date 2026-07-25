@@ -4,7 +4,7 @@ import { navigatorKeyIntent, verdictOptionForDigit, verdictVerbs } from "../exte
 
 test("navigatorKeyIntent splits reply and save off the old c key", () => {
 	assert.deepEqual(navigatorKeyIntent("r"), { kind: "runAction", action: "tellWorker" });
-	assert.deepEqual(navigatorKeyIntent("b"), { kind: "createCheckpoint" });
+	assert.deepEqual(navigatorKeyIntent("b"), { kind: "save" });
 });
 
 test("navigatorKeyIntent keeps a as the single attach key and drops the duplicate aliases", () => {

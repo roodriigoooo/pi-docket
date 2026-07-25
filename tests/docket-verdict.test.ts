@@ -51,8 +51,8 @@ test("verdictVerbs adapts labels and semantics by state", () => {
 	assert.equal(verdictVerbs("ready", true)[1]?.label, "Discard");
 	assert.equal(verdictVerbs("ready", false)[0]?.label, "Acknowledge");
 	assert.equal(verdictVerbs("ready", false, [], false, true)[0]?.label, "Approve");
-	assert.deepEqual(verdictVerbs("reviewed", false, [], true, true).map((verb) => verb.id), ["use", "report"]);
-	assert.deepEqual(verdictVerbs("ready", false, [], true, true).map((verb) => verb.id), ["use", "report"], "ledger approval remains usable if reviewedAt persistence failed");
+	assert.deepEqual(verdictVerbs("reviewed", false, [], true, true).map((verb) => verb.id), ["use", "save", "report"]);
+	assert.deepEqual(verdictVerbs("ready", false, [], true, true).map((verb) => verb.id), ["use", "save", "report"], "ledger approval remains usable if reviewedAt persistence failed");
 });
 
 test("diffBar clamps width and proportions", () => {

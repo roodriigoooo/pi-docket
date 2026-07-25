@@ -18,6 +18,8 @@ export type Artifact = {
 	title: string;
 	subtitle: string;
 	body: string;
+	/** Full source bytes when the display body was bounded for the catalog. */
+	fullBody?: string;
 	entryId?: string;
 	timestamp?: number;
 	meta?: Record<string, unknown>;

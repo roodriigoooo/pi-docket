@@ -28,6 +28,7 @@ test("handoff provenance binds source version and approving decision", () => {
 		sourceDeliverableId: "worker-deliverable:source",
 		sourceVersion: 2,
 		sourceRef: "worker-deliverable:source:2",
+		sourceKind: "worker",
 		sourceWorkerId: "source",
 		sourceWorkerLabel: "w3",
 		approvingDecisionId: "decision-1",

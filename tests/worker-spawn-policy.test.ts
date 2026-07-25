@@ -106,15 +106,15 @@ test("missing seed source degrades visibly to fresh", () => {
 	assert.match(policy.warnings.join("\n"), /no parent session is available/);
 });
 
-test("workspace and layout derive from intent unless legacy metadata overrides", () => {
+test("workspace derives from intent while legacy operator layout metadata is ignored", () => {
 	assert.equal(resolve({ options: { as: "scout" } }).useWorktree, false);
 	assert.equal(resolve({ options: { as: "patcher" } }).useWorktree, true);
 	assert.equal(resolve({ options: { as: "scout", worktree: true } }).workspaceSource, "--worktree");
 	const legacy = resolve({ kinds: legacyKinds(), options: { as: "legacy" } });
 	assert.equal(legacy.useWorktree, true);
 	assert.equal(legacy.workspaceSource, "deprecated kind default_worktree");
-	assert.equal(legacy.layout, "split-events");
-	assert.equal(legacy.layoutSource, "deprecated kind layout");
+	assert.equal("layout" in legacy, false);
+	assert.equal("layoutSource" in legacy, false);
 });
 
 test("model validation requires exact available provider/model and splits only first slash", () => {
@@ -155,7 +155,7 @@ test("confirmation is conditional, while handoff and contributing legacy default
 	assert.equal(resolve().requiresConfirmation, false);
 	assert.equal(resolve({ options: { model: "anthropic/claude-sonnet", thinking: "high" } }).requiresConfirmation, false);
 	assert.equal(resolve({ options: { thinking: "low" } }).requiresConfirmation, true);
-	assert.equal(resolve({ kinds: legacyKinds(), options: { as: "legacy", model: "anthropic/claude-sonnet", thinking: "high", fresh: true, worktree: true } }).requiresConfirmation, true);
+	assert.equal(resolve({ kinds: legacyKinds(), options: { as: "legacy", model: "anthropic/claude-sonnet", thinking: "high", fresh: true, worktree: true } }).requiresConfirmation, false);
 	assert.equal(resolve({ options: { handoff: true, model: "anthropic/claude-sonnet", thinking: "high" } }).requiresConfirmation, true);
 });
 

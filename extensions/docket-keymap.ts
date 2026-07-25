@@ -1,3 +1,5 @@
+import { parseKey } from "@mariozechner/pi-tui";
+
 export type KeyHintSlot = "card" | "footer" | "help";
 
 export type KeyBinding<Action extends string> = {
@@ -19,6 +21,33 @@ export type DocketKeymap<Action extends string> = {
 	hints(slot: KeyHintSlot): KeyHint<Action>[];
 };
 
+/**
+ * Raw terminal escape sequences, matched before any case folding: the final byte carries the
+ * meaning (\u001b[A is Up, \u001b[a is Shift+Up), so lowercasing one loses the key. Both the
+ * CSI form (\u001b[A) and the SS3/application-cursor form (\u001bOA) reach us in practice;
+ * which one a terminal sends depends on its keypad mode, not on anything the user chose.
+ */
+const KEY_SEQUENCES: Record<string, string> = {
+	"\u001b[A": "up",
+	"\u001bOA": "up",
+	"\u001b[B": "down",
+	"\u001bOB": "down",
+	"\u001b[C": "right",
+	"\u001bOC": "right",
+	"\u001b[D": "left",
+	"\u001bOD": "left",
+	"\u001b[H": "home",
+	"\u001bOH": "home",
+	"\u001b[1~": "home",
+	"\u001b[7~": "home",
+	"\u001b[F": "end",
+	"\u001bOF": "end",
+	"\u001b[4~": "end",
+	"\u001b[8~": "end",
+	"\u001b[5~": "pageup",
+	"\u001b[6~": "pagedown",
+};
+
 const KEY_ALIASES: Record<string, string> = {
 	"\u001b": "escape",
 	escape: "escape",
@@ -32,26 +61,18 @@ const KEY_ALIASES: Record<string, string> = {
 	tab: "tab",
 	" ": "space",
 	space: "space",
-	"\u001b[A": "up",
 	arrowup: "up",
 	up: "up",
-	"\u001b[B": "down",
 	arrowdown: "down",
 	down: "down",
-	"\u001b[5~": "pageup",
 	pgup: "pageup",
 	pageup: "pageup",
-	"\u001b[6~": "pagedown",
 	pgdn: "pagedown",
 	pagedown: "pagedown",
-	"\u001b[H": "home",
 	home: "home",
-	"\u001b[F": "end",
 	end: "end",
-	"\u001b[D": "left",
 	arrowleft: "left",
 	left: "left",
-	"\u001b[C": "right",
 	arrowright: "right",
 	right: "right",
 	"\u0006": "ctrl+f",
@@ -63,10 +84,17 @@ const KEY_ALIASES: Record<string, string> = {
 };
 
 export function normalizeDocketKey(input: string): string {
-	const alias = KEY_ALIASES[input.toLowerCase()];
+	const sequence = KEY_SEQUENCES[input];
+	if (sequence) return sequence;
+	// Terminals negotiating the Kitty or modifyOtherKeys protocols encode navigation keys as
+	// sequences no static table can enumerate. pi-tui decodes every dialect it enables, so ask
+	// it first for anything longer than a bare character and normalize the name it returns.
+	const decoded = input.length > 1 ? parseKey(input) : undefined;
+	const candidate = decoded ?? input;
+	const alias = KEY_ALIASES[candidate.toLowerCase()];
 	if (alias) return alias;
 	if (input.length === 1 && input !== " ") return input;
-	return input.toLowerCase();
+	return candidate.toLowerCase();
 }
 
 function displayKey(key: string): string {
@@ -156,9 +184,9 @@ export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | 
 	return defineKeymap("worker dashboard", bindings);
 }
 
-export type PickerKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "preview" | "edit" | "delete" | "switchCheckpoint" | "switchWorker" | "switch";
+export type PickerKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "preview" | "edit" | "delete" | "switchCheckpoint" | "switchWorker" | "switchDeliverable" | "switch";
 
-export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"; canSwitch?: boolean; canPreview?: boolean }): DocketKeymap<PickerKeyAction> {
+export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"; canSwitch?: boolean; canPreview?: boolean; canCheckpoint?: boolean; canWorker?: boolean; canDeliverable?: boolean }): DocketKeymap<PickerKeyAction> {
 	const bindings: KeyBinding<PickerKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -175,9 +203,10 @@ export function createPickerKeymap(options: { mode: "resume" | "delete" | "load"
 	if (options.mode === "delete") bindings.push({ keys: "d", action: "delete", label: "delete", slots: ["footer"] });
 	if (options.canSwitch) {
 		bindings.push({ keys: "tab", action: "switch", label: "switch", slots: ["footer"] });
-		bindings.push({ keys: "1", action: "switchCheckpoint", label: "checkpoints" });
-		bindings.push({ keys: "2", action: "switchWorker", label: "workers" });
 	}
+	if (options.canSwitch || options.canCheckpoint) bindings.push({ keys: "1", action: "switchCheckpoint", label: "legacy bundles" });
+	if (options.canSwitch || options.canWorker) bindings.push({ keys: "2", action: "switchWorker", label: "workers" });
+	if (options.canDeliverable) bindings.push({ keys: "3", action: "switchDeliverable", label: "deliverables" });
 	return defineKeymap(`picker:${options.mode}`, bindings);
 }
 
@@ -197,9 +226,9 @@ export function createEvidenceBundleKeymap(): DocketKeymap<EvidenceBundleKeyActi
 	]);
 }
 
-export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
+export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
 
-export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean }): DocketKeymap<VerdictKeyAction> {
+export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean }): DocketKeymap<VerdictKeyAction> {
 	const bindings: KeyBinding<VerdictKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -212,6 +241,7 @@ export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCoun
 		bindings.push({ keys: "r", action: "report", label: "Report", slots: ["footer"] });
 	}
 	if (options.canUse) bindings.push({ keys: "u", action: "use", label: "Use", slots: ["footer"] });
+	if (options.canSave ?? options.canUse) bindings.push({ keys: "s", action: "save", label: "Save", slots: ["footer"] });
 	if (options.hasChangeSet) {
 		bindings.push({ keys: "d", action: "diff", label: "full diff", slots: ["footer"] });
 		bindings.push({ keys: "h", action: "hunk", label: "Hunk review", slots: ["footer"] });

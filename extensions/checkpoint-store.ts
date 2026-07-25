@@ -2,19 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { createEventLog, type EventLog, replayEvents } from "./event-log.js";
-import type { Artifact, CheckpointIndexEntry, CheckpointMode, GitSnapshot } from "./types.js";
-
-type CheckpointSaveInput = {
-	id: string;
-	mode: CheckpointMode;
-	markdown: string;
-	artifacts: Artifact[];
-	cwd: string;
-	sourceSession?: string;
-	git?: GitSnapshot;
-	note?: string;
-	consumeOnUse?: boolean;
-};
+import type { Artifact, CheckpointIndexEntry } from "./types.js";
 
 export type CheckpointSummary = {
 	entry: CheckpointIndexEntry;
@@ -28,7 +16,6 @@ export type CheckpointSummary = {
 type ListOptions = { includeConsumed?: boolean };
 
 export type CheckpointStore = {
-	save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry>;
 	find(idOrLast: string, options?: ListOptions): Promise<CheckpointIndexEntry | undefined>;
 	list(options?: ListOptions): Promise<CheckpointIndexEntry[]>;
 	listSummaries(options?: ListOptions): Promise<CheckpointSummary[]>;
@@ -36,8 +23,6 @@ export type CheckpointStore = {
 	readArtifacts(checkpoint: CheckpointIndexEntry): Promise<Artifact[]>;
 	markConsumed(checkpoint: CheckpointIndexEntry, timestamp?: string): Promise<void>;
 	purge(checkpoint: CheckpointIndexEntry): Promise<void>;
-	sweepConsumed(retentionDays: number): Promise<number>;
-	artifactsFile(id: string): string;
 };
 
 function checkpointDir(): string {
@@ -46,10 +31,6 @@ function checkpointDir(): string {
 
 function checkpointIndexFile(): string {
 	return path.join(getAgentDir(), "docket", "index.json");
-}
-
-function checkpointMarkdownFile(id: string): string {
-	return path.join(checkpointDir(), `${id}.md`);
 }
 
 function checkpointArtifactsFile(id: string): string {
@@ -138,27 +119,6 @@ async function loadIndexFromEvents(log: EventLog): Promise<CheckpointIndexEntry[
 export function createCheckpointStore(): CheckpointStore {
 	const log = createEventLog();
 	return {
-		async save(input: CheckpointSaveInput): Promise<CheckpointIndexEntry> {
-			const file = checkpointMarkdownFile(input.id);
-			await writeFileAtomic(file, `${input.markdown.trim()}\n`);
-			await writeFileAtomic(checkpointArtifactsFile(input.id), `${JSON.stringify(input.artifacts, null, 2)}\n`);
-
-			const entry: CheckpointIndexEntry = {
-				id: input.id,
-				mode: input.mode,
-				file,
-				createdAt: new Date().toISOString(),
-				cwd: input.cwd,
-				sourceSession: input.sourceSession,
-				git: input.git,
-				note: input.note,
-				consumeOnUse: input.consumeOnUse,
-			};
-			await log.append({ type: "checkpoint_saved", timestamp: entry.createdAt, entry });
-			await writeIndexSnapshot(await loadIndexFromEvents(log));
-			return entry;
-		},
-
 		async find(idOrLast: string, options?: ListOptions): Promise<CheckpointIndexEntry | undefined> {
 			const index = await this.list(options);
 			if (index.length === 0) return undefined;
@@ -199,32 +159,5 @@ export function createCheckpointStore(): CheckpointStore {
 			await fs.rm(checkpointArtifactsFile(checkpoint.id), { force: true });
 		},
 
-		async sweepConsumed(retentionDays: number): Promise<number> {
-			if (!Number.isFinite(retentionDays) || retentionDays < 0) return 0;
-			const current = await loadIndexFromEvents(log);
-			const cutoff = Date.now() - retentionDays * 86400000;
-			const expired: CheckpointIndexEntry[] = [];
-			for (const entry of current) {
-				const consumed = entry.consumedAt ? Date.parse(entry.consumedAt) : NaN;
-				if (Number.isFinite(consumed) && consumed <= cutoff) expired.push(entry);
-			}
-			if (expired.length === 0) return 0;
-			await log.append({
-				type: "checkpoint_swept",
-				timestamp: new Date().toISOString(),
-				ids: expired.map((entry) => entry.id),
-				retentionDays,
-			});
-			await writeIndexSnapshot(await loadIndexFromEvents(log));
-			await Promise.all(expired.flatMap((entry) => [
-				fs.rm(entry.file, { force: true }),
-				fs.rm(checkpointArtifactsFile(entry.id), { force: true }),
-			]));
-			return expired.length;
-		},
-
-		artifactsFile(id: string): string {
-			return checkpointArtifactsFile(id);
-		},
 	};
 }

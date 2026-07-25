@@ -10,7 +10,7 @@ import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./
 import { isReviewableWorker, verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use" | "save";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
 	deliverable?: WorkerDeliverable;
@@ -35,6 +35,7 @@ export type WorkerVerdictDeps = {
 	reviewNote?(title: string, prefill: string): Promise<string | undefined>;
 	/** Use is separate from approval and never writes a verdict/lifecycle state. */
 	useDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
+	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	markArtifactDone(artifact: Artifact): void;
@@ -84,6 +85,22 @@ export async function findVerdictWorker(deps: WorkerVerdictDeps, ref?: string): 
 
 function decisionState(worker: WorkerStatus) {
 	return deriveWorkerState(worker.reviewedAt ? { ...worker, reviewedAt: undefined } : worker);
+}
+
+/** Verbs whose meaning is decided by the worker's state at resolution time. Read-only verbs
+ * (report, diff, hunk, use, save) are excluded: they show what exists and cannot misfire. */
+const STATE_BOUND_VERBS = new Set<DocketVerdictAction["verb"]>(["accept", "reject", "rejectStop", "chat", "send"]);
+
+/**
+ * A `needs_input` card offers answers to a question the worker is still holding; every other
+ * card offers judgment on finished work. The two families reuse the same verb ids for opposite
+ * actions — `accept` answers a plan gate in one and approves a Deliverable in the other — so a
+ * card opened in one family must never resolve in the other. Workers cross that line on their
+ * own (a plan-gated worker that answers itself and publishes), which used to send the human's
+ * answer to an already-finished worker and demote it out of `ready`.
+ */
+function verdictFamily(worker: WorkerStatus): "answer" | "judgment" {
+	return deriveWorkerState(worker) === "needs_input" ? "answer" : "judgment";
 }
 
 function visibleDecisionContext(worker: WorkerStatus, changeSet: Artifact | undefined, deliverable?: WorkerDeliverable): { risk?: string; evidenceRefs: string[] } {
@@ -136,6 +153,11 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const result = await deps.showVerdict(cardWorker, remaining);
 		if (!result) return "stop";
 		const latest = await deps.workerStore.find(result.worker.id) ?? result.worker;
+		if (STATE_BOUND_VERBS.has(result.verb) && verdictFamily(result.worker) !== verdictFamily(latest)) {
+			deps.notify(`Docket: ${workerShortLabel(latest.index)} changed state while this card was open. Nothing was sent; reopened its current state.`, "warning");
+			cardWorker = latest;
+			continue;
+		}
 		let deliverable = result.deliverable;
 		if (!deliverable && latest.deliverable && deps.workerStore.readCurrentDeliverable) {
 			deliverable = await deps.workerStore.readCurrentDeliverable(latest);
@@ -163,6 +185,12 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 				continue;
 			}
 			await deps.useDeliverable(latest, deliverable);
+			await deps.refreshWorkerDockWidget();
+			return "stop";
+		}
+		if (result.verb === "save") {
+			if (!deliverable || !deps.saveWorkerDeliverable) continue;
+			await deps.saveWorkerDeliverable(latest, deliverable);
 			await deps.refreshWorkerDockWidget();
 			return "stop";
 		}

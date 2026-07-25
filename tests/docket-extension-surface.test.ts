@@ -80,3 +80,44 @@ test("a misbehaving subscriber never breaks the surface", () => {
 	surface.emitWorkerEvent("w1", { ts: 1, kind: "state", payload: {} });
 	assert.deepEqual(calls, ["state"]);
 });
+
+test("tmux adapter registration is exclusive and adapter failures are isolated", async () => {
+	const surface = installDocketExtensionSurface(createWorkerKindRegistry());
+	const calls: string[] = [];
+	const warnings: unknown[][] = [];
+	const originalWarn = console.warn;
+	console.warn = (...args: unknown[]) => warnings.push(args);
+	try {
+		const unregister = surface.registerTmuxAdapter({ onWorkerWindowReady: async (event) => {
+			calls.push(`${event.reason}:${event.workerId}:${event.windowId}:${event.paneId}`);
+			throw new Error("companion failed");
+		} });
+		assert.throws(() => surface.registerTmuxAdapter(() => {}), /already registered/);
+		await surface.emitWorkerWindowReady({
+			reason: "spawn",
+			workerId: "worker-1",
+			workerLabel: "w1",
+			workerDir: "/tmp/worker-1",
+			eventsFile: "/tmp/worker-1/events.ndjson",
+			sessionName: "docket-workers",
+			windowTarget: "docket-workers:w1",
+			windowId: "@7",
+			paneId: "%9",
+		});
+		assert.deepEqual(calls, ["spawn:worker-1:@7:%9"]);
+		assert.match(String(warnings[0]?.[0]), /worker will continue running/);
+		unregister();
+		await surface.emitWorkerWindowReady({
+			reason: "respawn",
+			workerId: "worker-1",
+			workerLabel: "w1",
+			workerDir: "/tmp/worker-1",
+			eventsFile: "/tmp/worker-1/events.ndjson",
+			sessionName: "docket-workers",
+			windowTarget: "docket-workers:w1",
+		});
+		assert.equal(calls.length, 1);
+	} finally {
+		console.warn = originalWarn;
+	}
+});

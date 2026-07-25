@@ -13,8 +13,8 @@ Primary subcommands:
 - `/docket` — open decision docket.
 - `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed|--fresh] [--as <kind>] [--worktree] [--] <task>` — launch explicit worker in `docket-workers` (human-started only).
 - `/docket tell w<N> [text]` — send parent input to worker.
-- `/docket save [--once] [--summarize] [note]` — save selected evidence as bundle and label current Pi tree leaf.
-- `/docket load [id|last|w<N>]` — mount bundle or worker artifacts at zero model-context cost.
+- `/docket save [--from <artifact-ref|w<N>>]` — save an approved exact worker generation or author a deliverable interactively.
+- `/docket load [deliverable:<id>:<version>|last|w<N>]` — mount a deliverable or worker artifacts at zero model-context cost.
 
 Focused spawn examples:
 
@@ -26,11 +26,11 @@ Focused spawn examples:
 
 Advanced subcommands (attach, verdict, workers lens, search, …) live in `/docket help advanced`.
 
-Removed public aliases from the old Trail era are intentional: no `/trail`, no `checkpoint`, no `continue`, no `resume`, no `ckpt`, no `r`, no `s`, no `v`, no `ask`, no `result`, no `use`, no bare `inject` alias.
+Removed public aliases from the old Trail era are intentional: no `/trail`, no public checkpoint write command, no `continue`, no `resume`, no `ckpt`, no `r`, no `v`, no `ask`, no `result`, no bare `inject` alias. Contextual `s Save` and `u Use` are available in the navigator and verdict card.
 
-## Worker topology
+## Worker substrate
 
-Every worker is one independent window in single tmux session `docket-workers`. Workers cannot create workers; deleting one leaves all others intact. Parent → worker stdin uses `tmux send-keys -l` so user text is literal and does not trigger tmux keybindings.
+Every worker is one independent ordinary window in single tmux session `docket-workers`. Docket records the stable worker pane and uses it for tell, peek, and harvesting; companions may add panes without redirecting those operations. Parent → worker stdin uses literal `send-keys` or bracketed paste so user text is preserved. Attach is the advanced troubleshooting escape hatch.
 
 Kinds declare intent and authority. Execution resolves once per spawn: model/thinking inherit parent unless explicitly overridden, context defaults fresh, and workspace is shared for read-only kinds or isolated for writable kinds. Changed spend and legacy kind execution ask for confirmation in interactive mode. Noninteractive mode validates, announces, and launches without waiting.
 
@@ -47,10 +47,10 @@ Workers coordinate with the parent through tools:
 
 Worker-side `/docket wait`, `/docket done`, and `/docket fail` are fallback prompt commands only.
 
-## Save vs load
+## Deliverables: save vs load
 
-`/docket save` writes a deterministic orientation markdown file plus `<id>.artifacts.json`. It preserves evidence; it does not move the Pi session.
+`/docket save --from w<N>` copies the exact approved Worker Deliverable generation. `/docket save --from <artifact-ref>` edits selected bytes and asks for Proposal, Findings, or Completed. Bare `/docket save` opens the interactive source picker. Saves never append a Pi session marker or label the session leaf.
 
-`/docket load` mounts bundle or worker artifacts into the current Docket navigator. Artifacts cost zero model-context tokens until attached with `/docket ref` or `/docket inject-full`. Loading a worker marks it `loaded` in the dock without resolving its verdict debt; only a verdict records judgment.
+`/docket load` mounts a stored deliverable under a `d<N>` slot at zero model-context cost. Listing, previewing, and loading never queue a chip or start work. `u Use` sends the exact body to Parent on the next human submission or starts a fresh, confirmed Worker handoff. Existing bundles remain read-only compatibility data.
 
 Use Pi's `/tree`, `/fork`, `/clone`, `/compact`, `/new`, and `/resume` for session topology.

@@ -54,6 +54,7 @@ test("parseWorkerKindMarkdown exposes intent-only kind and keeps legacy executio
 		legacyExecutionFields: ["model", "thinking", "parent_seed", "default_worktree", "layout"],
 		diagnostics: [
 			"deprecated execution frontmatter (model, thinking, parent_seed, default_worktree, layout); move execution choices to /docket spawn flags or worker config before the next major release.",
+			"layout ignored; operator layouts moved out of core.",
 			"can_spawn ignored; worker creation is human-only.",
 		],
 	});

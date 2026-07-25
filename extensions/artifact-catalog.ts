@@ -20,8 +20,6 @@ export type ArtifactCatalog = {
 	fullText(artifact: Artifact): string;
 	inspect(artifact: Artifact): Promise<{ title: string; text: string }>;
 	search(query: string): Promise<Artifact[]>;
-	selectForCheckpoint(limit: number): Artifact[];
-	checkpointPayload(artifacts: Artifact[]): Array<Record<string, unknown>>;
 	summary(artifact: Artifact): ArtifactSummary;
 };
 
@@ -97,6 +95,7 @@ function diffStats(diff: string): string | undefined {
 }
 
 export function formatArtifact(artifact: Artifact): string {
+	const body = artifact.fullBody ?? artifact.body;
 	const lines = [
 		`# Docket artifact ${artifact.displayId}`,
 		`ref: ${artifact.ref}`,
@@ -106,7 +105,7 @@ export function formatArtifact(artifact: Artifact): string {
 		"",
 		artifact.title,
 		"",
-		artifact.body,
+		body,
 	].filter((line): line is string => line !== undefined);
 	return lines.join("\n");
 }
@@ -184,7 +183,8 @@ function buildArtifacts(ctx: DocketRuntimeContext, config: ArtifactCatalogConfig
 		const entryKey = artifact.entryId ?? "session";
 		const sameEntryOrdinal = artifacts.filter((a) => a.kind === artifact.kind && (a.entryId ?? "session") === entryKey).length;
 		const ref = `${artifact.kind}:${entryKey}:${sameEntryOrdinal}`;
-		artifacts.push({ ...artifact, id: displayId, displayId, ref, body: truncateText(artifact.body, config.maxBodyChars) });
+		const body = truncateText(artifact.body, config.maxBodyChars);
+		artifacts.push({ ...artifact, id: displayId, displayId, ref, body, ...(body === artifact.body ? {} : { fullBody: artifact.body }) });
 	};
 
 	for (const entry of branch as any[]) {
@@ -192,9 +192,9 @@ function buildArtifacts(ctx: DocketRuntimeContext, config: ArtifactCatalogConfig
 			const data = entry.data as Partial<CheckpointIndexEntry> | undefined;
 			push({
 				kind: "checkpoint",
-				title: `checkpoint ${data?.id ?? entry.id}`,
-				subtitle: data?.mode ?? "handoff",
-				body: `checkpoint: ${data?.id ?? entry.id}\nfile: ${data?.file ?? "(unknown)"}\nnote: ${data?.note ?? ""}`,
+				title: `legacy bundle ${data?.id ?? entry.id}`,
+				subtitle: "legacy bundle",
+				body: `legacy bundle: ${data?.id ?? entry.id}\nfile: ${data?.file ?? "(unknown)"}\nnote: ${data?.note ?? ""}`,
 				entryId: entry.id,
 				timestamp: Date.parse(entry.timestamp),
 				meta: data as Record<string, unknown>,
@@ -333,17 +333,6 @@ function buildArtifacts(ctx: DocketRuntimeContext, config: ArtifactCatalogConfig
 	});
 }
 
-// One restart-oriented ordering: errors first (avoid repeats), then files, commands, and recent
-// decisions. The interactive selector does the real pruning, so this only needs sane defaults.
-const CHECKPOINT_KIND_ORDER: ArtifactKind[] = ["error", "file", "command", "response", "prompt", "code"];
-
-function chooseCheckpointArtifacts(artifacts: Artifact[], limit: number): Artifact[] {
-	return artifacts
-		.filter((a) => CHECKPOINT_KIND_ORDER.includes(a.kind))
-		.sort((a, b) => CHECKPOINT_KIND_ORDER.indexOf(a.kind) - CHECKPOINT_KIND_ORDER.indexOf(b.kind) || (b.timestamp ?? 0) - (a.timestamp ?? 0))
-		.slice(0, limit);
-}
-
 function artifactRefId(artifact: Artifact): string {
 	return artifact.ref;
 }
@@ -363,14 +352,6 @@ function buildArtifactReference(artifact: Artifact, cwd: string, options: { incl
 	if (artifact.kind === "response") return `Reference Docket ${ref}: prior model response \"${truncateText(artifact.title, 160)}\".`;
 	if (artifact.kind === "code") return `Reference Docket ${ref}: ${artifact.title} (${artifact.subtitle}). Inspect artifact before reusing exact code.`;
 	return `Reference Docket ${ref}: ${artifact.title}. ${artifact.subtitle}`;
-}
-
-export function buildReferenceList(artifacts: Artifact[], cwd: string): string {
-	const lines = artifacts.map((artifact) => `- ${buildArtifactReference(artifact, cwd, { includeFileGuidance: false })}`);
-	if (artifacts.some((artifact) => artifact.kind === "file")) {
-		lines.push("", "File refs point to current disk paths; read current contents if needed. Do not paste file contents unless asked.");
-	}
-	return lines.join("\n");
 }
 
 export function artifactFilePath(artifact: Artifact, cwd: string): string | undefined {
@@ -438,20 +419,6 @@ export function createArtifactCatalog(
 		},
 		search(query: string) {
 			return searchArtifacts(query, artifacts);
-		},
-		selectForCheckpoint(limit: number) {
-			return chooseCheckpointArtifacts(current, limit);
-		},
-		checkpointPayload(selected: Artifact[]) {
-			return selected.map((artifact) => ({
-				ref: artifact.ref,
-				displayId: artifact.displayId,
-				kind: artifact.kind,
-				title: artifact.title,
-				subtitle: artifact.subtitle,
-				body: truncateText(artifact.body, 1600),
-				meta: artifact.meta ?? {},
-			}));
 		},
 		summary(artifact: Artifact) {
 			return {

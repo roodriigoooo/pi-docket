@@ -1,24 +1,17 @@
 import { isWorkerThinking, type WorkerThinking } from "./worker-spawn-policy.js";
 
-export type CheckpointCreateOptions = {
-	note: string;
-	consumeOnUse: boolean;
-	/** Opt-in: add a model-written prose summary on top of the deterministic bundle header. */
-	summarize: boolean;
-	model?: string;
-	maxOutputTokens?: number;
-};
+export type DeliverableSaveSource = { kind: "worker" | "artifact"; ref: string };
 
 export type DocketIntent =
 	| { kind: "help"; advanced?: boolean }
 	| { kind: "browse"; mode?: "review" | "answers" | "log" }
 	| { kind: "decisions" }
 	| { kind: "clear" }
-	| { kind: "save"; options: CheckpointCreateOptions }
-	| { kind: "delete"; target: string | undefined; targetKind: "checkpoint" | "worker" }
+	| { kind: "save"; source?: DeliverableSaveSource }
+	| { kind: "delete"; target: string | undefined; targetKind: "deliverable" | "checkpoint" | "worker" }
 	| { kind: "list"; includeConsumed?: boolean; workers?: boolean; allProjects?: boolean }
-	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "checkpoint" | "worker" }
-	| { kind: "unload"; target: string; targetKind: "checkpoint" | "worker" | "all" }
+	| { kind: "load"; ref?: string; includeConsumed?: boolean; refKind: "deliverable" | "checkpoint" | "worker" }
+	| { kind: "unload"; target: string; targetKind: "deliverable" | "checkpoint" | "worker" | "all" }
 	| { kind: "spawn"; task: string; worktree?: boolean; fresh?: boolean; seed?: boolean; as?: string; model?: string; thinking?: WorkerThinking }
 	| { kind: "kinds" }
 	| { kind: "respawn"; target: string }
@@ -47,10 +40,8 @@ function stripWorkerPrefix(value: string): { id: string; isWorker: boolean } {
 	return { id: value, isWorker: false };
 }
 
-const SAVE_USAGE = "/docket save [--once] [--summarize [--model <provider/model>] [--max-output <tokens>]] [--] [note]";
+const SAVE_USAGE = "/docket save [--from <artifact-ref|w<N>>]";
 const SPAWN_USAGE = "/docket spawn [--model <provider/model>] [--thinking <level>] [--seed|--fresh] [--as <kind>] [--worktree] [--] <task>";
-const BOOLEAN_FLAGS = new Set(["--once", "--delete-on-use", "--summarize"]);
-const VALUE_FLAGS = new Set(["--model", "--max-output"]);
 
 export function docketUsage(advanced = false): string {
 	const primary = [
@@ -62,8 +53,8 @@ export function docketUsage(advanced = false): string {
 		"  e.g. /docket spawn --as scout map auth call sites",
 		"  e.g. /docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth",
 		"/docket tell w<N> [text]        reply to a worker",
-		"/docket save [flags] [note]     save selected evidence as a zero-token bundle",
-		"/docket load [id|last|w<N>]     mount bundle/worker artifacts without model tokens",
+		"/docket save [--from ref|w<N>] save an immutable deliverable",
+		"/docket load [ref|last|w<N>]     mount deliverable/legacy bundle without model tokens",
 		"",
 		"more: /docket help advanced",
 	];
@@ -82,7 +73,7 @@ export function docketUsage(advanced = false): string {
 		"/docket attach [parent|w<N>]    switch to parent/worker tmux when inside tmux; otherwise copy attach command",
 		"/docket respawn <w<N>|all>      relaunch a worker whose tmux window died",
 		SAVE_USAGE,
-		"/docket load [id|last|w<N>] [--include-consumed]   mount bundle or worker artifacts (no model tokens)",
+		"/docket load [ref|last|w<N>] [--include-consumed]   mount deliverable or legacy bundle (no model tokens)",
 		"/docket unload <id|w<N>|all>    drop a loaded slot",
 		"/docket delete [id|last|w<N>]",
 		"/docket list [--include-consumed] [--workers|--all]",
@@ -145,7 +136,8 @@ function tokenize(input: string): { ok: true; tokens: string[] } | { ok: false; 
 
 function parseDeleteCommand(rest: string[]): ParseResult {
 	if (rest.length === 0) return { ok: true, intent: { kind: "delete", target: undefined, targetKind: "checkpoint" } };
-	if (rest.length > 1) return parseError("Usage: /docket delete [id|last|w:<worker>]");
+	if (rest.length > 1) return parseError("Usage: /docket delete [id|last|w:<worker>|deliverable:<id>:<version>]");
+	if (rest[0]!.startsWith("deliverable:")) return { ok: true, intent: { kind: "delete", target: rest[0], targetKind: "deliverable" } };
 	const { id, isWorker } = stripWorkerPrefix(rest[0]!);
 	return { ok: true, intent: { kind: "delete", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
 }
@@ -156,41 +148,30 @@ function requireArtifactArg(action: "ref" | "inject-full" | "copy", rest: string
 }
 
 function parseSave(tokens: string[]): ParseResult {
-	let consumeOnUse = false;
-	let summarize = false;
-	let model: string | undefined;
-	let maxOutputTokens: number | undefined;
-	const noteParts: string[] = [];
-
+	let from: string | undefined;
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i]!;
-		if (token === "--") {
-			noteParts.push(...tokens.slice(i + 1));
-			break;
-		}
-		if (BOOLEAN_FLAGS.has(token)) {
-			if (token === "--once" || token === "--delete-on-use") consumeOnUse = true;
-			else summarize = true;
-			continue;
-		}
-		if (VALUE_FLAGS.has(token)) {
+		if (token === "--from") {
 			const value = tokens[++i];
-			if (!value) return parseError(`Missing value for ${token}`, SAVE_USAGE);
-			if (token === "--model") model = value;
-			else {
-				const parsed = Number(value);
-				if (!Number.isInteger(parsed) || parsed <= 0) return parseError("--max-output must be a positive integer", SAVE_USAGE);
-				maxOutputTokens = parsed;
-			}
-			// --model/--max-output only make sense with a summary; imply it.
-			summarize = true;
+			if (!value || value.startsWith("-")) return parseError("Missing value for --from", SAVE_USAGE);
+			from = value;
 			continue;
+		}
+		if (token.startsWith("--from=")) {
+			from = token.slice("--from=".length);
+			if (!from) return parseError("Missing value for --from", SAVE_USAGE);
+			continue;
+		}
+		const removedFlag = ["--once", "--delete-on-use", "--summarize", "--model", "--max-output"].find((flag) => token === flag || token.startsWith(`${flag}=`));
+		if (removedFlag) {
+			return parseError(`${removedFlag} was removed; save an approved worker with --from w<N> or author a deliverable interactively.`, SAVE_USAGE);
 		}
 		if (token.startsWith("--")) return parseError(`Unknown save flag: ${token}`, SAVE_USAGE);
-		noteParts.push(token);
+		return parseError(`Unexpected save argument: ${token}`, SAVE_USAGE);
 	}
-
-	return { ok: true, intent: { kind: "save", options: { note: noteParts.join(" "), consumeOnUse, summarize, model, maxOutputTokens } } };
+	if (!from) return { ok: true, intent: { kind: "save" } };
+	const isWorker = /^w\d+$/i.test(from) || from.startsWith("w:");
+	return { ok: true, intent: { kind: "save", source: { kind: isWorker ? "worker" : "artifact", ref: from.startsWith("w:") ? from.slice(2) : from } } };
 }
 
 function parseSpawn(tokens: string[]): ParseResult {
@@ -320,16 +301,18 @@ export function parseDocketCommand(args: string): ParseResult {
 			if (token === "--include-consumed") includeConsumed = true;
 			else positional.push(token);
 		}
-		if (positional.length > 1) return parseError("Usage: /docket load [id|last|w:<worker>] [--include-consumed]");
+		if (positional.length > 1) return parseError("Usage: /docket load [ref|last|w:<worker>] [--include-consumed]");
 		const raw = positional[0];
 		if (!raw) return { ok: true, intent: { kind: "load", ref: undefined, includeConsumed, refKind: "checkpoint" } };
+		if (raw.startsWith("deliverable:")) return { ok: true, intent: { kind: "load", ref: raw, includeConsumed, refKind: "deliverable" } };
 		const { id, isWorker } = stripWorkerPrefix(raw);
 		return { ok: true, intent: { kind: "load", ref: id, includeConsumed, refKind: isWorker ? "worker" : "checkpoint" } };
 	}
 	if (command === "unload") {
-		if (rest.length !== 1) return parseError("Usage: /docket unload <id|w:<worker>|all>");
+		if (rest.length !== 1) return parseError("Usage: /docket unload <ref|w:<worker>|all>");
 		const raw = rest[0]!;
 		if (raw === "all") return { ok: true, intent: { kind: "unload", target: "all", targetKind: "all" } };
+		if (raw.startsWith("deliverable:")) return { ok: true, intent: { kind: "unload", target: raw, targetKind: "deliverable" } };
 		const { id, isWorker } = stripWorkerPrefix(raw);
 		return { ok: true, intent: { kind: "unload", target: id, targetKind: isWorker ? "worker" : "checkpoint" } };
 	}

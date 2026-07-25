@@ -1,4 +1,4 @@
-import type { WorkerKind, WorkerKindRegistry, WorkerLayout, WorkerParentSeedPolicy } from "./worker-kinds.js";
+import type { WorkerKind, WorkerKindRegistry, WorkerParentSeedPolicy } from "./worker-kinds.js";
 import { normalizeWorkerKindName, workerKindCompatibility } from "./worker-kinds.js";
 
 export const WORKER_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -15,7 +15,6 @@ export type WorkerSpawnOptions = {
 	fresh?: boolean;
 	seed?: boolean;
 	worktree?: boolean;
-	captureTerminal?: boolean;
 	model?: string;
 	thinking?: string;
 	/** Internal marker for reviewed Use → Worker launches. */
@@ -38,9 +37,6 @@ export type ResolvedWorkerSpawnPolicy = {
 	freshLaunch: boolean;
 	useWorktree: boolean;
 	workspaceSource: "--worktree" | "deprecated kind default_worktree" | "kind intent";
-	captureTerminal: boolean;
-	layout: WorkerLayout;
-	layoutSource: "deprecated kind layout" | "single default";
 	launchArgs: string[];
 	legacyContributions: string[];
 	warnings: string[];
@@ -134,7 +130,6 @@ export function resolveWorkerSpawnPolicy(input: {
 	parentSession?: string;
 	parentModel?: string;
 	parentThinking?: string;
-	captureTerminalDefault?: boolean;
 }): ResolvedWorkerSpawnPolicy {
 	const options = input.options ?? {};
 	const kindResult = resolveKind(input.kinds, options.as, input.configuredDefaultKind);
@@ -220,9 +215,6 @@ export function resolveWorkerSpawnPolicy(input: {
 		workspaceSource = "kind intent";
 	}
 
-	const layout = legacy?.layout ?? "single";
-	const layoutSource: ResolvedWorkerSpawnPolicy["layoutSource"] = legacy?.layout !== undefined ? "deprecated kind layout" : "single default";
-	if (legacy?.layout !== undefined) legacyContributions.push("layout");
 	const context = seedSource ? "seeded" : "fresh";
 	const requiresConfirmation = options.handoff === true
 		|| modelRef !== input.parentModel
@@ -242,9 +234,6 @@ export function resolveWorkerSpawnPolicy(input: {
 		freshLaunch: context === "fresh",
 		useWorktree,
 		workspaceSource,
-		captureTerminal: options.captureTerminal === true || input.captureTerminalDefault === true,
-		layout,
-		layoutSource,
 		launchArgs: ["--model", modelRef, "--thinking", thinking],
 		legacyContributions,
 		warnings,

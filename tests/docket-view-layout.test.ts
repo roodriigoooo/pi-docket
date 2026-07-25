@@ -19,7 +19,7 @@ const colorTheme = {
 };
 
 function errorArtifact(id: string, title: string, body: string): Artifact {
-	return { id, displayId: id, ref: `error:${id}`, kind: "error", title, subtitle: "", body, timestamp: Date.now() };
+	return { id, displayId: id, ref: `error:${id}`, kind: "error", title, subtitle: "", body, timestamp: 0 };
 }
 
 function reviewView(artifacts: Artifact[]): DocketView {

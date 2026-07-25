@@ -9,7 +9,7 @@ accepted
 Worker kinds mixed two concerns:
 
 - task intent and authority (`read_only`, plan gate, decision rights, output guidance), and
-- launch execution (`model`, thinking, parent seed, worktree, tmux layout).
+- launch execution (`model`, thinking, parent seed, worktree, and the core tmux substrate).
 
 Kinds could also grant `docket_spawn_child`, creating a persisted worker hierarchy with depth limits and cascade deletion. That made spend and topology depend on markdown selected indirectly, while deleting one worker could delete others.
 
@@ -33,7 +33,7 @@ One pure spawn-policy resolver chooses execution once for validation, confirmati
 | Thinking | per-spawn/handoff choice → legacy kind thinking → current parent thinking |
 | Parent context | handoff forced-fresh / `--fresh` → `--seed` → `worker.parentSeedPolicy` → legacy kind `parent_seed` → fresh |
 | Workspace | `--worktree` → legacy kind `default_worktree` → writable isolated / read-only shared |
-| Tmux layout | legacy compatibility value → single |
+| Tmux substrate | one shared session/window per worker; stable pane targeting and durable PTY |
 
 Model refs must exactly match an available Pi `provider/model`; splitting occurs at first slash so model ids may contain slashes. Invalid model or thinking choices abort. Explicit non-off thinking on a non-reasoning model aborts; inherited thinking resolves visibly to `off`. If parent model is absent and no explicit or legacy model exists, launch aborts.
 
@@ -43,7 +43,7 @@ Interactive confirmation is required when resolved model/thinking differs from t
 
 Legacy kind execution frontmatter remains readable through the next major release. Docket diagnoses it and identifies contributing deprecated defaults at launch. `can_spawn` is parsed only to report that it is ignored because worker creation is human-only. Existing hierarchy keys in `status.json` and `worker.maxSpawnDepth` in config are harmless extra data; no storage rewrite runs.
 
-Legacy `layout` remains compatibility-only until dedicated tmux layout work. Respawn uses stored canonical model/thinking and does not re-resolve against changed parent state.
+Legacy `layout` remains readable only for a migration diagnostic and never affects policy or tmux behavior. Respawn uses stored canonical model/thinking and does not re-resolve against changed parent state.
 
 ## Consequences
 

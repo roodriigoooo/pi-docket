@@ -7,7 +7,7 @@ Pi owns session topology (`/tree`, `/fork`, `/clone`, `/compact`, `/new`, `/resu
 ## Language
 
 **Artifact**:
-A structured object derived from session activity — a file edit, failed command, error, prompt, response, code block, worker status, or saved bundle marker.
+A structured object derived from session activity — a file edit, failed command, error, prompt, response, code block, worker status, or saved legacy-bundle/deliverable record.
 _Avoid_: event, item, record.
 
 **Review item**:
@@ -23,11 +23,11 @@ A human-started background Pi process running as one independent window in the s
 _Avoid_: job, agent, subprocess, child worker.
 
 **Worker Kind**:
-Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not normally choose model, thinking, context, workspace, or tmux layout.
+Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not choose model, thinking, context, workspace, or tmux layout.
 _Avoid_: execution preset, model profile, agent class.
 
 **Worker Execution**:
-One resolved launch policy: canonical model, effective thinking, parent-context choice, workspace, and compatibility-only layout. Per-spawn choices are explicit; otherwise model/thinking inherit current parent state, context defaults fresh, and workspace derives from kind intent.
+One resolved launch policy: canonical model, effective thinking, parent-context choice, and workspace. Per-spawn choices are explicit; otherwise model/thinking inherit current parent state, context defaults fresh, and workspace derives from kind intent. Tmux layout is not part of core policy.
 _Avoid_: kind, hidden defaults, routing profile.
 
 **Worker Deliverable**:
@@ -66,24 +66,20 @@ _Avoid_: permissions, role, capabilities.
 An opt-in worker rule that allows read-only discovery, then requires `docket_wait` before the first edit or mutating command. The parent approves or redirects through the verdict card.
 _Avoid_: approval workflow, checkpoint, blocker.
 
-**Evidence bundle**:
-A frozen, durable selection of artifacts saved with `/docket save`. It consists of a small markdown orientation file plus a deterministic `<id>.artifacts.json` sidecar. A bundle preserves evidence; it does not move the Pi session.
+**Deliverable**:
+A durable immutable body saved with `/docket save`. A deliverable carries an outcome, evidence, recommendations, refs, optional frozen change set, source provenance, exact approval, and ordered generation-bound review notes. It does not move the Pi session.
 _Avoid_: checkpoint, resume, summary, handoff doc.
 
-**Bundle sidecar**:
-The `<id>.artifacts.json` file — deterministic artifact data written with no model call.
-_Avoid_: payload, blob.
+**Legacy bundle**:
+An older checkpoint-path artifact package. It remains listable, loadable, previewable, referenceable, injectable, unloadable, and deletable, but Docket never creates or converts one on the new-write path.
+_Avoid_: checkpoint in user-facing copy.
 
-**Orientation header**:
-The small deterministic markdown block a bundle carries: note, git state, files touched, errors, and refs to mounted artifacts. It is evidence orientation, not model summary.
-_Avoid_: summary, preamble, checkpoint prose.
-
-**Note**:
-The human-authored intent on a bundle: decisions made and next steps. The note carries judgment a summarizer would otherwise guess.
-_Avoid_: description, comment, label.
+**Parent authorship**:
+The explicit interactive flow that edits the full selected artifact, chooses Proposal, Findings, or Completed, and creates a synthetic human approval. The returned bytes remain exact.
+_Avoid_: inferred approval, automatic conversion.
 
 **Mount**:
-Pulling a bundle's artifacts into the navigator under a slot id (`c1`, `c2`) at **zero model-context tokens**. Artifacts stay on disk until explicitly chipped with `/docket ref` or `/docket inject-full`.
+Pulling a deliverable into the navigator under a `d<N>` slot, or a legacy bundle under a `c<N>` slot, at **zero model-context tokens**. Nothing is chipped merely by listing, previewing, or loading.
 _Avoid_: load into context, inject, import.
 
 **Terminal tail**:
@@ -119,7 +115,7 @@ A passive dock hint for a running worker with no recent tool/todo event, shown a
 _Avoid_: deadman, timeout, auto-kill.
 
 **Save vs Load**:
-**Save** creates an evidence bundle and labels the current Pi tree leaf. **Load** mounts a bundle or worker artifacts into the current Docket navigator. Neither replaces Pi's session commands.
+**Save** writes an immutable deliverable from an approved exact worker generation or explicit parent authorship. **Load** mounts a deliverable or legacy bundle into the current Docket navigator. Neither appends a Pi session marker or replaces Pi's session commands.
 _Avoid_: continue, resume, restore.
 
 ## Relationships
@@ -129,10 +125,10 @@ _Avoid_: continue, resume, restore.
 - A **Worker** starts from a **Pre-flight brief** and may be constrained by **Decision rights** or a **Plan gate**.
 - A **Worker** produces **Artifacts** and one primary **Worker Deliverable** per accepted ready generation; supporting artifacts remain evidence.
 - An **Approval** judges one **Deliverable Version**. **Use / Handoff** is separate and remains human-started.
-- An **Evidence bundle** freezes selected **Artifacts** plus an **Orientation header**.
-- **Save** = choose artifacts + write bundle + label current Pi tree leaf.
-- **Load** = **Mount** the bundle into the current session.
-- A model summary is optional `--summarize` polish on top of a bundle, never the bundle's definition.
+- A **Deliverable** freezes exact body bytes plus structured result data, source provenance, approval, and review history.
+- **Save** = copy an approved worker generation or author selected content + write one immutable record.
+- **Load** = **Mount** the deliverable under a `d<N>` slot at zero model-context cost.
+- **Use** = explicitly queue the exact full body for the next parent submission or start a fresh confirmed worker.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
 - **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
@@ -140,11 +136,11 @@ _Avoid_: continue, resume, restore.
 ## Example dialogue
 
 > **Dev:** "When I `/docket load last`, does the assistant see file contents?"
-> **Maintainer:** "No — Docket mounts bundle artifacts at zero tokens. The model sees nothing until you chip an artifact with `/docket ref` or `/docket inject-full`."
+> **Maintainer:** "No — Docket mounts a deliverable at zero tokens. The model sees nothing until you explicitly Use → Parent or chip an artifact with `/docket ref` or `/docket inject-full`."
 > **Dev:** "Then how do I continue from older work?"
 > **Maintainer:** "Use Pi for session movement: `/tree`, `/fork`, `/clone`, `/resume`, or `/compact`. Use Docket to carry evidence and decisions across those moves."
 
 ## Flagged ambiguities
 
-- "checkpoint" made Docket sound like a session-resume feature. Resolved: canonical term is **Evidence bundle**.
-- "continue" duplicated Pi's session vocabulary. Resolved: Docket has **Save** and **Load**; Pi owns continuation.
+- "checkpoint" made Docket sound like a session-resume feature. Resolved: canonical term is **Deliverable**; old bundles are compatibility-only.
+- "continue" duplicated Pi's session vocabulary. Resolved: Docket has **Save**, **Load**, and explicit **Use**; Pi owns continuation.

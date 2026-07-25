@@ -1,8 +1,8 @@
 # Docket Architecture
 
-Docket is a pi extension whose first-use promise is **delegate safely without losing control**. Explicit workers are the primary story: spawn → watch/peek/tell → verdict → Report/diff/Hunk → decide. Evidence bundles are durable supporting infrastructure for capture outside a worker.
+Docket is a pi extension whose first-use promise is **delegate safely without losing control**. Explicit workers are the primary story: spawn → watch/peek/tell → verdict → Report/diff/Hunk → decide. Durable deliverables preserve approved work outside a worker.
 
-The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved evidence bundle). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — evidence first, worker claims second, never the transcript. Automatic worker → parent flow is **metadata only**. **Workers** are human-started, independent background pi processes; **evidence bundles** are durable artifact packages. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md); flat worker creation and execution-policy rationale lives in [ADR-0004](./adr/0004-human-started-workers-and-execution-policy.md).
+The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved deliverable). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — evidence first, worker claims second, never the transcript. Automatic worker → parent flow is **metadata only**. **Workers** are human-started, independent background pi processes; **deliverables** are immutable, reusable records. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md); flat worker creation and execution-policy rationale lives in [ADR-0004](./adr/0004-human-started-workers-and-execution-policy.md).
 
 If you're contributing, read this end-to-end. If you're using Docket, the README and [configuration.md](./configuration.md) are what you want.
 
@@ -12,13 +12,12 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 
 | Module | File | Owns |
 |---|---|---|
-| Artifact Catalog | `extensions/artifact-catalog.ts` | Extraction, identity, lookup, references, full text, inspect, bundle payloads. |
+| Artifact Catalog | `extensions/artifact-catalog.ts` | Extraction, identity, lookup, references, full text, inspection, and deliberately selected parent-authoring sources. |
 | Search Index | `extensions/search-index.ts` | Ripgrep adapter over artifact docs, in-memory fallback, attention-weighted ranking. |
-| Bundle Lifecycle | `extensions/checkpoint-lifecycle.ts` | Bundle-first: select candidates → user prune → orientation header (opt-in `--summarize`) → review → persist. Internal type names still use checkpoint for storage compatibility. See [ADR-0001](./adr/0001-bundle-first-checkpoints.md). |
-| Bundle Store | `extensions/checkpoint-store.ts` | Markdown + sidecar JSON on disk; event-backed lifecycle; soft-consume. |
-| Bundle Commands | `extensions/checkpoint-commands.ts` | `list` / `delete` support for saved bundles. |
-| Bundle Selector | `extensions/checkpoint-selector.ts` | Interactive accept/exclude before optional summarization. |
-| Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, consume-on-use queue. |
+| Deliverable Store | `extensions/deliverable-store.ts` | Immutable versioned records, worker-generation validation, parent authorship, per-deliverable locks, and atomic claims. |
+| Deliverable Lifecycle | `extensions/deliverable-lifecycle.ts` | Source selection, exact worker approval extraction, parent editing/outcome selection, and save validation. |
+| Legacy Bundle Compatibility | `extensions/checkpoint-store.ts`, `extensions/checkpoint-commands.ts` | Old list/load/preview/unload plus consume-metadata and explicit-delete flows; no new bundle creation or conversion. |
+| Loaded Artifact Context | `extensions/loaded-artifact-context.ts` | Mounted source slots, reference/full chip expansion, and legacy consume compatibility. |
 | Worker Lifecycle | `extensions/worker-lifecycle.ts` | Pure status transitions and lifecycle selectors: review/respawn/harvest eligibility, dock-terminal age, and prune disposition. |
 | Worker Deliverable | `extensions/worker-deliverable.ts` | Immutable ready-generation identity, full-body extraction, atomic version sidecars, artifact adapter, and presentation classification. |
 | Worker Handoff | `extensions/worker-handoff.ts` | Reviewed-deliverable provenance and model/thinking choice shaping. |
@@ -31,17 +30,17 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Worker Change Review | `extensions/worker-change-review.ts` | One review operation over a deterministic change set: built-in diff, Hunk fallback, comment disposition, and worker-only comment delivery. It cannot promote or mount artifacts. |
 | Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
-| Worker Store | `extensions/worker-store.ts` | Flat shared-tmux worker persistence, status-file locking/atomic transitions, `send-keys -l` stdin (single line), `paste-buffer` (multiline), task docs, session seeding, and exact-execution respawn. |
+| Worker Store | `extensions/worker-store.ts` | Flat worker persistence, stable window/pane targeting, status-file locking/atomic transitions, literal and bracketed-paste input, durable PTYs, task docs, session seeding, and exact-execution respawn. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
 | Decision Log | `extensions/decision-log.ts` | Append-only verdict ledger + unreviewed-eviction count; pure summarize/render over the events. |
 | Worker Kinds | `extensions/worker-kinds.ts` | Intent-only frontmatter parser/registry, legacy execution compatibility metadata, diagnostics, and guardrails appendix. |
-| Extension Surface | `extensions/docket.ts` (via `globalThis.__docket`) | `registerWorkerKind`, `listWorkerKinds`, `onWorkerEvent`. |
+| Extension Surface | `extensions/docket-extension-surface.ts` (via `globalThis.__docket`) | Worker-kind registration, `onWorkerEvent`, and the exclusive `registerTmuxAdapter` window-ready seam. |
 | Navigator | `extensions/docket-navigator.ts` | View model, ranking, selection state, mode/source transitions. |
 | Command Router | `extensions/docket-command-router.ts` | Routes parsed intents to the modules above. |
-| Shared Session Runtime | `extensions/shared-session-runtime.ts` | Parent/worker-neutral registration: `/docket` routing, message rendering, mounted artifact expansion, checkpoint lifecycle, and session cleanup. |
-| Parent Runtime | `extensions/parent-runtime.ts` | Parent-only worker watch/dock startup and teardown. The parent owns cache refresh, reconciliation, harvest, tmux status, and dock animation. |
+| Shared Session Runtime | `extensions/shared-session-runtime.ts` | Parent/worker-neutral registration: `/docket` routing, message rendering, mounted artifact expansion, legacy bundle compatibility, and session cleanup. |
+| Parent Runtime | `extensions/parent-runtime.ts` | Parent-only worker watch/dock startup and teardown. The parent owns cache refresh, reconciliation, pane harvest, and dock animation. |
 | Worker Runtime | `extensions/worker-runtime.ts` | Worker-only guardrail/protocol registration plus heartbeat lifecycle. Worker owns four protocol tools, nudges, shell fallback, and event capture; it has no spawn tool. |
 | Docket Views | `extensions/docket-views/` | Artifact/file viewers, shared layout primitives, and router/verdict action type boundaries. Runtime state is not imported into views. |
 | Docket Keymap | `extensions/docket-keymap.ts` | Normalized physical-key bindings, conflict checking, and shared card/footer/help hint rendering for interactive views. |
@@ -72,7 +71,7 @@ One resolved object feeds validation, confirmation, persistence, and launch:
 | Thinking | `--thinking` / handoff choice → deprecated kind thinking → current parent thinking |
 | Context | handoff forced-fresh / `--fresh` → `--seed` → `worker.parentSeedPolicy` → deprecated kind `parent_seed` → fresh |
 | Workspace | `--worktree` → deprecated kind `default_worktree` → writable isolated / read-only shared |
-| Layout | deprecated compatibility value → single |
+| Tmux substrate | one shared session/window per worker, durable PTY, recorded pane target, remain-on-exit |
 
 The resolver accepts only exact models from `ctx.modelRegistry.getAvailable()`. Model ids may contain `/`; parsing splits at first slash. Explicit non-off thinking on a non-reasoning model fails, while inherited thinking visibly resolves to `off`. Pi may clamp supported reasoning levels; worker heartbeat records resulting effective value.
 
@@ -105,17 +104,21 @@ Per-worker state under `~/.pi/agent/docket/workers/<id>/`:
 | `session/` | parent (seeded) | Forked pi JSONL prefix, enables `--continue` + cache reuse. |
 | `workspace/` | parent (seeded) | Detached git worktree isolated from the parent's working copy. |
 
-Bundle state under `~/.pi/agent/docket/`:
+Durable deliverables under `~/.pi/agent/docket/`:
 
 | File | Owner | Purpose |
 |---|---|---|
-| `checkpoints/<id>.md` | Bundle Lifecycle | Orientation markdown. |
-| `checkpoints/<id>.artifacts.json` | Bundle Lifecycle | Sidecar refs, mounted by `/docket load`. |
-| `events.ndjson` | Bundle Store | Append-only lifecycle (save/consume/purge/sweep). |
-| `index.json` | Bundle Store (snapshot) | Compatibility snapshot, rebuilt from `events.ndjson`. |
+| `deliverables/<safe-id>/v<N>.json` | Deliverable Store | Immutable byte-exact body, structured outcome/evidence, source, approval, review notes, refs, optional patch, and handoff provenance. |
+| `deliverables/<safe-id>/.lock` | Deliverable Store | Per-deliverable save/delete lock; claimed versions are never overwritten. |
+| `checkpoints/<id>.md` | Legacy reader | Existing orientation markdown, read only. |
+| `checkpoints/<id>.artifacts.json` | Legacy reader | Existing sidecar refs, mounted by compatibility load. |
+| `events.ndjson` | Legacy reader | Existing bundle lifecycle log, never appended by deliverable saves. |
+| `index.json` | Legacy reader | Existing compatibility snapshot; not part of the deliverable path. |
 | `decisions.ndjson` | Decision Log | Append-only verdict ledger + unreviewed-eviction events, read by `/docket log decisions`. |
 
-`index.json` is not authoritative — the event log is. It exists so external readers don't break.
+Deliverable directories are scanned defensively: invalid or unrelated files are skipped. A save claims a version with a lock, writes a temporary file, and atomically claims it without replacing an existing or corrupt version. Re-saving the same approved worker generation returns the existing record.
+
+Legacy `index.json` and `events.ndjson` remain compatibility state only; new saves do not touch either file.
 
 ## Extension surface
 
@@ -127,6 +130,7 @@ declare global {
     registerWorkerKind(kind: WorkerKind): () => void;
     listWorkerKinds(): WorkerKind[];
     onWorkerEvent(handler: (event: WorkerEvent) => void): () => void;
+    registerTmuxAdapter(adapter: { onWorkerWindowReady(event: WorkerWindowReady): void | Promise<void> }): () => void;
   };
 }
 ```
@@ -134,12 +138,14 @@ declare global {
 `WorkerKind` on this surface is intent-only: `name`, optional description, `readOnly`, optional plan gate/decision rights/soft limits, guardrail or system-prompt additions, and source metadata. Pre-0.8 runtime objects with execution keys are normalized into hidden compatibility metadata and produce migration diagnostics.
 
 `onWorkerEvent` fires once per event tail per dock tick. Subscriber errors are caught and dropped — a misbehaving extension cannot crash Docket.
+`registerTmuxAdapter` is exclusive. Its callback is dispatched after spawn/respawn window and pane IDs are persisted and receives stable worker metadata; it is not awaited, and adapter failures are warned without delaying or rolling back a successful launch.
 
 ## Key design choices
 
-- **One tmux session, N windows.** Pays for one tmux server regardless of fleet size. `send-keys -l` gives a safe parent→worker stdin without inventing a FIFO/socket protocol.
+- **One tmux session, one ordinary window per worker.** Pays for one tmux server regardless of fleet size. Docket records the worker pane ID and uses it as the core target, with window/name fallback only for legacy status. `send-keys -l` gives a safe parent→worker stdin without inventing a FIFO/socket protocol.
 - **Dead panes are evidence.** Worker windows run with `remain-on-exit on`, so a crash leaves the pane (and its scrollback) for the parent to harvest before the window is killed. While the pane is alive, `capture-pane` doubles as the dashboard's bounded read-only peek: observation without attach, zero model-context cost.
-- **NDJSON event stream over `fs.watch`.** Disk-backed, survives parent restarts, no daemon. Drives the dock without polling. `pipe-pane` captures terminal noise, not structured events — opt-in via `worker.captureTerminal` when debugging.
+- **Tmux is a narrow substrate seam.** Core Docket creates no split panes, `pipe-pane`, status-right, or `pane.log`. Companions may register one non-blocking adapter after IDs are persisted; adapter errors are isolated, and companion panes cannot redirect tell, peek, or harvesting.
+- **NDJSON event stream over `fs.watch`.** Disk-backed, survives parent restarts, no daemon. Drives the dock without polling.
 - **Heartbeat dedup.** Worker hashes its artifact list each heartbeat; `writeArtifacts` is skipped when unchanged. Quiet workers cost ~0 disk I/O.
 - **mtime-cached reads in the parent.** `WorkerSnapshotCache` skips parse when neither status nor artifacts has changed.
 - **Session seeding is opt-in.** By default `/docket spawn` starts fresh. `--seed` or `worker.parentSeedPolicy: "full"` forks parent JSONL and resumes with `--continue`; legacy kind `parent_seed` remains lower-precedence compatibility. `--fresh` wins when both flags appear.
@@ -153,3 +159,4 @@ declare global {
 - **Attach means switch when already inside tmux.** `/docket attach` uses `switch-client` inside tmux and a copyable `attach` command outside. Workers record the human launch session's tmux target; `/docket attach parent` uses that value directly. Legacy `parentWorkerId` is not topology or fallback.
 - **Progress boards are informational.** `docket_todos` helps parent visibility, but `docket_done` is authoritative; stale progress never keeps a ready worker in a special unresolved state.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.
+- **Deliverables are claimed immutably.** Worker saves require exact terminal approval for the exact generation. Parent saves are explicit and synthetic-approved. Per-deliverable locks plus atomic claims make repeated and concurrent saves safe without a database.

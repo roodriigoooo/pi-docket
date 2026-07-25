@@ -1,12 +1,12 @@
 # Bundle-first checkpoints
 
-Superseded in public UX by [ADR-0002](./0002-rename-to-docket.md): users now see **evidence bundles** via `/docket save` and `/docket load`; Pi owns session continuation. Internal storage still uses checkpoint type names for compatibility.
+Superseded by [ADR-0005](./0005-durable-deliverable-store.md). This file remains historical: its bundle/orientation/checkpoint lifecycle is retained only for compatibility reads, not for new writes or public save/use flows.
 
 A checkpoint is a frozen **artifact bundle** (`<id>.artifacts.json`) plus a small deterministic **orientation header** — not a model-written summary. The old `continue` path opened a fresh session, **mounted** the bundle at zero model-context tokens, and injected only the header (git, files touched, errors, the human-authored note); artifacts were chipped on demand. The model summarizer became an opt-in `--summarize` layer, off the default path. The four modes (`handoff/compact/debug/review`) were dropped in favour of one default selection (errors + files + recent decisions) that the interactive selector prunes.
 
 ## Status
 
-accepted
+superseded
 
 ## Considered options
 

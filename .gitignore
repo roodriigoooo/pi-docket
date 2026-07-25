@@ -21,8 +21,14 @@ scripts/
 # local session working notes (UI/tmux/worker-flow improvement plan)
 /PLAN.md
 
+# local session review notes for the core-issues branch
+/REVIEW-core-issues.md
+
 # local CLI tool state (not part of this package)
 .antigravitycli/
+
+# local Pi runtime state (scrutiny records etc.) written by the installed extension
+/.pi/
 
 # raw demo recordings; README uses optimized files in .github/media/
 video*_docket.mov

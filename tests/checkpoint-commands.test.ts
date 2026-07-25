@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createCheckpointCommands, type ResumeSelection } from "../extensions/checkpoint-commands.js";
-import type { CheckpointStore, CheckpointSummary } from "../extensions/checkpoint-store.js";
+import { createCheckpointCommands } from "../extensions/checkpoint-commands.js";
+import type { CheckpointStore } from "../extensions/checkpoint-store.js";
 import type { Artifact, CheckpointIndexEntry } from "../extensions/types.js";
 
 const checkpoint: CheckpointIndexEntry = {
@@ -13,28 +13,16 @@ const checkpoint: CheckpointIndexEntry = {
 	note: "continue",
 };
 
-const summary: CheckpointSummary = {
-	entry: checkpoint,
-	artifactCount: 2,
-	files: 1,
-	errors: 0,
-	commands: 1,
-	estimatedTokens: 42,
-};
-
 function fakeStore(entry: CheckpointIndexEntry | undefined = checkpoint) {
 	const purged: CheckpointIndexEntry[] = [];
 	const store: CheckpointStore = {
-		save: async () => { throw new Error("unused"); },
 		find: async () => entry,
 		list: async () => entry ? [entry] : [],
-		listSummaries: async () => entry ? [summary] : [],
+		listSummaries: async () => entry ? [{ entry, artifactCount: 2, files: 1, errors: 0, commands: 1, estimatedTokens: 42 }] : [],
 		readMarkdown: async () => "checkpoint markdown",
 		readArtifacts: async () => [] as Artifact[],
 		markConsumed: async () => {},
-		purge: async (checkpoint) => { purged.push(checkpoint); },
-		sweepConsumed: async () => 0,
-		artifactsFile: (id) => `/tmp/${id}.artifacts.json`,
+		purge: async (candidate) => { purged.push(candidate); },
 	};
 	return { store, purged };
 }
@@ -43,30 +31,15 @@ function deps(overrides: Partial<Parameters<typeof createCheckpointCommands>[0]>
 	const { store, purged } = fakeStore();
 	const notifications: string[] = [];
 	const emitted: string[] = [];
-	const sessions: Array<{ id: string; content: string }> = [];
-	const shown: string[] = [];
 	const base: Parameters<typeof createCheckpointCommands>[0] = {
 		store,
-		hasUI: false,
 		notify: (text) => notifications.push(text),
 		emitText: (text) => emitted.push(text),
 		confirmDelete: async () => true,
-		selectCheckpoint: async () => null,
-		showText: async (title) => { shown.push(title); },
-		editText: async () => undefined,
-		startSession: async (checkpoint, content) => { sessions.push({ id: checkpoint.id, content }); },
 		...overrides,
 	};
-	return { commands: createCheckpointCommands(base), notifications, emitted, sessions, shown, purged };
+	return { commands: createCheckpointCommands(base), notifications, emitted, purged };
 }
-
-test("Checkpoint Commands continues last checkpoint without UI", async () => {
-	const { commands, sessions } = deps();
-
-	await commands.continue();
-
-	assert.deepEqual(sessions, [{ id: "ck-1", content: "checkpoint markdown" }]);
-});
 
 test("Checkpoint Commands delete respects cancelled confirmation", async () => {
 	const { commands, notifications, purged } = deps({ confirmDelete: async () => false });
@@ -78,7 +51,7 @@ test("Checkpoint Commands delete respects cancelled confirmation", async () => {
 	assert.deepEqual(notifications, ["Docket delete cancelled"]);
 });
 
-test("Checkpoint Commands list emits checkpoint table", async () => {
+test("Checkpoint Commands list emits the legacy bundle table", async () => {
 	const { commands, emitted } = deps();
 
 	await commands.list(true);
@@ -87,18 +60,9 @@ test("Checkpoint Commands list emits checkpoint table", async () => {
 	assert.match(emitted[0]!, /ck-1\thandoff\t\/repo\tcontinue/);
 });
 
-test("Checkpoint Commands UI continue can preview then start selected checkpoint", async () => {
-	const selections: ResumeSelection[] = [
-		{ action: "preview", summary, index: 0 },
-		{ action: "continue", summary, index: 0 },
-	];
-	const { commands, sessions, shown } = deps({
-		hasUI: true,
-		selectCheckpoint: async () => selections.shift() ?? null,
-	});
+test("Checkpoint Commands delete without a target resolves the latest legacy bundle", async () => {
+	const { commands, purged } = deps();
 
-	await commands.continue();
-
-	assert.deepEqual(shown, ["Docket checkpoint ck-1"]);
-	assert.deepEqual(sessions, [{ id: "ck-1", content: "checkpoint markdown" }]);
+	assert.equal(await commands.delete(), true);
+	assert.deepEqual(purged, [checkpoint]);
 });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWorkerCommands, workerCompletionCandidates } from "../extensions/worker-commands.js";
+import { createWorkerCommands, formatKindList, workerCompletionCandidates } from "../extensions/worker-commands.js";
 import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
@@ -106,7 +106,6 @@ function deps(
 		parentSession: "/session.json",
 			kinds,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: (text) => notifications.push(text),
 		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
@@ -172,7 +171,7 @@ test("Worker Commands --fresh overrides a full kind", async () => {
 	reg.register({ name: "seedy", readOnly: false, defaultWorktree: true, parentSeedPolicy: "full", canSpawn: [], layout: "single", source: "runtime" });
 	const commands = createWorkerCommands({
 		...defaultExecutionDeps,
-		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, captureTerminal: () => false, notify: () => {}, announce: () => {}, emitText: () => {},
+		store: setup.store, loadedArtifacts: { loadSource: async () => { throw new Error("unused"); }, unloadSource: () => undefined }, cwd: "/repo", parentSession: "/session.json", kinds: reg, maxActive: () => 8, notify: () => {}, announce: () => {}, emitText: () => {},
 	});
 
 	await commands.spawn("x", { as: "seedy" });
@@ -205,7 +204,6 @@ test("Worker Commands passes kind decision-rights and plan gate into spawn", asy
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -239,7 +237,6 @@ test("Worker Commands uses configured default kind", async () => {
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		defaultKind: () => "planner",
 		notify: () => {},
 		announce: () => {},
@@ -251,7 +248,7 @@ test("Worker Commands uses configured default kind", async () => {
 	assert.equal(setup.spawned[0]?.kind, "planner");
 	assert.equal(setup.spawned[0]?.readOnly, true);
 	assert.equal(setup.spawned[0]?.worktree, false);
-	assert.equal(setup.spawned[0]?.layout, "split-events");
+	assert.equal("layout" in (setup.spawned[0] ?? {}), false);
 	assert.equal(setup.spawned[0]?.planGate, undefined);
 });
 
@@ -262,10 +259,30 @@ test("Worker Commands lists explicit worker rights", async () => {
 
 	await setup.commands.listKinds();
 
-	assert.match(setup.emitted[0] ?? "", /default\s+plan-gated\s+\[builtin\]/);
-	assert.match(setup.emitted[0] ?? "", /writer\s+writable\s+\[runtime\]/);
-	assert.match(setup.emitted[0] ?? "", /warning: deprecated execution frontmatter/);
-	assert.match(setup.emitted[0] ?? "", /can_spawn ignored; worker creation is human-only/);
+	const listing = setup.emitted[0] ?? "";
+	assert.match(listing, /^builtin\n {2}default · plan-gated$/m);
+	assert.match(listing, /^runtime\n {2}writer · writable$/m);
+	// Kinds are grouped by where they came from, so a runtime kind never sits inside builtin.
+	assert.equal(listing.indexOf("builtin") < listing.indexOf("runtime"), true);
+	assert.match(listing, /^ {4}warning: deprecated execution frontmatter/m);
+	assert.match(listing, /^ {4}warning: can_spawn ignored; worker creation is human-only/m);
+	assert.match(listing, /Spawn with \/docket spawn --as <kind> <task> · without --as: default$/);
+});
+
+test("Worker Commands separates each kind and hangs its detail under the name", () => {
+	const kinds = createWorkerKindRegistry();
+	kinds.register({ name: "auditor", description: "Reads only.", readOnly: true, decisionRights: ["may read secrets"], source: "user" });
+
+	const listing = formatKindList(kinds.list());
+
+	assert.equal(listing.includes("\n\nuser\n"), true);
+	assert.match(listing, /^ {2}auditor · read-only$/m);
+	assert.match(listing, /^ {4}Reads only\.$/m);
+	assert.match(listing, /^ {4}rights: may read secrets$/m);
+});
+
+test("Worker Commands kind listing stays empty-safe", () => {
+	assert.equal(formatKindList([]), "No Docket worker kinds registered");
 });
 
 test("Worker Commands passes kind model and thinking to worker launch", async () => {
@@ -290,7 +307,6 @@ test("Worker Commands passes kind model and thinking to worker launch", async ()
 		parentSession: "/session.json",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -314,7 +330,6 @@ test("Worker Commands inherits parent model when kind has no model override", as
 		parentModel: () => "google/gemini-3-pro",
 		kinds: reg,
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		notify: () => {},
 		announce: () => {},
 		emitText: () => {},
@@ -461,7 +476,6 @@ test("Worker Commands warns and falls back when configured default kind is missi
 		parentSession: "/session.json",
 		kinds: createWorkerKindRegistry(),
 		maxActive: () => 8,
-		captureTerminal: () => false,
 		defaultKind: () => "ghost",
 		notify: (text) => notifications.push(text),
 		announce: () => {},

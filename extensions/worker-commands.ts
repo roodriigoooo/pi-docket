@@ -24,7 +24,6 @@ type WorkerCommandsDeps = {
 	availableModels(): readonly WorkerExecutionModel[];
 	kinds: WorkerKindRegistry;
 	maxActive(): number;
-	captureTerminal(): boolean;
 	/** Project-default kind picked when /docket spawn is invoked without --as. */
 	defaultKind?(): string | undefined;
 	/** Default parent-seed policy when neither spawn flags nor legacy kind metadata set one. */
@@ -41,7 +40,6 @@ export type WorkerCommandSpawnOptions = {
 	fresh?: boolean;
 	seed?: boolean;
 	as?: string;
-	captureTerminal?: boolean;
 	model?: string;
 	thinking?: WorkerThinking;
 	sourceDeliverable?: { body: string; provenance: WorkerHandoffProvenance };
@@ -110,16 +108,35 @@ function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: b
 	return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).flatMap(([project, entries]) => [`project: ${project}`, ...entries.map(lineFor)]).join("\n");
 }
 
-function formatKindList(kinds: WorkerKind[]): string {
+const KIND_SOURCE_ORDER: WorkerKind["source"][] = ["builtin", "user", "runtime"];
+
+function kindAuthority(kind: WorkerKind): string {
+	return kind.readOnly ? "read-only" : kind.planGate ? "plan-gated" : "writable";
+}
+
+/**
+ * One indented block per kind rather than one dense row: name and authority read as a
+ * heading, everything that qualifies the kind (description, decision rights, migration
+ * warnings) hangs under it, and blank lines keep neighbouring kinds from running together.
+ */
+function formatKindBlock(kind: WorkerKind): string[] {
+	const detail = [
+		...(kind.description ? [kind.description] : []),
+		...(kind.decisionRights ?? []).map((right) => `rights: ${right}`),
+		...(workerKindCompatibility(kind)?.diagnostics ?? []).map((message) => `warning: ${message}`),
+	];
+	return [`  ${kind.name} · ${kindAuthority(kind)}`, ...detail.map((line) => `    ${line}`)];
+}
+
+export function formatKindList(kinds: WorkerKind[], options: { defaultKind?: string } = {}): string {
 	if (kinds.length === 0) return "No Docket worker kinds registered";
-	return kinds.flatMap((kind) => {
-		const rights = kind.readOnly ? "read-only" : kind.planGate ? "plan-gated" : "writable";
-		const src = `[${kind.source}]`;
-		const desc = kind.description ? ` — ${kind.description}` : "";
-		const line = `${kind.name.padEnd(12)} ${rights.padEnd(11)} ${src}${desc}`;
-		const diagnostics = workerKindCompatibility(kind)?.diagnostics.map((message) => `  warning: ${message}`) ?? [];
-		return [line, ...diagnostics];
-	}).join("\n");
+	const sources = KIND_SOURCE_ORDER.filter((source) => kinds.some((kind) => kind.source === source));
+	const groups = sources.map((source) => [
+		source,
+		...kinds.filter((kind) => kind.source === source).flatMap((kind, index) => [...(index === 0 ? [] : [""]), ...formatKindBlock(kind)]),
+	].join("\n"));
+	const spawnHint = `Spawn with /docket spawn --as <kind> <task>${options.defaultKind ? ` · without --as: ${options.defaultKind}` : ""}`;
+	return [...groups, spawnHint].join("\n\n");
 }
 
 export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
@@ -147,7 +164,6 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					parentSession: deps.parentSession,
 					parentModel: deps.parentModel(),
 					parentThinking: deps.parentThinking(),
-					captureTerminalDefault: deps.captureTerminal(),
 				});
 				if (policy.unknownRequestedKind) deps.notify(`Docket: unknown worker kind "${policy.unknownRequestedKind}". Try /docket kinds. Using ${policy.kind.name}.`, "warning");
 				if (policy.unknownDefaultKind) deps.notify(`Docket: configured default worker kind "${policy.unknownDefaultKind}" not found. Using builtin default.`, "warning");
@@ -189,8 +205,6 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 					readOnly: kind.readOnly,
 					...(kind.planGate ? { planGate: true } : {}),
 					...(kind.decisionRights?.length ? { decisionRights: kind.decisionRights } : {}),
-					layout: policy.layout,
-					...(policy.captureTerminal ? { captureTerminal: true } : {}),
 					extensionArgs: [...explicitExtensionArgs(), ...policy.launchArgs],
 				});
 				const now = Date.parse(worker.createdAt);
@@ -229,7 +243,8 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 			deps.emitText(formatWorkerList(await deps.store.list({ ...(projectRoot ? { projectRoot } : {}) }), { groupByProject: options.allProjects === true }), "list", "docket · workers");
 		},
 		async listKinds(): Promise<void> {
-			deps.emitText(formatKindList(deps.kinds.list()), "list", "docket · worker kinds");
+			const fallback = deps.kinds.defaultKind(deps.defaultKind?.()).name;
+			deps.emitText(formatKindList(deps.kinds.list(), { defaultKind: fallback }), "list", "docket · worker kinds");
 		},
 		async delete(ref: string | undefined): Promise<void> {
 			if (!ref) {

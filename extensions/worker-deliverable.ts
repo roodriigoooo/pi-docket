@@ -19,16 +19,25 @@ export type WorkerDeliverableChangeSet = {
 	hunkCount: number;
 };
 
-export type WorkerHandoffProvenance = {
+/** Provenance carried by a reviewed deliverable into a fresh worker. The
+ * worker fields remain optional so parent-authored deliverables can use the
+ * same handoff contract while old worker-only sidecars still deserialize. */
+export type DeliverableHandoffProvenance = {
 	sourceDeliverableId: string;
 	sourceVersion: number;
 	sourceRef: string;
-	sourceWorkerId: string;
-	sourceWorkerLabel: string;
+	sourceWorkerId?: string;
+	sourceWorkerLabel?: string;
+	sourceKind?: "worker" | "parent";
+	sourceSessionFile?: string;
+	sourceCwd?: string;
 	approvingDecisionId: string;
 	approvedAt: string;
 	sidecarPath: string;
 };
+
+/** Backwards-compatible name used by worker status and task sidecars. */
+export type WorkerHandoffProvenance = DeliverableHandoffProvenance;
 
 export type WorkerDeliverablePointer = {
 	id: string;
@@ -266,8 +275,11 @@ function isDeliverable(value: unknown): value is WorkerDeliverable {
 		&& Number.isSafeInteger(item.sourceHandoff.sourceVersion)
 		&& item.sourceHandoff.sourceVersion > 0
 		&& typeof item.sourceHandoff.sourceRef === "string"
-		&& typeof item.sourceHandoff.sourceWorkerId === "string"
-		&& typeof item.sourceHandoff.sourceWorkerLabel === "string"
+		&& (item.sourceHandoff.sourceWorkerId === undefined || typeof item.sourceHandoff.sourceWorkerId === "string")
+		&& (item.sourceHandoff.sourceWorkerLabel === undefined || typeof item.sourceHandoff.sourceWorkerLabel === "string")
+		&& (item.sourceHandoff.sourceKind === undefined || item.sourceHandoff.sourceKind === "worker" || item.sourceHandoff.sourceKind === "parent")
+		&& (item.sourceHandoff.sourceSessionFile === undefined || typeof item.sourceHandoff.sourceSessionFile === "string")
+		&& (item.sourceHandoff.sourceCwd === undefined || typeof item.sourceHandoff.sourceCwd === "string")
 		&& typeof item.sourceHandoff.approvingDecisionId === "string"
 		&& typeof item.sourceHandoff.approvedAt === "string"
 		&& typeof item.sourceHandoff.sidecarPath === "string"

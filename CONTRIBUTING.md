@@ -31,10 +31,11 @@ Use these terms in issues and PRs:
 Docket domain terms:
 
 - **Artifact** — structured object derived from session activity
-- **Artifact Catalog** — owns artifact extraction, identity, lookup, references, search, and bundle payloads
+- **Artifact Catalog** — owns artifact extraction, identity, lookup, references, and search
 - **Reference** — compact prompt-safe pointer to an artifact
-- **Evidence bundle** — durable artifact package saved with `/docket save`; not a Pi session continuation mechanism
-- **Bundle Lifecycle** — owns bundle creation flow (internal files still use checkpoint naming for compatibility)
+- **Deliverable** — immutable body plus outcome, evidence, refs, approval, review history, and source provenance
+- **Deliverable Store** — owns atomic durable records under `~/.pi/agent/docket/deliverables`; it never mutates a claimed version
+- **Deliverable Lifecycle** — owns approved-worker copying and explicit parent authoring; legacy bundle code is compatibility-only and cannot create or convert bundles
 - **Navigator** — interactive artifact browser
 
 ## PR expectations
