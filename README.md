@@ -25,7 +25,8 @@ Docket keeps three things separate:
 
 ## Watch it
 
-Compressed terminal recordings from the demo project.
+Compressed terminal recordings from the demo project. These predate several releases, so some
+wording and card layout has moved on — the flow they show is still how Docket works.
 
 ### Run a patcher worker and steer it
 
