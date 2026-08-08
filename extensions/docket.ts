@@ -63,7 +63,7 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
-import { broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
+import { applyBroadcastSuggestions, broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
 import { appendBulletinEntry, bulletinExistsSync, bulletinFile } from "./worker-bulletin.js";
 import { CONSULT_POLICY_OFF, consultCallSummary, consultAnswerSummary, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
 import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
@@ -3090,7 +3090,24 @@ export default function docketExtension(pi: ExtensionAPI) {
 				...(plannedPaths.length ? { plannedPaths } : {}),
 			};
 		}));
-		const recipients = scoreBroadcastRecipients({ text, source, candidates });
+		const scored = scoreBroadcastRecipients({ text, source, candidates });
+		// Companions may surface a candidate Docket's own evidence missed. They cannot select,
+		// remove, or send — a suggestion lands in `maybe`, unselected, and says where it came from.
+		const suggestions = await docketSurface.collectBroadcastSuggestions({
+			text,
+			source: source.kind === "worker"
+				? { kind: "worker", workerLabel: workerSourceLabel(source.worker), standing: source.standing }
+				: { kind: "human" },
+			candidates: scored.map((recipient) => ({
+				workerId: recipient.worker.id,
+				label: recipient.label,
+				task: recipient.task,
+				...(recipient.kind ? { kind: recipient.kind } : {}),
+				band: recipient.band,
+				reason: recipient.reason,
+			})),
+		}).catch(() => []);
+		const recipients = applyBroadcastSuggestions(scored, suggestions);
 
 		const provenance = broadcastProvenanceLine(source);
 		const choice = await showBroadcastPicker(ctx, text, recipients, provenance);

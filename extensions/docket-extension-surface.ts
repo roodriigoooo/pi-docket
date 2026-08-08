@@ -1,5 +1,6 @@
 import type { WorkerEvent } from "./worker-events.js";
 import type { WorkerKind, WorkerKindRegistry, WorkerKindRegistration } from "./worker-kinds.js";
+import type { BroadcastBand } from "./worker-broadcast.js";
 
 export type DocketExtensionSurface = {
 	registerWorkerKind(kind: WorkerKindRegistration): () => void;
@@ -7,7 +8,57 @@ export type DocketExtensionSurface = {
 	onWorkerEvent(handler: (event: { workerId: string; event: WorkerEvent }) => void): () => void;
 	/** Register the one optional operator-owned tmux companion adapter. */
 	registerTmuxAdapter(adapter: TmuxAdapterRegistration): () => void;
+	/** Observe messages moving between the parent and its workers. Metadata only, read-only. */
+	onMessage(handler: MessageObserver): () => void;
+	/** Suggest additional broadcast candidates. Suggestions are proposals, never selections. */
+	registerBroadcastAdvisor(advisor: BroadcastAdvisor): () => void;
 };
+
+/**
+ * What a companion sees when a message moves (ADR-0008).
+ *
+ * Deliberately no body. A dashboard needs to know that w1 was told something and whether it was
+ * taken; it does not need the text, and handing bodies to every subscriber would make Docket's
+ * own metadata-only discipline meaningless at the seam. A companion that genuinely needs content
+ * can read the worker directory itself and own that decision explicitly.
+ */
+export type WorkerMessageObservation = {
+	workerId: string;
+	/** `in` reaches the worker, `out` leaves it. */
+	direction: "in" | "out";
+	messageId: string;
+	kind: string;
+	from: string;
+	delivery: string;
+	transport: string;
+	replyTo?: string;
+	at: number;
+};
+
+export type MessageObserver = (observation: WorkerMessageObservation) => void;
+
+export type BroadcastAdvisorCandidate = {
+	workerId: string;
+	label: string;
+	task: string;
+	kind?: string;
+	band: BroadcastBand;
+	reason: string;
+};
+
+export type BroadcastAdvisorInput = {
+	text: string;
+	source: { kind: "human" } | { kind: "worker"; workerLabel: string; standing: string };
+	candidates: readonly BroadcastAdvisorCandidate[];
+};
+
+/** A companion's proposal. It can raise a candidate into `maybe`; it can do nothing else. */
+export type BroadcastSuggestion = { workerId: string; reason: string };
+
+export type BroadcastAdvisor = (input: BroadcastAdvisorInput) => BroadcastSuggestion[] | Promise<BroadcastSuggestion[]>;
+
+/** A companion is advisory, so it gets a short window and is dropped if it misses it. */
+export const BROADCAST_ADVISOR_TIMEOUT_MS = 250;
 
 export type TmuxWorkerWindowReady = {
 	reason: "spawn" | "respawn" | string;
@@ -43,10 +94,38 @@ type EventHandler = (event: { workerId: string; event: WorkerEvent }) => void;
 export type DocketExtensionSurfaceInternals = DocketExtensionSurface & {
 	emitWorkerEvent(workerId: string, event: WorkerEvent): void;
 	emitWorkerWindowReady(event: TmuxWorkerWindowReady): Promise<void>;
+	collectBroadcastSuggestions(input: BroadcastAdvisorInput, timeoutMs?: number): Promise<BroadcastSuggestion[]>;
 };
+
+function stringField(payload: Record<string, unknown>, key: string, fallback: string): string {
+	const value = payload[key];
+	return typeof value === "string" ? value : fallback;
+}
+
+/** Decode a `message` event into the observation shape. Returns undefined for anything else. */
+export function messageObservationFromEvent(workerId: string, event: WorkerEvent): WorkerMessageObservation | undefined {
+	if (event.kind !== "message") return undefined;
+	const payload = event.payload ?? {};
+	const messageId = typeof payload.id === "string" ? payload.id : undefined;
+	if (!messageId) return undefined;
+	const replyTo = typeof payload.replyTo === "string" ? payload.replyTo : undefined;
+	return {
+		workerId,
+		direction: payload.direction === "out" ? "out" : "in",
+		messageId,
+		kind: stringField(payload, "kind", "directive"),
+		from: stringField(payload, "from", "human"),
+		delivery: stringField(payload, "delivery", "queued"),
+		transport: stringField(payload, "transport", "inbox"),
+		...(replyTo ? { replyTo } : {}),
+		at: Number.isFinite(event.ts) ? event.ts : Date.now(),
+	};
+}
 
 export function installDocketExtensionSurface(registry: WorkerKindRegistry): DocketExtensionSurfaceInternals {
 	const handlers = new Set<EventHandler>();
+	const messageObservers = new Set<MessageObserver>();
+	const broadcastAdvisors = new Set<BroadcastAdvisor>();
 	let tmuxAdapter: TmuxAdapterRegistration | undefined;
 	const surface: DocketExtensionSurfaceInternals = {
 		registerWorkerKind(kind) {
@@ -59,6 +138,47 @@ export function installDocketExtensionSurface(registry: WorkerKindRegistry): Doc
 			handlers.add(handler);
 			return () => handlers.delete(handler);
 		},
+		onMessage(handler) {
+			messageObservers.add(handler);
+			return () => messageObservers.delete(handler);
+		},
+		registerBroadcastAdvisor(advisor) {
+			// Unlike the tmux adapter this is not exclusive: an advisor owns nothing, so several
+			// can suggest without any of them being able to conflict.
+			broadcastAdvisors.add(advisor);
+			return () => broadcastAdvisors.delete(advisor);
+		},
+		async collectBroadcastSuggestions(input, timeoutMs = BROADCAST_ADVISOR_TIMEOUT_MS) {
+			if (broadcastAdvisors.size === 0) return [];
+			const known = new Set(input.candidates.map((candidate) => candidate.workerId));
+			const results = await Promise.all([...broadcastAdvisors].map(async (advisor) => {
+				try {
+					const suggestions = await Promise.race([
+						Promise.resolve(advisor(input)),
+						new Promise<BroadcastSuggestion[]>((resolve) => {
+							const timer = setTimeout(() => resolve([]), timeoutMs);
+							timer.unref?.();
+						}),
+					]);
+					return Array.isArray(suggestions) ? suggestions : [];
+				} catch {
+					// A companion that throws is simply a companion with no opinion.
+					return [];
+				}
+			}));
+			const seen = new Set<string>();
+			const collected: BroadcastSuggestion[] = [];
+			for (const suggestion of results.flat()) {
+				// An advisor cannot invent a recipient Docket did not already enumerate.
+				if (!suggestion || typeof suggestion.workerId !== "string" || !known.has(suggestion.workerId)) continue;
+				if (seen.has(suggestion.workerId)) continue;
+				const reason = typeof suggestion.reason === "string" ? suggestion.reason.trim() : "";
+				if (!reason) continue;
+				seen.add(suggestion.workerId);
+				collected.push({ workerId: suggestion.workerId, reason });
+			}
+			return collected;
+		},
 		registerTmuxAdapter(adapter) {
 			if (tmuxAdapter) throw new Error("Docket tmux adapter already registered");
 			tmuxAdapter = adapter;
@@ -69,6 +189,13 @@ export function installDocketExtensionSurface(registry: WorkerKindRegistry): Doc
 		emitWorkerEvent(workerId, event) {
 			for (const handler of handlers) {
 				try { handler({ workerId, event }); } catch { /* never let a subscriber break docket */ }
+			}
+			// Decoded from the same emission rather than a second call site, so an observer can
+			// never see a message the event stream did not.
+			const observation = messageObservationFromEvent(workerId, event);
+			if (!observation) return;
+			for (const observer of messageObservers) {
+				try { observer(observation); } catch { /* never let a subscriber break docket */ }
 			}
 		},
 		async emitWorkerWindowReady(event) {

@@ -192,6 +192,30 @@ export function scoreBroadcastRecipients(input: BroadcastScoreInput): BroadcastR
 	return recipients.sort((a, b) => order[a.band] - order[b.band] || a.worker.index - b.worker.index);
 }
 
+/**
+ * Fold companion suggestions into the proposal (ADR-0008, P3 seam).
+ *
+ * A suggestion can only lift a candidate from `unrelated` to `maybe`. It cannot reach
+ * `affected`, because affected is preselected and Enter sends it — letting a companion put a
+ * worker there would make an extension able to cause a delivery. It cannot demote or remove
+ * either: suppressing a recipient is as consequential as adding one. The reason is attributed
+ * so the human can see the proposal did not come from Docket's own evidence.
+ */
+export function applyBroadcastSuggestions(
+	recipients: BroadcastRecipient[],
+	suggestions: readonly { workerId: string; reason: string }[],
+): BroadcastRecipient[] {
+	if (suggestions.length === 0) return recipients;
+	const byWorker = new Map(suggestions.map((suggestion) => [suggestion.workerId, suggestion.reason]));
+	const updated = recipients.map((recipient) => {
+		const reason = byWorker.get(recipient.worker.id);
+		if (!reason || recipient.band !== "unrelated") return recipient;
+		return { ...recipient, band: "maybe" as const, reason: `suggested · ${reason}`, selected: false };
+	});
+	const order: Record<BroadcastBand, number> = { affected: 0, maybe: 1, unrelated: 2 };
+	return updated.sort((a, b) => order[a.band] - order[b.band] || a.worker.index - b.worker.index);
+}
+
 export function broadcastBandCounts(recipients: BroadcastRecipient[]): Record<BroadcastBand, number> {
 	return recipients.reduce((counts, recipient) => {
 		counts[recipient.band]++;

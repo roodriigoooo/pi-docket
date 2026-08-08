@@ -140,6 +140,8 @@ declare global {
     listWorkerKinds(): WorkerKind[];
     onWorkerEvent(handler: (event: WorkerEvent) => void): () => void;
     registerTmuxAdapter(adapter: { onWorkerWindowReady(event: WorkerWindowReady): void | Promise<void> }): () => void;
+    onMessage(handler: (observation: WorkerMessageObservation) => void): () => void;
+    registerBroadcastAdvisor(advisor: (input: BroadcastAdvisorInput) => BroadcastSuggestion[] | Promise<BroadcastSuggestion[]>): () => void;
   };
 }
 ```
@@ -147,6 +149,12 @@ declare global {
 `WorkerKind` on this surface is intent-only: `name`, optional description, `readOnly`, optional plan gate/decision rights/soft limits, guardrail or system-prompt additions, and source metadata. Pre-0.8 runtime objects with execution keys are normalized into hidden compatibility metadata and produce migration diagnostics.
 
 `onWorkerEvent` fires once per event tail per dock tick. Subscriber errors are caught and dropped — a misbehaving extension cannot crash Docket.
+`onMessage` observes messages moving in either direction and carries **no body**. A dashboard needs to know that w1 was told something and whether it was taken; it does not need the text, and handing bodies to every subscriber would make Docket's own metadata-only discipline meaningless at the seam. A companion that genuinely needs content reads the worker directory itself and owns that decision explicitly. Observations are decoded from the same emission that feeds `onWorkerEvent`, so an observer can never see a message the event stream did not.
+
+`registerBroadcastAdvisor` lets a companion **propose** a recipient Docket's own evidence missed. It is the narrowest capability in the surface, and deliberately so: a suggestion can only lift a candidate from `unrelated` to `maybe`, never to `affected`, because affected is preselected and Enter sends it — a companion able to reach that band would be a companion able to cause a delivery. It cannot demote, deselect, or remove either, since suppressing a recipient is as consequential as adding one, and it cannot name a worker Docket did not already enumerate. Suggested rows render as `suggested · <reason>` so the human can see the proposal did not come from Docket's evidence. Advisors are additive rather than exclusive, get a 250 ms window, and are dropped on throw, timeout, or nonsense.
+
+The policy stays in Docket and is not delegable: the permission line between free and gated lanes, the attribution on every message, and the human keypress before any broadcast are not extension points.
+
 `registerTmuxAdapter` is exclusive. Its callback is dispatched after spawn/respawn window and pane IDs are persisted and receives stable worker metadata; it is not awaited, and adapter failures are warned without delaying or rolling back a successful launch.
 
 ## Key design choices
@@ -174,6 +182,8 @@ declare global {
 - **Recipients are proposed, never requested.** A broadcast scores every eligible worker against evidence Docket already holds — paths the message names, paths the worker touched, files an approved plan declared, identifiers, task-token overlap — and sorts them into affected / maybe / unrelated with the reason shown beside each row. Path matching compares basenames as well as full paths, because a worker in an isolated worktree records paths relative to its own workspace. Every row carries task text: a human returning to a session does not remember which index holds which job.
 - **Uncertainty degrades to the bulletin.** When nothing scores as affected, the primary action becomes posting to the standing note rather than presenting an empty grid. The bulletin lives under the agent directory, not the repo, so every worktree reads the same current file, and `task.md` points at it by absolute path only once one exists.
 - **A broadcast is information, not direction.** It is delivered `nextTurn` through `pi.sendMessage`, so it enters a worker's context without triggering a turn — a worker mid-edit is not interrupted and one blocked on a question is not woken without its answer. `workerMessageRedirects` keeps it from clearing that question, and pending broadcasts coalesce into one delivery. Standing (`promoted` / `in worktree` / `unreviewed`) rides inline with the claim so a receiving worker can weigh it.
+- **The messaging seam is observation plus suggestion, never transport.** Companions can watch messages (metadata only) and propose broadcast candidates; they cannot send, redirect, suppress, or select. Transport and policy stay in Docket for the same reason the tmux boundary does (ADR-0006): a companion that can redirect delivery is a companion that can invalidate every guarantee above it.
+- **The transport stays in Docket for now.** A generic pi session-to-session mailbox would carry only the file plumbing — the cheap part. What makes this channel work is Docket's own vocabulary: `deliverAs` timing chosen per message kind, the attribution frame, question binding through `replyTo`, and delivery states that only the observing side writes. Upstreaming the plumbing without that would leave callers to reinvent the semantics. Revisit if a second extension needs session-to-session delivery; until then the duplication does not exist.
 - **A message outlives the worker it was addressed to.** The inbox is a directory in the worker dir, so a message queued for a crashed worker is delivered after respawn instead of being lost with the pane.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.
 - **Deliverables are claimed immutably.** Worker saves require exact terminal approval for the exact generation. Parent saves are explicit and synthetic-approved. Per-deliverable locks plus atomic claims make repeated and concurrent saves safe without a database.
