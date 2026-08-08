@@ -122,6 +122,9 @@ test("Docket grammar parses worker tell, verdict, and protocol fallbacks", () =>
 	// Flags stop being flags once the human's message has started.
 	assert.deepEqual(parseDocketCommand("tell w1 rename --after to --later"), { ok: true, intent: { kind: "tell", worker: "w1", text: "rename --after to --later" } });
 	assert.equal(parseDocketCommand("tell w1 --q").ok, false);
+	assert.deepEqual(parseDocketCommand("broadcast auth middleware takes a context arg"), { ok: true, intent: { kind: "broadcast", text: "auth middleware takes a context arg" } });
+	assert.deepEqual(parseDocketCommand("broadcast --from n1"), { ok: true, intent: { kind: "broadcast", noticeRef: "n1" } });
+	assert.equal(parseDocketCommand("broadcast").ok, false);
 	assert.equal(parseDocketCommand("ask w1 nope").ok, false);
 	assert.deepEqual(parseDocketCommand("verdict"), { ok: true, intent: { kind: "verdict" } });
 	assert.deepEqual(parseDocketCommand("verdict w1"), { ok: true, intent: { kind: "verdict", worker: "w1" } });

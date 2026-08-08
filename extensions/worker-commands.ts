@@ -41,6 +41,8 @@ type WorkerCommandsDeps = {
 	defaultKind?(): string | undefined;
 	/** Default parent-seed policy when neither spawn flags nor legacy kind metadata set one. */
 	parentSeedPolicy?(): "full" | "none" | undefined;
+	/** Absolute bulletin path, when this project has standing notes worth pointing a worker at. */
+	bulletinPath?(): string | undefined;
 	hasUI: boolean;
 	confirmSpawn(title: string, detail: string): Promise<boolean>;
 	notify(text: string, level: NotifyLevel): void;
@@ -218,9 +220,11 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 
 				const kind = policy.kind;
 				const git = readGitSnapshot(deps.cwd);
+				const bulletinPath = deps.bulletinPath?.();
 				const worker = await deps.store.spawn({
 					task,
 					cwd: deps.cwd,
+					...(bulletinPath ? { bulletinPath } : {}),
 					...(policy.seedSource ? { parentSession: policy.seedSource } : {}),
 					worktree: policy.useWorktree,
 					...(policy.freshLaunch ? { fresh: true } : {}),

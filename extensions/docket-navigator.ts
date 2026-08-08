@@ -14,6 +14,7 @@ export type ReviewActionId =
 	| "openFile"
 	| "promoteWorker"
 	| "tellWorker"
+	| "broadcastNotice"
 	| "openVerdict"
 	| "attachReference"
 	| "injectFull"
@@ -258,6 +259,7 @@ export function reviewCategoryLabel(category: ReviewCategory | undefined): strin
 }
 
 function primaryAction(artifact: Artifact): ReviewActionId {
+	if (artifact.meta?.workerNotice === true) return "broadcastNotice";
 	const status = artifactWorkerStatus(artifact);
 	if (status === "needs_input" || status === "consulting" || status === "failed") return "openVerdict";
 	if (isWorkerChangeSet(artifact)) return "openVerdict";
@@ -326,6 +328,8 @@ function reviewActions(artifact: Artifact): ReviewActionId[] {
 	const actions: ReviewActionId[] = ["inspect"];
 	const status = artifactWorkerStatus(artifact);
 	if (status === "needs_input" || status === "consulting" || status === "failed" || isWorkerChangeSet(artifact)) actions.push("openVerdict");
+	// A notice is the raw material for a broadcast: the human decides who else needs it.
+	if (artifact.meta?.workerNotice === true) actions.push("broadcastNotice");
 	if (isWorkerChangeSet(artifact)) actions.push("promoteWorker");
 	if (artifact.kind === "file") actions.push("openFile");
 	if (artifactWorkerRef(artifact)) actions.push("tellWorker");

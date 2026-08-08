@@ -63,8 +63,10 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
+import { appendBulletinEntry, bulletinExistsSync, bulletinFile } from "./worker-bulletin.js";
 import { CONSULT_POLICY_OFF, consultCallSummary, consultAnswerSummary, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
-import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
+import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -295,6 +297,7 @@ function reviewActionLabel(action: ReviewActionId, item: ReviewItem): string {
 	const artifact = item.artifact;
 	if (action === "openVerdict") return "Verdict";
 	if (action === "tellWorker") return "Tell worker";
+	if (action === "broadcastNotice") return "Broadcast";
 	if (action === "promoteWorker") return "Promote";
 	if (action === "openFile") return "Open file";
 	if (action === "attachReference") return "Attach";
@@ -575,6 +578,7 @@ export class DocketView implements Component {
 		else if (action.id === "openFile") this.done({ action: "openFile", artifact });
 		else if (action.id === "promoteWorker") this.done({ action: "promoteWorker", artifact });
 		else if (action.id === "tellWorker") this.done({ action: "tellWorker", artifact });
+		else if (action.id === "broadcastNotice") this.done({ action: "broadcastNotice", artifact });
 		else if (action.id === "save") this.done({ action: "save", artifact });
 		else if (action.id === "useDeliverable") this.done({ action: "useDeliverable", artifact });
 		else if (action.id === "attachReference") this.done({ action: "reference", artifact });
@@ -1200,6 +1204,18 @@ export class DocketVerdictView implements Component {
  * the byte-exact sidecar written at launch, so this reads from disk and never enters model
  * context. Any failure — no handoff, no diff, unparseable plan — simply yields no coverage.
  */
+/** Files the approved plan a worker is executing named. Empty for workers without one. */
+async function plannedPathsForWorker(worker: WorkerStatus): Promise<string[]> {
+	const sidecar = worker.sourceHandoff?.sidecarPath;
+	if (!sidecar) return [];
+	try {
+		const outline = parsePlan(await fs.readFile(sidecar, "utf8"));
+		return outline ? [...new Set(outline.steps.flatMap((step) => step.files))] : [];
+	} catch {
+		return [];
+	}
+}
+
 async function readPlanCoverage(deliverable: WorkerDeliverable | undefined, changeSet: Artifact | undefined): Promise<PlanCoverage | undefined> {
 	const handoff = deliverable?.sourceHandoff;
 	if (!handoff?.sidecarPath) return undefined;
@@ -1950,6 +1966,147 @@ async function showParallelWorkDashboard(ctx: ExtensionCommandContext, workers: 
 	return ctx.ui.custom((tui, theme, _kb, done) => new DocketParallelWorkView(tui, theme, workers, artifactsByWorker, done, groupByProject, explicitlyLoadedWorkerIds), {
 		overlay: true,
 		overlayOptions: { anchor: "center", width: "88%", minWidth: 84, maxHeight: "90%", margin: 1 },
+	});
+}
+
+export type BroadcastPickerResult =
+	| { action: "send"; recipients: BroadcastRecipient[] }
+	| { action: "bulletin" }
+	| { action: "cancel" };
+
+/**
+ * The confirmation surface for a broadcast.
+ *
+ * Every row carries the worker's task, never its index alone; Enter sends to what Docket
+ * proposed; and when nothing scored as affected the primary action becomes the bulletin instead
+ * of an empty grid, because asking the human to guess is not control.
+ */
+class DocketBroadcastPicker implements Component {
+	private container: Container | Box = new Container();
+	private index = 0;
+	private showUnrelated = false;
+	private cachedWidth?: number;
+	private cachedLines?: string[];
+
+	constructor(
+		private tui: TUI,
+		private theme: any,
+		private text: string,
+		private recipients: BroadcastRecipient[],
+		private provenance: string | undefined,
+		private done: (result: BroadcastPickerResult) => void,
+	) {}
+
+	private visible(): BroadcastRecipient[] {
+		return this.showUnrelated ? this.recipients : this.recipients.filter((recipient) => recipient.band !== "unrelated");
+	}
+
+	private bulletinFirst(): boolean {
+		return shouldProposeBulletin(this.recipients);
+	}
+
+	handleInput(data: string): void {
+		const rows = this.visible();
+		if (data === "" || data === "q") {
+			this.done({ action: "cancel" });
+			return;
+		}
+		if (data === "\r" || data === "\n") {
+			if (this.bulletinFirst()) {
+				this.done({ action: "bulletin" });
+				return;
+			}
+			const selected = this.recipients.filter((recipient) => recipient.selected);
+			this.done(selected.length > 0 ? { action: "send", recipients: selected } : { action: "bulletin" });
+			return;
+		}
+		if (data === "b") {
+			this.done({ action: "bulletin" });
+			return;
+		}
+		if (data === "a") {
+			for (const recipient of this.recipients) recipient.selected = true;
+		} else if (data === " ") {
+			const row = rows[this.index];
+			if (row) row.selected = !row.selected;
+		} else if (data === "\t") {
+			this.showUnrelated = !this.showUnrelated;
+			this.index = 0;
+		} else if (data === "[B" || data === "j") {
+			this.index = Math.min(this.index + 1, Math.max(0, rows.length - 1));
+		} else if (data === "[A" || data === "k") {
+			this.index = Math.max(0, this.index - 1);
+		}
+		this.invalidate();
+		this.tui.requestRender();
+	}
+
+	invalidate(): void {
+		this.container.invalidate();
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
+		this.container = new Box(2, 1, docketCardBg(this.theme));
+		const innerWidth = Math.max(20, width - 4);
+		const accent = (s: string) => this.theme.fg("accent", s);
+		const dim = (s: string) => this.theme.fg("dim", s);
+		const muted = (s: string) => this.theme.fg("muted", s);
+		const text = (s: string) => this.theme.fg("text", s);
+		const outerBorder = (s: string) => this.theme.fg("borderAccent", s);
+		const dividerBorder = (s: string) => this.theme.fg("borderMuted", s);
+
+		this.container.addChild(new Text(fitBorder(` ${accent(this.theme.bold("docket · broadcast"))} `, "", innerWidth, outerBorder, TOP_CORNERS), 0, 0));
+		for (const line of wrapPlainText(this.text, innerWidth - 4, 0).slice(0, 4)) {
+			this.container.addChild(new Text(truncateToWidth(`  ${text(line)}`, innerWidth - 2), 1, 0));
+		}
+		if (this.provenance) this.container.addChild(new Text(truncateToWidth(`  ${muted(this.provenance)}`, innerWidth - 2), 1, 0));
+		this.container.addChild(new DynamicBorder(dividerBorder));
+
+		const rows = this.visible();
+		if (rows.length === 0) {
+			this.container.addChild(new Text(muted("  no running workers to tell"), 1, 0));
+		}
+		let band: BroadcastBand | undefined;
+		for (let i = 0; i < rows.length; i++) {
+			const recipient = rows[i]!;
+			if (recipient.band !== band) {
+				band = recipient.band;
+				this.container.addChild(new Text(dim(`  ${band}`), 1, 0));
+			}
+			const selected = i === this.index;
+			const marker = selected ? accent("▸") : " ";
+			const box = recipient.selected ? accent("▪") : dim("·");
+			const label = (selected ? accent(this.theme.bold(recipient.label)) : muted(recipient.label)).padEnd(selected ? 12 : 10);
+			const kind = recipient.kind ? muted(` ${recipient.kind.padEnd(11)}`) : "".padEnd(12);
+			const task = selected ? text(recipient.task) : muted(recipient.task);
+			const line = `${marker} ${box} ${label}${kind} ${task}   ${dim(recipient.reason)}`;
+			this.container.addChild(new Text(truncateToWidth(line, innerWidth - 2), 1, 0));
+		}
+
+		const hidden = this.recipients.filter((recipient) => recipient.band === "unrelated").length;
+		if (hidden > 0 && !this.showUnrelated) {
+			this.container.addChild(new Text(dim(`  +${hidden} unrelated                                    tab to show`), 1, 0));
+		}
+
+		this.container.addChild(new DynamicBorder(dividerBorder));
+		const primary = this.bulletinFirst()
+			? "⏎ post to bulletin · every worker reads it at its next gate"
+			: "⏎ send to selected";
+		this.container.addChild(new Text(dim(`  ${primary} · space toggle · a all · b bulletin · esc keep local`), 1, 0));
+		this.container.addChild(new Text(fitBorder("", "", innerWidth, outerBorder, BOTTOM_CORNERS), 0, 0));
+		this.cachedLines = this.container.render(width);
+		this.cachedWidth = width;
+		return this.cachedLines;
+	}
+}
+
+async function showBroadcastPicker(ctx: ExtensionCommandContext, text: string, recipients: BroadcastRecipient[], provenance?: string): Promise<BroadcastPickerResult> {
+	return ctx.ui.custom<BroadcastPickerResult>((tui, theme, _kb, done) => new DocketBroadcastPicker(tui, theme, text, recipients, provenance, done), {
+		overlay: true,
+		overlayOptions: { anchor: "center", width: "88%", minWidth: 78, maxHeight: "90%", margin: 1 },
 	});
 }
 
@@ -2876,6 +3033,137 @@ export default function docketExtension(pi: ExtensionAPI) {
 		}
 	};
 
+	const projectBulletinFile = (cwd: string): string => bulletinFile(createWorkerStore().root().replace(/[\\/]workers$/, ""), projectKey(cwd));
+
+	/** Paths a worker has touched, read from the artifacts the dock already keeps. */
+	const workerTouchedPaths = (artifacts: Artifact[]): string[] => artifacts
+		.filter((artifact) => artifact.kind === "file")
+		.map((artifact) => artifact.title)
+		.filter((title): title is string => typeof title === "string" && title.length > 0);
+
+	const workerKeywords = (artifacts: Artifact[]): string[] => artifacts.slice(-40).map((artifact) => artifact.title).filter(Boolean);
+
+	/**
+	 * One broadcast, end to end: score, confirm, deliver.
+	 *
+	 * Nothing leaves this function without a human keypress, and nothing reaches a worker
+	 * without passing through here — the parent stays the only router, which is what keeps the
+	 * decision ledger linear and the topology flat (ADR-0004, ADR-0008).
+	 */
+	const runBroadcast = async (ctx: ExtensionCommandContext, input: { text?: string; noticeRef?: string }): Promise<boolean> => {
+		if (!ctx.hasUI) {
+			notifyDocket(pi, ctx, "Docket broadcast needs an interactive session.", "error");
+			return false;
+		}
+		const store = createWorkerStore();
+		const { workers, artifactsByWorker } = await readWorkersWithArtifacts(store, sessionProjectKey);
+
+		let text = input.text?.trim();
+		let source: BroadcastSource = { kind: "human" };
+		if (input.noticeRef) {
+			const found = await findNoticeByRef(workers, input.noticeRef);
+			if (!found) {
+				notifyDocket(pi, ctx, `Docket: no notice ${input.noticeRef}`, "error");
+				return false;
+			}
+			text = text || found.notice.body;
+			source = {
+				kind: "worker",
+				worker: found.worker,
+				touchedPaths: workerTouchedPaths(artifactsByWorker.get(found.worker.id) ?? []),
+				...(found.notice.to?.length ? { to: found.notice.to } : {}),
+				standing: await workerClaimStanding(found.worker),
+			};
+		}
+		if (!text) {
+			text = (await ctx.ui.input?.("Broadcast", "what the affected workers need to know"))?.trim();
+			if (!text) return false;
+		}
+
+		const candidates = await Promise.all(workers.map(async (worker) => {
+			const artifacts = artifactsByWorker.get(worker.id) ?? [];
+			const plannedPaths = await plannedPathsForWorker(worker);
+			return {
+				worker,
+				touchedPaths: workerTouchedPaths(artifacts),
+				keywords: workerKeywords(artifacts),
+				...(plannedPaths.length ? { plannedPaths } : {}),
+			};
+		}));
+		const recipients = scoreBroadcastRecipients({ text, source, candidates });
+
+		const provenance = broadcastProvenanceLine(source);
+		const choice = await showBroadcastPicker(ctx, text, recipients, provenance);
+		if (choice.action === "cancel") return false;
+
+		if (choice.action === "bulletin") {
+			await appendBulletinEntry(projectBulletinFile(ctx.cwd), {
+				at: new Date().toISOString(),
+				from: source.kind === "worker" ? workerSourceLabel(source.worker) : "you",
+				text: formatBroadcastBody(text, source),
+			});
+			announceAction(pi, ctx, "posted to bulletin", `${text}\n\nevery worker reads it at its next gate`, "success");
+			return true;
+		}
+
+		const body = formatBroadcastBody(text, source);
+		const delivered: string[] = [];
+		for (const recipient of choice.recipients) {
+			const result = await store.sendMessage(recipient.worker.id, {
+				body,
+				kind: "broadcast",
+				from: source.kind === "worker" ? "worker" : "human",
+				...(source.kind === "worker" ? { fromWorker: workerSourceLabel(source.worker) } : {}),
+			});
+			if (result.ok) delivered.push(recipient.label);
+		}
+		if (delivered.length === 0) {
+			notifyDocket(pi, ctx, "Docket: broadcast reached no workers.", "error");
+			return false;
+		}
+		await createDecisionLog().recordVerdict({
+			workerId: source.kind === "worker" ? source.worker.id : "parent",
+			workerLabel: source.kind === "worker" ? workerSourceLabel(source.worker) : "parent",
+			state: "broadcast",
+			verb: "send",
+			option: broadcastSummary(choice.recipients, text),
+			evidenceRefs: [],
+		});
+		announceAction(
+			pi,
+			ctx,
+			`broadcast → ${delivered.join(", ")}`,
+			[text, provenance, "", "queued · each worker reads it without being interrupted"].filter((line): line is string => line !== undefined).join("\n"),
+			"success",
+		);
+		await refreshWorkerDockWidget();
+		return true;
+	};
+
+	const findNoticeByRef = async (workers: WorkerStatus[], ref: string): Promise<{ worker: WorkerStatus; notice: WorkerMessage } | undefined> => {
+		const store = createWorkerStore();
+		const wanted = ref.replace(/^.*?notice\./, "");
+		for (const worker of workers) {
+			const notices = await store.listNotices(worker.id).catch(() => []);
+			const notice = notices.find((entry) => entry.id === wanted || entry.id.endsWith(wanted));
+			if (notice) return { worker, notice };
+		}
+		return undefined;
+	};
+
+	/**
+	 * How much a worker's claim is worth right now. Content is never restricted, but a receiving
+	 * worker has to be able to tell a promoted change from one that exists only in a worktree.
+	 */
+	const workerClaimStanding = async (worker: WorkerStatus): Promise<BroadcastStanding> => {
+		if (!worker.deliverable) return "unreviewed";
+		try {
+			return isDeliverableApproved(await createDecisionLog().read(), worker.deliverable) ? "promoted" : "worktree";
+		} catch {
+			return "unreviewed";
+		}
+	};
+
 	const consultTargets = async (ref: string): Promise<{ worker: WorkerStatus; question: WorkerQuestion } | undefined> => {
 		const worker = await createWorkerStore().find(ref);
 		if (!worker) return undefined;
@@ -3038,19 +3326,47 @@ export default function docketExtension(pi: ExtensionAPI) {
 		try {
 			const store = createWorkerStore();
 			const claimed = await claimPendingWorkerMessages(store.root(), workerId);
+			// Broadcasts are batched into one delivery so six pending notices arrive as one
+			// block instead of six separate interruptions to read.
+			const quiet: WorkerMessage[] = [];
 			for (const message of claimed) {
 				appendWorkerEventSync(store.root(), workerId, {
 					kind: "message",
 					payload: { direction: "in", id: message.id, kind: message.kind, from: message.from, delivery: "delivered", transport: "inbox", ...(message.replyTo ? { replyTo: message.replyTo } : {}) },
 				});
-				await store.updateStatus(workerId, messageDeliveredTransition({ ...(message.replyTo ? { replyTo: message.replyTo } : {}) }));
+				await store.updateStatus(workerId, messageDeliveredTransition({
+					...(message.replyTo ? { replyTo: message.replyTo } : {}),
+					redirects: workerMessageRedirects(message),
+				}));
 				deliveredUnreadMessageIds.push(message.id);
+				if (message.deliverAs === "nextTurn") {
+					quiet.push(message);
+					continue;
+				}
 				resetWorkerNudges();
 				try {
 					pi.sendUserMessage(formatWorkerMessageForSession(message), { deliverAs: message.deliverAs });
 				} catch {
 					// The agent may have settled between claim and send; the body is already
 					// recorded as delivered, and the next turn picks it up from the transcript.
+				}
+			}
+			if (quiet.length > 0) {
+				// sendMessage with nextTurn enters context without triggering a turn: a worker
+				// mid-edit is not interrupted, and one blocked on a question is not woken into
+				// working without its answer.
+				try {
+					pi.sendMessage(
+						{
+							customType: "docket",
+							content: quiet.map((message) => formatWorkerMessageForSession(message)).join("\n\n"),
+							display: true,
+							details: { kind: "notice", heading: "docket · broadcast", subject: quiet.length === 1 ? "message from the parent" : `${quiet.length} messages from the parent` } satisfies DocketMessageDetails,
+						},
+						{ deliverAs: "nextTurn" },
+					);
+				} catch {
+					// same best-effort contract as the steering path
 				}
 			}
 		} catch {
@@ -3652,6 +3968,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 				maxActive: () => maxActive,
 				defaultKind: () => docketConfig?.worker?.defaultKind,
 				parentSeedPolicy: () => docketConfig?.worker?.parentSeedPolicy,
+				// Only point a worker at the bulletin once the project actually has one, so a
+				// fresh project's task.md does not carry a line about an empty file.
+				bulletinPath: () => {
+					const file = projectBulletinFile(ctx.cwd);
+					return bulletinExistsSync(file) ? file : undefined;
+				},
 				hasUI: ctx.hasUI,
 				confirmSpawn: (title, detail) => ctx.hasUI ? ctx.ui.confirm(title, detail) : Promise.resolve(true),
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
@@ -3789,6 +4111,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					notify: (text, level) => notifyDocket(pi, ctx, text, level),
 				}, worker, changeSet, options),
 				applyWorkerState: async (state, text) => { await applyWorkerState(ctx, state, text); },
+				broadcast: (input) => runBroadcast(ctx, input),
 				catalog: async () => {
 					const config = await loadConfig(ctx.cwd);
 					return createArtifactCatalog(ctx, config, loadedArtifacts.carryoverArtifacts());

@@ -18,6 +18,7 @@ export type DocketIntent =
 	| { kind: "workers"; allProjects?: boolean }
 	| { kind: "verdict"; worker?: string }
 	| { kind: "tell"; worker: string; text?: string; deliverAs?: "steer" | "followUp"; replyTo?: string }
+	| { kind: "broadcast"; text?: string; noticeRef?: string }
 	| { kind: "attach"; worker?: string }
 	| { kind: "worker-state"; state: "needs_input" | "ready" | "failed"; text?: string }
 	| { kind: "answers"; query?: string }
@@ -28,7 +29,7 @@ export type ParseResult =
 	| { ok: true; intent: DocketIntent }
 	| { ok: false; message: string; usage: string };
 
-export const DOCKET_COMMANDS = ["answers", "attach", "clear", "copy", "decisions", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
+export const DOCKET_COMMANDS = ["answers", "attach", "broadcast", "clear", "copy", "decisions", "delete", "done", "fail", "help", "inject-full", "kinds", "list", "load", "log", "ref", "respawn", "save", "search", "spawn", "tell", "unload", "verdict", "wait", "workers"] as const;
 export const DOCKET_SPAWN_FLAGS = ["--as", "--model", "--thinking", "--seed", "--fresh", "--worktree", "--"] as const;
 
 const WORKER_PREFIX = "w:";
@@ -53,6 +54,7 @@ export function docketUsage(advanced = false): string {
 		"  e.g. /docket spawn --as scout map auth call sites",
 		"  e.g. /docket spawn --model anthropic/claude-sonnet-4-6 --thinking high audit auth",
 		"/docket tell w<N> [text]        reply to a worker (--after to wait for its current turn)",
+		"/docket broadcast <text>        tell the workers it affects · Docket proposes who",
 		"/docket save [--from ref|w<N>] save an immutable deliverable",
 		"/docket load [ref|last|w<N>]     mount deliverable/legacy bundle without model tokens",
 		"",
@@ -370,6 +372,25 @@ export function parseDocketCommand(args: string): ParseResult {
 				...(replyTo ? { replyTo } : {}),
 			},
 		};
+	}
+	if (command === "broadcast") {
+		let noticeRef: string | undefined;
+		const positional: string[] = [];
+		let bodyStarted = false;
+		for (let index = 0; index < rest.length; index++) {
+			const token = rest[index]!;
+			if (!bodyStarted && token === "--from") {
+				const value = rest[++index];
+				if (!value) return parseError("Usage: /docket broadcast [--from <notice-ref>] [text]");
+				noticeRef = value;
+				continue;
+			}
+			positional.push(token);
+			bodyStarted = true;
+		}
+		const text = positional.join(" ").trim();
+		if (!text && !noticeRef) return parseError("Usage: /docket broadcast [--from <notice-ref>] <text>");
+		return { ok: true, intent: { kind: "broadcast", ...(text ? { text } : {}), ...(noticeRef ? { noticeRef } : {}) } };
 	}
 	if (command === "attach") {
 		if (rest.length === 0) return { ok: true, intent: { kind: "attach" } };

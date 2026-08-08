@@ -46,6 +46,18 @@ _Avoid_: timeout, failure, fallback.
 Something a Worker shares with the parent without blocking, raised with `docket_note`. It is a Message in the worker's outbox and a review item in the parent, never a session message — a custom message participates in model context, and a notice is worker-authored content the human did not ask for. It may name suggested recipients; only the human sends it anywhere.
 _Avoid_: log line, update, broadcast.
 
+**Broadcast**:
+One Message the human sends to several Workers at once, whether they wrote it or a Worker's Notice prompted it. Recipients are proposed from evidence Docket already holds and confirmed by a keypress; the message arrives without interrupting and never redirects the worker it reaches. There is no second concept for forwarding.
+_Avoid_: relay, forward, fan-out, gossip.
+
+**Bulletin**:
+The standing project note every Worker re-reads before its first edit and at each plan gate. It lives outside the working copy, so workers in isolated worktrees all read the same current file. It is what Docket proposes when it cannot tell who is affected.
+_Avoid_: broadcast log, shared memory, notes file.
+
+**Standing**:
+What a forwarded Worker claim is worth right now — `approved · promoted`, `in worktree, not promoted`, or `notice, unreviewed` — attached automatically to a Broadcast. Content is never restricted; provenance is what makes it safe to carry.
+_Avoid_: confidence, trust level, status.
+
 **Worker Kind**:
 Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not choose model, thinking, context, workspace, or tmux layout.
 _Avoid_: execution preset, model profile, agent class.
@@ -176,6 +188,8 @@ _Avoid_: continue, resume, restore.
 - **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
 - A **Consult** is answerable by the parent agent only while the human has enabled it; otherwise it is an ordinary Question. Either way the worker is told who answered.
 - A **Notice** never changes a Worker's state and never enters parent model context.
+- A **Broadcast** is proposed by Docket, confirmed by the human, and delivered without interrupting. It carries **Standing** and never answers a question a Worker is blocked on.
+- Every Message edge is Worker ↔ parent. A Worker may name intended recipients on a Notice; only the human sends it.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
 - **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
 

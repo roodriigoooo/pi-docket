@@ -31,17 +31,21 @@ const MESSAGE_FILE_PREFIX = "msg-";
 const MESSAGE_FILE_SUFFIX = ".json";
 
 /**
- * `directive` is an unprompted instruction, `answer` resolves a specific worker question, and
- * `notice` is a worker sharing something without blocking on it.
+ * `directive` is an unprompted instruction, `answer` resolves a specific worker question,
+ * `notice` is a worker sharing something without blocking on it, and `broadcast` is one message
+ * the human sent to several workers at once.
  */
-export type WorkerMessageKind = "directive" | "answer" | "notice";
+export type WorkerMessageKind = "directive" | "answer" | "notice" | "broadcast";
 
 /**
  * Where the message lands in the worker's agent loop. Pi owns this timing, which is the
  * reason the mailbox exists: keystrokes raced the worker's editor state, `deliverAs` does not.
- * P2 adds `nextTurn` for broadcasts, which must not interrupt at all.
+ *
+ * `nextTurn` is what makes a broadcast safe to fan out: it enters the worker's context without
+ * triggering a turn, so a worker mid-edit is not interrupted and a worker blocked on a question
+ * is not woken into working without its answer.
  */
-export type WorkerMessageDeliverAs = "steer" | "followUp";
+export type WorkerMessageDeliverAs = "steer" | "followUp" | "nextTurn";
 
 /** Author, and therefore how much authority the body carries. Never inferred, never omitted. */
 export type WorkerMessageAuthor = "human" | "parent-agent" | "worker";
@@ -121,7 +125,7 @@ export function buildWorkerMessage(input: WorkerMessageInput, options: { now?: n
 		body,
 		...(input.replyTo ? { replyTo: input.replyTo } : {}),
 		...(input.replyToText ? { replyToText: input.replyToText } : {}),
-		deliverAs: input.deliverAs ?? "steer",
+		deliverAs: input.deliverAs ?? (input.kind === "broadcast" ? "nextTurn" : "steer"),
 		...(input.to?.length ? { to: input.to } : {}),
 		...(input.fromWorker ? { fromWorker: input.fromWorker } : {}),
 		createdAt: new Date(now).toISOString(),
@@ -146,11 +150,11 @@ export function parseWorkerMessage(raw: string): WorkerMessage | undefined {
 	return {
 		id,
 		body,
-		kind: record.kind === "answer" ? "answer" : record.kind === "notice" ? "notice" : "directive",
+		kind: record.kind === "answer" || record.kind === "notice" || record.kind === "broadcast" ? record.kind : "directive",
 		from: record.from === "parent-agent" ? "parent-agent" : record.from === "worker" ? "worker" : "human",
 		...(typeof record.replyTo === "string" ? { replyTo: record.replyTo } : {}),
 		...(typeof record.replyToText === "string" ? { replyToText: record.replyToText } : {}),
-		deliverAs: record.deliverAs === "followUp" ? "followUp" : "steer",
+		deliverAs: record.deliverAs === "followUp" || record.deliverAs === "nextTurn" ? record.deliverAs : "steer",
 		createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
 		delivery: delivery === "delivered" || delivery === "read" || delivery === "undeliverable" ? delivery : "queued",
 		...(Array.isArray(record.to) ? { to: record.to.filter((entry): entry is string => typeof entry === "string") } : {}),
@@ -183,6 +187,14 @@ export function workerMessageAuthorLabel(from: WorkerMessageAuthor, fromWorker?:
  * that mistakes a parent-agent guess for a human decision will build on it with authority the
  * decision never had.
  */
+/**
+ * A broadcast never redirects the worker it reaches. It is information, not an instruction, and
+ * a worker blocked on a question must still be blocked on that question afterwards.
+ */
+export function workerMessageRedirects(message: Pick<WorkerMessage, "kind">): boolean {
+	return message.kind === "directive" || message.kind === "answer";
+}
+
 export function formatWorkerMessageForSession(message: WorkerMessage, options: { maxQuestion?: number } = {}): string {
 	const maxQuestion = options.maxQuestion ?? 90;
 	const question = message.replyToText?.replace(/\s+/g, " ").trim();

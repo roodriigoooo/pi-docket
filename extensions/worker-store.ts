@@ -117,6 +117,8 @@ export type SpawnInput = {
 	/** Discharge this worker's plan gate at launch because the human approved the exact
 	 * plan in `sourceDeliverable` and started this worker to execute it. Ignored without one. */
 	planAuthorized?: boolean;
+	/** Absolute path to the project bulletin, recorded in `task.md` when one exists. */
+	bulletinPath?: string;
 };
 
 function workersRoot(): string {
@@ -679,6 +681,7 @@ export function createWorkerStore(): WorkerStore {
 				...(input.decisionRights?.length ? { decisionRights: input.decisionRights } : {}),
 				...(sourceHandoff ? { sourceHandoff } : {}),
 				...(sourceHandoff && input.planAuthorized ? { planAuthorized: true } : {}),
+				...(input.bulletinPath ? { bulletinPath: input.bulletinPath } : {}),
 			}), "utf8");
 
 			const initialPrompt = buildWorkerInitialPrompt({ index, id, dir, worktreePath: worktree?.path, kind: input.kind });

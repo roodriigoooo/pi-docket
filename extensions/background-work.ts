@@ -65,6 +65,9 @@ export type WorkerTaskDocumentInput = {
 	/** Human approved this exact plan and started this worker to execute it, so the gate
 	 * is discharged at launch instead of re-asked. Only meaningful with `sourceHandoff`. */
 	planAuthorized?: boolean;
+	/** Absolute path to the project bulletin, when one exists. Absolute because a worker in an
+	 * isolated worktree would otherwise read a stale copy of the file it most needs current. */
+	bulletinPath?: string;
 };
 
 export type WorkerWorkspaceKind = "git" | "copy";
@@ -317,6 +320,7 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		`- Kind: ${kind}`,
 		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
+		input.bulletinPath ? `- Project bulletin: ${input.bulletinPath}. Read it before your first edit and whenever a plan gate opens; it carries decisions made after you started.` : undefined,
 		input.sourceHandoff ? "" : undefined,
 		input.sourceHandoff ? (planDischarged ? "## Approved plan" : "## Reviewed source deliverable") : undefined,
 		planDischarged ? "- Read the sidecar before your first move; it is the specification for this task." : undefined,

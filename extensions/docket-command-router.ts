@@ -18,7 +18,7 @@ import { describeUnsupportedDeliverable, type DeliverableStore, type StoredDeliv
 import { findVerdictWorker, runWorkerVerdict, runWorkerVerdictQueue, type DocketVerdictAction } from "./worker-verdict.js";
 import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./worker-change-review.js";
 
-export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "search" | "tellWorker" | "verdict" | "useDeliverable"; artifact?: Artifact } | { action: "save"; artifact?: Artifact };
+export type DocketBrowserAction = { action: "inspect" | "openFile" | "promoteWorker" | "reference" | "injectFull" | "copy" | "search" | "tellWorker" | "broadcastNotice" | "verdict" | "useDeliverable"; artifact?: Artifact } | { action: "save"; artifact?: Artifact };
 
 export type { DocketVerdictAction } from "./worker-verdict.js";
 
@@ -72,6 +72,8 @@ export type DocketCommandRouterDeps = {
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
+	/** Propose recipients, confirm with the human, then deliver. Returns false when nothing was sent. */
+	broadcast(input: { text?: string; noticeRef?: string }): Promise<boolean>;
 	catalog(): Promise<ArtifactCatalog>;
 	readWorkersWithArtifacts(options?: { allProjects?: boolean }): Promise<{ workers: WorkerStatus[]; artifactsByWorker: Map<string, Artifact[]> }>;
 	showParallelWorkDashboard(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, options?: { groupByProject?: boolean }): Promise<ParallelWorkAction>;
@@ -269,6 +271,11 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 				deps.refreshChipWidget();
 				const hadWorkerResult = deps.clearWorkerResult();
 				deps.notify(had || hadWorkerResult ? "Docket cleared" : "Docket had no chips", "info");
+				return;
+			}
+
+			if (intent.kind === "broadcast") {
+				await deps.broadcast({ ...(intent.text ? { text: intent.text } : {}), ...(intent.noticeRef ? { noticeRef: intent.noticeRef } : {}) });
 				return;
 			}
 
@@ -655,7 +662,12 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 					initialMode = "log";
 					continue;
 				}
-				if (result.action === "tellWorker" && result.artifact) {
+				if (result.action === "broadcastNotice" && result.artifact) {
+				const noticeId = docketMetaString(result.artifact, "noticeId");
+				if (noticeId) await deps.broadcast({ noticeRef: noticeId });
+				continue;
+			}
+			if (result.action === "tellWorker" && result.artifact) {
 					const workerRef = artifactWorkerRef(result.artifact);
 					if (!workerRef) {
 						deps.notify("Docket worker not found for this item", "error");

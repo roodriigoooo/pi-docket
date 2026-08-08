@@ -33,6 +33,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Worker Store | `extensions/worker-store.ts` | Flat worker persistence, stable window/pane targeting, status-file locking/atomic transitions, literal and bracketed-paste input, durable PTYs, task docs, session seeding, and exact-execution respawn. |
 | Worker Mailbox | `extensions/worker-mailbox.ts` | Message identity, durable inbox/outbox files, atomic claim, observed delivery states, and the worker-facing attribution frame. |
 | Worker Consult | `extensions/worker-consult.ts` | Pure consult policy: resolution, pending/expiry selectors, the parent-agent prompt, and collapsed surface text. |
+| Worker Broadcast | `extensions/worker-broadcast.ts` | Pure recipient scoring over path/plan/identifier/task evidence, banding, provenance, and summary text. |
+| Worker Bulletin | `extensions/worker-bulletin.ts` | The standing project note: render, parse, bounded append, and existence probe. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
@@ -104,7 +106,7 @@ Per-worker state under `~/.pi/agent/docket/workers/<id>/`:
 | `deliverables/v<N>.json` | worker publication | Immutable primary ready generation: full body, evidence, recommendations, refs, frozen patch, provenance. |
 | `source-deliverable.md` | parent handoff | Byte-exact reviewed source body for a fresh Use → Worker destination. |
 | `inbox/msg-*.json` | parent write, worker claim | One durable parent → worker Message each, carrying its observed delivery state. |
-| `outbox/msg-*.json` | worker write, parent read | Notices the worker shared without blocking; surfaced as review items at zero model-context cost. |
+| `outbox/msg-*.json` | worker write, parent read | Notices the worker shared without blocking; surfaced as review items at zero model-context cost, and the raw material for a broadcast. |
 | `events.ndjson` | worker live | Append-only event stream, both directions; rotated at 5 MB, one generation retained. |
 | `pane-tail.txt` | parent harvest | Last terminal lines captured from the dead tmux pane after the worker process exited. |
 | `session/` | parent (seeded) | Forked pi JSONL prefix, enables `--continue` + cache reuse. |
@@ -121,6 +123,7 @@ Durable deliverables under `~/.pi/agent/docket/`:
 | `events.ndjson` | Legacy reader | Existing bundle lifecycle log, never appended by deliverable saves. |
 | `index.json` | Legacy reader | Existing compatibility snapshot; not part of the deliverable path. |
 | `decisions.ndjson` | Decision Log | Append-only verdict ledger + unreviewed-eviction events, read by `/docket log decisions`. |
+| `bulletins/<project>.md` | Broadcast | Standing project notes every worker re-reads at its gates. |
 
 Deliverable directories are scanned defensively: invalid or unrelated files are skipped. A save claims a version with a lock, writes a temporary file, and atomically claims it without replacing an existing or corrupt version. Re-saving the same approved worker generation returns the existing record.
 
@@ -168,6 +171,9 @@ declare global {
 - **A consult is a question with a different audience.** `docket_consult` writes an ordinary `needs_input` question tagged `audience: "parent-agent"`, so the existing status, verdict, reply-binding, and ledger paths carry it unchanged and `consulting` is derived rather than persisted. Escalation flips the audience back, which is why disabling the feature can never strand a blocked worker. Only two things are new: the parent tools, registered solely while `messaging.autoAnswer` is on, and the sweep that hands one consult at a time to the parent agent as a `followUp` so it never pre-empts the human's turn. Rationale: [ADR-0008](./adr/0008-worker-messaging.md).
 - **The permission line is the context boundary.** Questions and notices flow without per-message authorization because they cost the parent nothing — a question is a card, a notice is a review item. A consult is gated because answering it requires the parent agent to read the worker's words. The gate is not policy layered on the architecture; it is the point where a mechanism would otherwise cross it.
 - **Notices are artifacts, not messages.** A pi custom message participates in model context, so surfacing a worker's notice that way would auto-inject worker-authored content into the parent. It becomes a review item instead, costing nothing until the human opens or chips it.
+- **Recipients are proposed, never requested.** A broadcast scores every eligible worker against evidence Docket already holds — paths the message names, paths the worker touched, files an approved plan declared, identifiers, task-token overlap — and sorts them into affected / maybe / unrelated with the reason shown beside each row. Path matching compares basenames as well as full paths, because a worker in an isolated worktree records paths relative to its own workspace. Every row carries task text: a human returning to a session does not remember which index holds which job.
+- **Uncertainty degrades to the bulletin.** When nothing scores as affected, the primary action becomes posting to the standing note rather than presenting an empty grid. The bulletin lives under the agent directory, not the repo, so every worktree reads the same current file, and `task.md` points at it by absolute path only once one exists.
+- **A broadcast is information, not direction.** It is delivered `nextTurn` through `pi.sendMessage`, so it enters a worker's context without triggering a turn — a worker mid-edit is not interrupted and one blocked on a question is not woken without its answer. `workerMessageRedirects` keeps it from clearing that question, and pending broadcasts coalesce into one delivery. Standing (`promoted` / `in worktree` / `unreviewed`) rides inline with the claim so a receiving worker can weigh it.
 - **A message outlives the worker it was addressed to.** The inbox is a directory in the worker dir, so a message queued for a crashed worker is delivered after respawn instead of being lost with the pane.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.
 - **Deliverables are claimed immutably.** Worker saves require exact terminal approval for the exact generation. Parent saves are explicit and synthetic-approved. Per-deliverable locks plus atomic claims make repeated and concurrent saves safe without a database.

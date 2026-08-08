@@ -234,6 +234,14 @@ Workers can also ask and share without you being in their session:
 - `docket_consult` — a question the parent session may already be able to answer. Off by default; enabling it is the one setting that lets worker text reach your model context. Answers reach the worker labelled `[docket · from parent agent]`, and anything the agent will not answer escalates back to you.
 - `docket_note` — something worth sharing that does not block the worker. Becomes a review item at zero model-context cost.
 
+When something lands that other workers need to know, one command tells the ones it affects:
+
+```text
+/docket broadcast auth middleware now takes a context arg
+```
+
+Docket scores every running worker against paths the message names, paths each has touched, and files their approved plans declared, then shows you a card with the reason beside each proposed recipient and the task each is working on — never a bare `w3`. Enter sends to what it proposed. A broadcast never interrupts a worker mid-edit and never answers a question one is blocked on. When nothing is clearly affected, Docket posts to the project bulletin instead of asking you to guess.
+
 Bundled worker kinds:
 
 - `default`: plan-gated general work in a fresh isolated workspace.
@@ -304,6 +312,7 @@ Main rule: keep evidence available, not automatically injected.
 | `/docket spawn <task>` | Start a background worker. Fresh session by default; `--seed` inherits parent context. |
 | `f8` | Open worker progress lens. |
 | `/docket tell w<N> <text>` | Reply to a worker. Delivery state is observed, not assumed; multiline replies stay multiline. |
+| `/docket broadcast <text>` | Tell the workers a change affects. Docket proposes who; you confirm. |
 | `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker or author a deliverable interactively. |
 | `/docket load [ref\|last\|w<N>]` | Mount a deliverable, legacy bundle, or worker artifacts. |
 

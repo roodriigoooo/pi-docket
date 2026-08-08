@@ -178,11 +178,15 @@ export function consultEscalatedTransition(input: { questionId: string; reason?:
  * its outstanding questions are cleared and it resumes.
  *
  * A terminal worker is left entirely alone. Its process may still be alive and willing to chat,
- * but its published deliverable and pending verdict must survive the conversation.
+ * but its published deliverable and pending verdict must survive the conversation. A
+ * non-redirecting message leaves every worker alone the same way.
  */
-export function messageDeliveredTransition(input: { replyTo?: string } = {}): WorkerTransition {
+export function messageDeliveredTransition(input: { replyTo?: string; redirects?: boolean } = {}): WorkerTransition {
 	return (current) => {
 		if (TERMINAL_STATES.has(current.state)) return undefined;
+		// A broadcast is information, not direction: it must not resume a worker or clear the
+		// question it is still blocked on.
+		if (input.redirects === false) return undefined;
 		const resume: Partial<WorkerStatus> = { state: "active", question: undefined, questions: [], reviewedAt: undefined };
 		if (!input.replyTo) return resume;
 		const open = current.questions ?? [];

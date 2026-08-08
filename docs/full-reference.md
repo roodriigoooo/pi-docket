@@ -115,6 +115,7 @@ Primary commands:
 | `/docket` | Open decision docket. |
 | `f8` | Open worker progress lens. |
 | `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed\|--fresh] [--as <kind>] [--worktree] [--] <task>` | Start explicit worker. Model/thinking inherit parent; context defaults fresh; workspace derives from kind intent. |
+| `/docket broadcast [--from <notice>] <text>` | Tell the workers a change affects. Docket proposes who, from path/plan/identifier overlap; you confirm. Falls back to the bulletin when nothing is clearly affected. |
 | `/docket tell w<N> [--after] [--q <id>] [text]` | Reply to worker. `--after` waits for the worker to finish its current turn instead of steering it; `--q` binds the reply to one open question and leaves the others open. Multiline text is pasted intact. |
 | `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker generation or author a deliverable interactively. |
 | `/docket load [ref\|last\|w<N>]` | Mount a deliverable or worker artifacts at zero model-context cost. |
@@ -302,6 +303,56 @@ The agent can always decline. `docket_escalate` hands the consult back to you as
 `docket_note` lets a worker tell you something without stopping: an interface changed, a task assumption was wrong, a constraint turned up. It never blocks the worker and never enters your model context — the notice becomes a review item you can open, chip, or ignore, and the dock adds one word to its summary line (`2 shared`) rather than a row.
 
 A worker may name the workers it thinks should hear a notice. That is a suggestion recorded alongside it; nothing is sent anywhere without you. Workers cannot address each other directly, and the parent remains the only router.
+
+### Telling several workers at once
+
+```text
+/docket broadcast auth middleware now takes a context arg
+```
+
+Docket does not ask who should receive it. It scores every running worker against evidence it already holds — paths the message names, paths each worker has touched, files an approved plan declared, identifiers, task-word overlap — and opens one card:
+
+```text
+  📣 broadcast
+
+     auth middleware now takes a context arg
+
+  affected
+   ▸ ▪ w1   patcher      fix the failing auth test        touches src/auth/middleware.ts
+     ▪ w4   implementer  add rate limiting                plan names src/auth/middleware.ts
+
+  maybe
+     · w3   scout        map session call sites           mentions authcontext
+
+     +2 unrelated                                    tab to show
+
+  ⏎ send to selected · space toggle · a all · b bulletin · esc keep local
+```
+
+Enter sends to what Docket proposed. Every row carries the worker's task, never its index alone. Nothing leaves the card without a keypress.
+
+A broadcast **does not interrupt**. It enters each worker's context without triggering a turn, so a worker mid-edit keeps working and a worker blocked on a question stays blocked on it — a broadcast is information, never direction, and it never answers something a worker is waiting on. Several pending broadcasts arrive as one block.
+
+From a notice in the docket, Enter opens the same card with the notice as the message. Workers the notice addressed are preselected and tagged `addressed by w2` — the worker expresses intent, you keep the decision.
+
+Claims from a worker carry their standing automatically, because "code is ready" means different things depending on where the code is:
+
+```text
+w2 · deliverable:… (v2) approved · promoted     safe to build on
+w2 · in worktree, not promoted                  a constraint, not code you can call
+w2 · notice, unreviewed                         nobody has checked it
+```
+
+### The bulletin
+
+When nothing scores as affected, Docket does not hand you a grid of checkboxes and call that a choice — it offers the bulletin instead:
+
+```text
+  no clear recipients · post to bulletin instead?
+  every worker reads it at its next gate           ⏎ post · esc discard
+```
+
+The bulletin is the standing set of decisions and constraints for the project. Workers are told to read it before their first edit and whenever a plan gate opens, and a newer entry supersedes an older one it contradicts. It lives at `~/.pi/agent/docket/bulletins/<project>.md` rather than in the repo, so workers in isolated worktrees all read the same current file instead of a snapshot taken when they started. `b` posts there from the broadcast card at any time.
 
 ### Reviewed workers go dim
 
