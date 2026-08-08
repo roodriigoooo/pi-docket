@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **replies are delivered, not fired at a terminal**: `/docket tell` now writes a durable Message into `workers/<id>/inbox/`, and the worker's own runtime claims it and hands the body to its session through `pi.sendUserMessage(text, { deliverAs })`. A reply lands between the worker's tool calls instead of racing its editor state, and it can no longer split a bracketed paste or submit into a half-composed buffer.
+- **no surface claims a delivery it did not observe**: `sendInput` used to treat a zero exit status from `tmux send-keys` as receipt and clear `needs_input` immediately, so a worker was recorded as answered before it saw a byte. Delivery state is now `queued` → `delivered` → `read`, written only by the side that observed it, and the tell chip re-reads the message so it updates itself in place. Press ctrl+o for the full body and its delivery timeline.
+- **an answer resolves the question it answers**: replies carry `replyTo`, so a worker with two open questions and one answer stays blocked on the second instead of having its whole backlog cleared. The verdict card binds automatically; `/docket tell w<N> --q <id>` binds by hand. With exactly one question open the binding is inferred, and an unbound reply is a redirection.
+- **messages outlive the worker they were addressed to**: the inbox is a directory in the worker dir, so a message queued for a crashed worker is delivered after `/docket respawn` rather than lost with the pane. While no runtime can take it, the dock says `undeliverable`.
+- **`/docket tell` learns two flags**: `--after` waits for the worker to finish its current turn instead of steering it, `--q <id>` binds the reply to one question. Flags stop being flags once the message body starts.
+- **the dock stays quiet**: normal delivery adds no row and no line. Only a message the worker has not taken earns a sub-line, and inboxes are read only for workers that have actually exchanged a message.
+- **legacy workers still receive replies**: a worker whose runtime predates the mailbox gets the old keystrokes, and every surface reporting that path says `sent to terminal · receipt unconfirmed` instead of borrowing the language of a delivered message.
+- **rationale**: see [docs/adr/0008-worker-messaging.md](docs/adr/0008-worker-messaging.md) for the permission line, the consult lane, and the broadcast design this is the first phase of.
+
 ## 0.8.1
 
 - **plans hand off to implementation without a second gate**: an approved plan deliverable now offers `Use → Implement`, which resolves `worker.implementKind` (default `implementer`), seeds the task from the plan's goal, inherits parent model/thinking, and carries the plan as the byte-exact launch sidecar. Approving a plan and handing it off no longer produces a worker that immediately asks you to approve a plan.

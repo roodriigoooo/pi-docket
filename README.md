@@ -133,6 +133,12 @@ Reply to a worker:
 /docket tell w1 focus only on src/auth and tests/auth
 ```
 
+The reply is queued into the worker's own inbox and delivered by the worker between its tool calls, so it never lands mid-keystroke. The chip says `queued`, then updates itself to `delivered` and `read` as the worker actually takes it — Docket does not report a delivery it has not observed. Answering one specific question leaves the worker's other questions open:
+
+```text
+/docket tell w1 --q q2 yes, update the tests
+```
+
 Save an approved worker deliverable:
 
 ```text
@@ -291,7 +297,7 @@ Main rule: keep evidence available, not automatically injected.
 | `/docket` | Open review inbox. |
 | `/docket spawn <task>` | Start a background worker. Fresh session by default; `--seed` inherits parent context. |
 | `f8` | Open worker progress lens. |
-| `/docket tell w<N> <text>` | Reply to a worker. Multiline replies stay multiline. |
+| `/docket tell w<N> <text>` | Reply to a worker. Delivery state is observed, not assumed; multiline replies stay multiline. |
 | `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker or author a deliverable interactively. |
 | `/docket load [ref\|last\|w<N>]` | Mount a deliverable, legacy bundle, or worker artifacts. |
 

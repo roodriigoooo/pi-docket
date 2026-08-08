@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkerCommands } from "../extensions/worker-commands.js";
 import type { Artifact } from "../extensions/types.js";
+import { buildWorkerMessage } from "../extensions/worker-mailbox.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry, type WorkerKindRegistry } from "../extensions/worker-kinds.js";
 
@@ -56,6 +57,9 @@ function fakeStore(): { store: WorkerStore; spawned: SpawnInput[] } {
 		updateStatus: async () => ({ before: undefined, after: undefined, changed: false }),
 		writeArtifacts: async () => {},
 		addQuestion: async () => undefined,
+		sendMessage: async () => ({ ok: true as const, transport: "inbox" as const, message: buildWorkerMessage({ body: "x" })! }),
+		inboxDir: (id: string) => `/tmp/workers/${id}/inbox`,
+		listMessages: async () => [],
 		sendInput: async () => true,
 		spawn: async (input: SpawnInput) => { spawned.push(input); return { ...baseWorker, state: "starting" }; },
 		kill: async () => true,

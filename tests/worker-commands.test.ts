@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWorkerCommands, formatKindList, workerCompletionCandidates } from "../extensions/worker-commands.js";
+import { buildWorkerMessage, type WorkerMessageInput } from "../extensions/worker-mailbox.js";
+import { createWorkerCommands, formatKindList, workerCompletionCandidates , type WorkerAnnounceMeta } from "../extensions/worker-commands.js";
 import type { Artifact } from "../extensions/types.js";
 import type { SpawnInput, WorkerStatus, WorkerStore } from "../extensions/worker-store.js";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
@@ -38,6 +39,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 	const spawned: SpawnInput[] = [];
 	const purged: string[] = [];
 	const sent: Array<{ id: string; text: string }> = [];
+	const messages: Array<{ id: string; input: WorkerMessageInput }> = [];
 	const store: WorkerStore = {
 		root: () => "/tmp/workers",
 		dirFor: (id) => `/tmp/workers/${id}`,
@@ -56,6 +58,12 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		updateStatus: async () => ({ before: undefined, after: undefined, changed: false }),
 		writeArtifacts: async () => {},
 		addQuestion: async () => undefined,
+		sendMessage: async (id, input) => {
+			messages.push({ id, input });
+			return { ok: true as const, transport: "inbox" as const, message: buildWorkerMessage(input)! };
+		},
+		inboxDir: (id) => `/tmp/workers/${id}/inbox`,
+		listMessages: async () => [],
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
 		spawn: async (input) => {
 			spawned.push(input);
@@ -68,7 +76,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		harvestPaneTail: async () => "window_gone",
 		readPaneTail: async () => undefined,
 	};
-	return { store, spawned, purged, sent };
+	return { store, spawned, purged, sent, messages };
 }
 
 function deps(
@@ -76,9 +84,9 @@ function deps(
 	kinds = createWorkerKindRegistry(),
 	execution: { parentModel?: string; parentThinking?: string; hasUI?: boolean; confirm?: boolean } = {},
 ) {
-	const { store, spawned, purged, sent } = fakeStore(workers);
+	const { store, spawned, purged, sent, messages } = fakeStore(workers);
 	const notifications: string[] = [];
-	const announcements: Array<{ subject: string; detail?: string; kind?: string; meta?: { workerId: string } }> = [];
+	const announcements: Array<{ subject: string; detail?: string; kind?: string; meta?: WorkerAnnounceMeta }> = [];
 	const emitted: string[] = [];
 	const loaded: string[] = [];
 	const unloaded: string[] = [];
@@ -110,7 +118,7 @@ function deps(
 		announce: (subject, detail, kind, _docket, meta) => announcements.push({ subject, detail, kind, meta }),
 		emitText: (text) => emitted.push(text),
 	});
-	return { commands, store, spawned, purged, sent, notifications, announcements, emitted, loaded, unloaded, confirmations, kinds };
+	return { commands, store, spawned, purged, sent, messages, notifications, announcements, emitted, loaded, unloaded, confirmations, kinds };
 }
 
 test("Worker Commands spawns worker with cwd and fresh session by default", async () => {
@@ -488,17 +496,59 @@ test("Worker Commands warns and falls back when configured default kind is missi
 	assert.deepEqual(notifications, ["Docket: configured default worker kind \"ghost\" not found. Using builtin default."]);
 });
 
-test("Worker Commands sends parent messages to workers", async () => {
-	const waiting: WorkerStatus = { ...worker, state: "needs_input", questions: [
-		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },
-		{ id: "q2", text: "Inspect prompt chips too?", createdAt: "2026-01-01T00:01:00.000Z" },
-	] };
-	const { commands, sent, announcements } = deps([waiting]);
+const twoQuestions: WorkerStatus = { ...worker, state: "needs_input", questions: [
+	{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },
+	{ id: "q2", text: "Inspect prompt chips too?", createdAt: "2026-01-01T00:01:00.000Z" },
+] };
+
+test("Worker Commands queues a parent message and reports only what it observed", async () => {
+	const { commands, messages, announcements } = deps([twoQuestions]);
 
 	await commands.tell("w2", "include checkpoint flow only");
 
-	assert.deepEqual(sent, [{ id: "worker-1", text: "Parent message for 2 questions: 1) Include checkpoint flow? 2) Inspect prompt chips too? Message: include checkpoint flow only" }]);
-	assert.equal(announcements[0]?.subject, "told w2");
+	assert.equal(messages.length, 1);
+	assert.equal(messages[0]?.id, "worker-1");
+	assert.equal(messages[0]?.input.body, "include checkpoint flow only");
+	// Nothing has been delivered yet, so the chip must not claim it was.
+	assert.equal(announcements[0]?.subject, "tell w2 · queued");
+	assert.equal(announcements[0]?.meta?.sentMessage?.transport, "inbox");
+});
+
+test("Worker Commands binds a reply to the question it names", async () => {
+	const { commands, messages } = deps([twoQuestions]);
+
+	await commands.tell("w2", "yes", { replyTo: "q2" });
+
+	assert.equal(messages[0]?.input.replyTo, "q2");
+	assert.equal(messages[0]?.input.replyToText, "Inspect prompt chips too?");
+});
+
+test("Worker Commands leaves a reply unbound when several questions are open", async () => {
+	const { commands, messages } = deps([twoQuestions]);
+
+	await commands.tell("w2", "carry on");
+
+	assert.equal(messages[0]?.input.replyTo, undefined);
+});
+
+test("Worker Commands infers the binding when exactly one question is open", async () => {
+	const oneQuestion: WorkerStatus = { ...worker, state: "needs_input", questions: [
+		{ id: "q1", text: "Include checkpoint flow?", createdAt: "2026-01-01T00:00:00.000Z" },
+	] };
+	const { commands, messages } = deps([oneQuestion]);
+
+	await commands.tell("w2", "yes");
+
+	assert.equal(messages[0]?.input.replyTo, "q1");
+});
+
+test("Worker Commands says receipt is unconfirmed on the legacy transport", async () => {
+	const { commands, store, announcements } = deps([twoQuestions]);
+	store.sendMessage = async (_id, input) => ({ ok: true as const, transport: "tmux" as const, message: buildWorkerMessage(input)! });
+
+	await commands.tell("w2", "carry on");
+
+	assert.equal(announcements[0]?.subject, "tell w2 · sent to terminal · receipt unconfirmed");
 });
 
 test("Worker Commands lists workers", async () => {

@@ -22,6 +22,18 @@ _Avoid_: trail, transcript, memory.
 A human-started background Pi process running as one independent window in the shared `docket-workers` tmux session. Generates artifacts that may become review items. Workers cannot create other Workers.
 _Avoid_: job, agent, subprocess, child worker.
 
+**Message**:
+One addressed, identified, durable unit moving between the parent and one Worker. Parent-bound messages travel the existing status/event path; worker-bound messages are written to that Worker's **Inbox** and claimed by its runtime. A Message is not an artifact class: it is evidence in the event stream and a file in the worker directory.
+_Avoid_: ping, notification, chat, tell payload.
+
+**Inbox**:
+The durable per-worker mailbox at `workers/<id>/inbox/`. The parent writes; only that Worker's runtime claims. It survives a worker's death, so a message addressed to a worker that crashed is delivered after respawn.
+_Avoid_: queue, channel, socket, buffer.
+
+**Delivery state**:
+What has actually been observed about one Message: `queued` (written, nothing else known), `delivered` (the worker's runtime took it), `read` (the worker's agent began a turn holding it), `undeliverable` (projected — queued, and the worker will not run again). Never inferred from a transport's exit status.
+_Avoid_: sent, ok, acknowledged, received.
+
 **Worker Kind**:
 Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not choose model, thinking, context, workspace, or tmux layout.
 _Avoid_: execution preset, model profile, agent class.
@@ -148,6 +160,8 @@ _Avoid_: continue, resume, restore.
 - **Load** = **Mount** the deliverable under a `d<N>` slot at zero model-context cost.
 - **Use** = explicitly queue the exact full body for the next parent submission or start a fresh confirmed worker.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
+- A **Message** carries one instruction or answer to a Worker, or one question from it. Every edge is Worker ↔ parent; there is no Worker → Worker channel.
+- **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
 - **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
 
@@ -163,4 +177,5 @@ _Avoid_: continue, resume, restore.
 - "checkpoint" made Docket sound like a session-resume feature. Resolved: canonical term is **Deliverable**; old bundles are compatibility-only.
 - "continue" duplicated Pi's session vocabulary. Resolved: Docket has **Save**, **Load**, and explicit **Use**; Pi owns continuation.
 - "plan" risked becoming a second artifact class beside Deliverable, forking versioning, approval, and storage for no new capability. Resolved: a plan is a **Plan deliverable** — a shape and a presentation — and the first-class addition is the *transition* (**Implement handoff**, **Plan gate discharge**, **Plan coverage**), not a new object.
+- "tell" described a keystroke push as if it were a delivery, so every surface above it inherited an unverified claim. Resolved: **Message** with an observed **Delivery state**; the terminal transport remains for pre-mailbox workers and is labelled unconfirmed wherever it is reported.
 - "plan mode" could have meant Docket restricting the parent's own tools. Resolved: out of scope. Pi owns session and tool policy; Docket owns the resulting artifact, its approval, and its handoff.

@@ -115,7 +115,7 @@ Primary commands:
 | `/docket` | Open decision docket. |
 | `f8` | Open worker progress lens. |
 | `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed\|--fresh] [--as <kind>] [--worktree] [--] <task>` | Start explicit worker. Model/thinking inherit parent; context defaults fresh; workspace derives from kind intent. |
-| `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
+| `/docket tell w<N> [--after] [--q <id>] [text]` | Reply to worker. `--after` waits for the worker to finish its current turn instead of steering it; `--q` binds the reply to one open question and leaves the others open. Multiline text is pasted intact. |
 | `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker generation or author a deliverable interactively. |
 | `/docket load [ref\|last\|w<N>]` | Mount a deliverable or worker artifacts at zero model-context cost. |
 
@@ -259,7 +259,25 @@ Context precedence is handoff forced-fresh / `--fresh`, then `--seed`, `worker.p
 
 When two workers edit the same path, Docket surfaces an `overlap w<N>: <path>` hint in the dock/dashboard and asks for confirmation before promoting a conflicting change set. It does not lock files or auto-merge workers; the parent remains the mediator.
 
-The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. Docket does not auto-kill or auto-respawn for either warning. It tells you to peek, reply, reject, or stop.
+The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. `1 message queued · not taken yet` means you already replied and the worker has not picked it up. Docket does not auto-kill or auto-respawn for any of them. It tells you to peek, reply, reject, or stop.
+
+### Replying to a worker
+
+`/docket tell w<N> <text>` writes one durable Message into `workers/<id>/inbox/`. The worker's own runtime claims it, records that it took it, and hands the body to its session through pi's delivery timing — so a reply lands after the worker's current tool calls and before its next model call instead of racing whatever it was typing.
+
+Nothing claims more than it observed. The chip reads `queued` when the message is written, and updates itself to `delivered` once the worker takes it and `read` once a worker turn actually holds it. Press ctrl+o on the chip for the full message and its delivery timeline.
+
+```text
+/docket tell w1 focus only on src/auth        # steers the current turn
+/docket tell w1 --after run the full suite    # waits for the worker to finish first
+/docket tell w1 --q q2 yes, update them       # answers one specific question
+```
+
+A reply bound to a question resolves that question and leaves any other open — a worker with two questions and one answer stays blocked on the second. With exactly one question open the binding is inferred. An unbound reply is a redirection: the worker resumes and re-asks anything still blocking it.
+
+A message addressed to a worker that has died stays in its inbox and is delivered when you `/docket respawn` it. The dock shows `undeliverable` while no runtime can take it.
+
+Workers started by a Docket build older than the mailbox still receive replies as terminal keystrokes. That path cannot confirm receipt, so it reports `sent to terminal · receipt unconfirmed` rather than borrowing the language of a delivered message.
 
 ### Reviewed workers go dim
 
@@ -338,7 +356,7 @@ tmux attach -t docket-workers
 ### How Docket uses tmux
 
 - **Spawn**: the first worker creates `docket-workers` with `new-session -d -s`; later workers use `new-window -d`. Windows are named `w<N>`, and Docket records tmux's stable `#{window_id}` (`@7`, `@8`, etc.) so renamed windows still resolve.
-- **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
+- **Reply**: tmux is no longer the reply path. `/docket tell` writes a Message to the worker's inbox and the worker's own runtime delivers it (see [Replying to a worker](#replying-to-a-worker)). Keystrokes are kept only for workers whose runtime predates the mailbox: one-line sends use `send-keys -l` plus `Enter`, multiline sends use `load-buffer -` and `paste-buffer -p -d`, and shared-session payloads start with `[docket]` so worker input stays recognizable.
 - **Peek**: `/docket workers` uses `capture-pane -p` to render a bounded selected-worker pane snapshot inside the dashboard. It does not attach, focus the pane, or add anything to model context.
 - **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes the recorded worker pane, captures its bounded tail, writes `pane-tail.txt`, then kills the stale window. A companion may add panes, but it cannot redirect Docket's tell, peek, or harvest target.
 - **Adapter seam**: a companion may register one `globalThis.__docket.registerTmuxAdapter(adapter)` callback. Docket invokes it after spawn or respawn IDs are persisted with the worker/window/pane metadata; adapter failures are warned and isolated from the worker lifecycle.

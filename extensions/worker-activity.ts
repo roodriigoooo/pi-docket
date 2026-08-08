@@ -3,6 +3,7 @@ import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
+import { pendingWorkerMessageLine, type WorkerMessage } from "./worker-mailbox.js";
 import { isReviewableWorker } from "./worker-lifecycle.js";
 import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
@@ -231,8 +232,17 @@ function latestQuestionTs(worker: WorkerStatus | undefined): number | undefined 
 	return latest ? Date.parse(latest.createdAt) : Date.parse(worker.updatedAt);
 }
 
-export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus } = {}): string | undefined {
+/** Definitely not running: no runtime will ever claim what is sitting in its inbox. */
+function workerProcessIsGone(worker: WorkerStatus | undefined): boolean {
+	return worker?.state === "ended" || worker?.state === "error" || worker?.state === "failed";
+}
+
+export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus; messages?: WorkerMessage[] } = {}): string | undefined {
 	const now = options.now ?? Date.now();
+	// A message the worker has not taken outranks every other hint: it is the one case where
+	// the human already acted and nothing has happened yet.
+	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerProcessIsGone(options.worker)) : undefined;
+	if (pending) return pending;
 	if (state === "needs_input") {
 		const questionTs = latestQuestionTs(options.worker);
 		const ageMs = questionTs === undefined ? 0 : now - questionTs;
@@ -301,7 +311,7 @@ function isAttentionState(worker: WorkerStatus, now: number): boolean {
 
 export function dockRowsForRender(
 	rows: WorkerActivityRow[],
-	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]> } = {},
+	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]>; messagesByWorker?: ReadonlyMap<string, WorkerMessage[]> } = {},
 ): DockRow[] {
 	const now = options.now ?? Date.now();
 	const workers = rows.map((row) => row.worker);
@@ -309,7 +319,8 @@ export function dockRowsForRender(
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
 		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
-		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker });
+		const messages = options.messagesByWorker?.get(row.worker.id);
+		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker, ...(messages ? { messages } : {}) });
 		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,

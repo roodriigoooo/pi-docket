@@ -95,6 +95,9 @@ export type WorkerStatus = {
 	/** Last proof-of-life from the worker process. Separate from `updatedAt`, which only moves
 	 * when something about the worker actually changed. */
 	heartbeatAt?: string;
+	/** Set by the worker once its inbox reader is live. Absent on builds that predate the
+	 * mailbox, which is how the parent knows to fall back to the tmux transport (ADR-0008). */
+	mailboxAt?: string;
 	state: WorkerState;
 	/** Unique launch generation; prevents an old process-exit hook from changing a respawned worker. */
 	runToken?: string;

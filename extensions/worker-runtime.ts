@@ -7,6 +7,9 @@ export type WorkerRuntimeDeps = {
 	registerGuardrailsAndProtocol(): void;
 	startHeartbeat(): void;
 	stopHeartbeat(): void | Promise<void>;
+	/** Advertise the inbox reader and begin draining it. Parent → worker delivery (ADR-0008). */
+	startMailbox(): void;
+	stopMailbox(): void;
 };
 
 export type WorkerRuntime = {
@@ -25,10 +28,14 @@ export function createWorkerRuntime(deps: WorkerRuntimeDeps): WorkerRuntime {
 			deps.registerGuardrailsAndProtocol();
 		},
 		onSessionStart(): void {
-			if (isWorker) deps.startHeartbeat();
+			if (!isWorker) return;
+			deps.startHeartbeat();
+			deps.startMailbox();
 		},
 		async onSessionShutdown(): Promise<void> {
-			if (isWorker) await deps.stopHeartbeat();
+			if (!isWorker) return;
+			deps.stopMailbox();
+			await deps.stopHeartbeat();
 		},
 	};
 }

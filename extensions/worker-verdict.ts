@@ -169,6 +169,10 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		}
 		const label = workerSourceLabel(latest);
 		const state = deriveWorkerState(latest);
+		// The card presents the newest open question, so a reply from it answers that one and
+		// leaves any earlier question open instead of clearing the whole backlog.
+		const answering = state === "needs_input" ? workerQuestions(latest).at(-1) : undefined;
+		const replyOptions = answering ? { replyTo: answering.id } : {};
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest, deliverable);
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
@@ -205,7 +209,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			continue;
 		}
 		if (result.verb === "send") {
-			if (!result.text || (await deps.workerCommands.tell(label, result.text)) === false) continue;
+			if (!result.text || (await deps.workerCommands.tell(label, result.text, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "send", result.text, changeSet, deliverable);
 			await deps.refreshWorkerDockWidget();
 			return "advance";
@@ -223,14 +227,14 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			const text = (await (deps.reviewNote?.(title, prefill) ?? deps.input(title, prefill)))?.trim();
 			if (!text) continue;
 			const message = deliverable ? `Request revision for ${deliverable.ref} (version ${deliverable.version}):\n${text}` : changeSet ? `revise: ${text}` : text;
-			if ((await deps.workerCommands.tell(label, message)) === false) continue;
+			if ((await deps.workerCommands.tell(label, message, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "chat", text, changeSet, deliverable, deliverable ? text : undefined);
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}
 		if (result.verb === "accept") {
 			if (state === "needs_input") {
-				if ((await deps.workerCommands.tell(label, "Approved. Proceed.")) === false) continue;
+				if ((await deps.workerCommands.tell(label, "Approved. Proceed.", replyOptions)) === false) continue;
 			} else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
 				if (await deps.promoteWorkerChangeSet(changeSet)) {

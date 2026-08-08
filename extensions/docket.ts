@@ -62,7 +62,8 @@ import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { heartbeatTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -2260,7 +2261,14 @@ async function checkpointAndWorkerCandidates(subcommand: string, projectRoot?: s
 
 type DocketMessageKind = "help" | "list" | "notice" | "action" | "success" | "warning" | "error" | "usage";
 
-type DocketMessageDetails = { kind: DocketMessageKind; heading?: string; subject?: string; workerId?: string; docket?: { kind: ArtifactKind; title: string; subtitle?: string } };
+/**
+ * `sentMessage` makes a tell chip live: the renderer re-reads the message file, so a line that
+ * said `queued` when it was printed says `delivered` once the worker takes it. Kept separate from
+ * `workerId`, which re-reads a worker's *launch* summary for spawn announcements.
+ */
+type DocketSentMessage = { workerId: string; workerLabel: string; messageId: string; transport: WorkerMessageTransport };
+
+type DocketMessageDetails = { kind: DocketMessageKind; heading?: string; subject?: string; workerId?: string; sentMessage?: DocketSentMessage; docket?: { kind: ArtifactKind; title: string; subtitle?: string } };
 
 const KIND_GLYPH: Record<DocketMessageKind, string> = {
 	help: "?",
@@ -2296,7 +2304,7 @@ function notifyDocket(pi: ExtensionAPI, ctx: ExtensionCommandContext, text: stri
 	else pi.sendMessage({ customType: "docket", content: text, display: true, details: { kind: level === "error" ? "error" : "notice" } satisfies DocketMessageDetails }, { triggerTurn: false });
 }
 
-function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: DocketMessageKind = "action", docket?: DocketMessageDetails["docket"], meta: Pick<DocketMessageDetails, "workerId"> = {}): void {
+function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject: string, detail?: string, kind: DocketMessageKind = "action", docket?: DocketMessageDetails["docket"], meta: Pick<DocketMessageDetails, "workerId" | "sentMessage"> = {}): void {
 	pi.sendMessage(
 		{
 			customType: "docket",
@@ -2309,18 +2317,29 @@ function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject
 }
 
 function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
-	return (message, _options, theme) => {
+	return (message, options, theme) => {
 		const details = (message.details ?? { kind: "notice" }) as DocketMessageDetails;
 		const kind = details.kind ?? "notice";
 		const labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
 		const glyph = KIND_GLYPH[kind] ?? "·";
 		const headingText = details.heading ?? `docket · ${kind}`;
+		const expanded = options?.expanded === true;
 		let subject = details.subject;
 		let content = typeof message.content === "string" ? message.content : "";
 		const liveWorker = details.workerId ? readWorkerStatusSync(details.workerId) : undefined;
 		if (liveWorker) {
 			subject = workerLaunchSubject(liveWorker);
 			content = workerLaunchDetail(liveWorker);
+		}
+		// A sent message is re-read at render time, so the chip reports where the message
+		// actually got to rather than where it was when the line was first printed.
+		const sent = details.sentMessage;
+		const live = sent ? readWorkerMessageSync(createWorkerStore().root(), sent.workerId, sent.messageId) : undefined;
+		let timeline: string | undefined;
+		if (sent) {
+			subject = `tell ${sent.workerLabel} · ${sentWorkerMessageStateLabel(sent.transport, live)}`;
+			if (!expanded) content = collapseWorkerMessageBody(content);
+			timeline = sentWorkerMessageTimeline(sent.transport, live);
 		}
 		const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
 
@@ -2335,6 +2354,10 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 			box.addChild(new Text(theme.bold(theme.fg("text", subject)), 0, 0));
 		}
 
+		if (expanded && live?.replyToText) {
+			box.addChild(new Text(dim(`re: ${live.replyToText}`), 0, 0));
+		}
+
 		if (content) {
 			if (subject) box.addChild(new Text("", 0, 0));
 			for (const rawLine of content.split("\n")) {
@@ -2347,6 +2370,11 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 				box.addChild(new Text(line, 0, 0));
 			}
 		}
+
+		if (timeline && expanded) {
+			box.addChild(new Text("", 0, 0));
+			box.addChild(new Text(dim(timeline), 0, 0));
+		}
 		return box;
 	};
 }
@@ -2357,6 +2385,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 	let configMigrationWarned = false;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let lastHeartbeatSignature: string | undefined;
+	let inboxUnwatch: Unwatcher | undefined;
+	let inboxDraining = false;
+	/** Delivered to the session, not yet held by a turn. Flushed to `read` on the next agent_start. */
+	let deliveredUnreadMessageIds: string[] = [];
+	/** Assigned by the protocol registration; a parent message is new direction, so the nudge budget resets. */
+	let resetWorkerNudges: () => void = () => {};
 	let workerDockUnwatch: Unwatcher | undefined;
 	let workerDockCache: WorkerSnapshotCache | undefined;
 	let workerDockPending = false;
@@ -2683,7 +2717,16 @@ export default function docketExtension(pi: ExtensionAPI) {
 			}
 			const rows = workerActivityRows(workers, reviewArtifactsByWorker, { explicitlyLoadedWorkerIds, deliverablesByWorker });
 			const counts = workerActivityTotals(rows);
-			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker });
+			// Inboxes are only read for workers that have ever exchanged a message, so a fleet
+			// nobody has spoken to costs the dock nothing.
+			const messagesByWorker = new Map<string, WorkerMessage[]>();
+			await Promise.all(workers
+				.filter((worker) => (eventsByWorker.get(worker.id) ?? []).some((event) => event.kind === "message"))
+				.map(async (worker) => {
+					const messages = await createWorkerStore().listMessages(worker.id).catch(() => []);
+					if (messages.length) messagesByWorker.set(worker.id, messages);
+				}));
+			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker, messagesByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
@@ -2783,6 +2826,47 @@ export default function docketExtension(pi: ExtensionAPI) {
 		} catch {
 			// best-effort heartbeat; never crash the worker
 		}
+	};
+
+	/**
+	 * Worker side of the mailbox (ADR-0008). Claims queued messages, records that it took them,
+	 * then hands each body to this session through pi's own delivery timing. Claiming before
+	 * delivering means a crash in between loses a message visibly instead of replaying it into
+	 * some later turn with no trace of when it arrived.
+	 */
+	const drainWorkerInbox = async (): Promise<void> => {
+		if (!workerId || inboxDraining) return;
+		inboxDraining = true;
+		try {
+			const store = createWorkerStore();
+			const claimed = await claimPendingWorkerMessages(store.root(), workerId);
+			for (const message of claimed) {
+				appendWorkerEventSync(store.root(), workerId, {
+					kind: "message",
+					payload: { direction: "in", id: message.id, kind: message.kind, from: message.from, delivery: "delivered", transport: "inbox", ...(message.replyTo ? { replyTo: message.replyTo } : {}) },
+				});
+				await store.updateStatus(workerId, messageDeliveredTransition({ ...(message.replyTo ? { replyTo: message.replyTo } : {}) }));
+				deliveredUnreadMessageIds.push(message.id);
+				resetWorkerNudges();
+				try {
+					pi.sendUserMessage(formatWorkerMessageForSession(message), { deliverAs: message.deliverAs });
+				} catch {
+					// The agent may have settled between claim and send; the body is already
+					// recorded as delivered, and the next turn picks it up from the transcript.
+				}
+			}
+		} catch {
+			// best-effort: a mailbox failure must never take the worker down
+		} finally {
+			inboxDraining = false;
+		}
+	};
+
+	const flushWorkerMessagesRead = async (): Promise<void> => {
+		if (!workerId || deliveredUnreadMessageIds.length === 0) return;
+		const ids = deliveredUnreadMessageIds;
+		deliveredUnreadMessageIds = [];
+		await markWorkerMessagesRead(createWorkerStore().root(), workerId, ids).catch(() => undefined);
 	};
 
 	const applyWorkerState = async (
@@ -2894,12 +2978,16 @@ export default function docketExtension(pi: ExtensionAPI) {
 		let workerNudgesThisSession = 0;
 		const MAX_WORKER_NUDGES = 1;
 		const markWorkerProtocolCalled = (): void => { workerProtocolCalledThisTurn = true; };
+		resetWorkerNudges = (): void => { workerNudgesThisSession = 0; };
 
 		pi.on("turn_start", () => {
 			workerProtocolCalledThisTurn = false;
 		});
 
 		pi.on("agent_start", async () => {
+			// A turn starting is the first moment a delivered message is provably in front of
+			// the model, which is what separates "read" from "delivered".
+			await flushWorkerMessagesRead();
 			try {
 				const store = createWorkerStore();
 				const current = await store.find(workerId);
@@ -3063,6 +3151,23 @@ export default function docketExtension(pi: ExtensionAPI) {
 				heartbeatTimer = undefined;
 			}
 			try { await createWorkerStore().patchStatus(workerId!, { state: "ended" }); } catch { /* best-effort */ }
+		},
+		startMailbox: () => {
+			if (!workerId) return;
+			const store = createWorkerStore();
+			// Advertised before the first drain so a parent that checks mid-startup queues
+			// rather than falling back to keystrokes.
+			void store.patchStatus(workerId, { mailboxAt: new Date().toISOString() }).catch(() => undefined);
+			// Tighter than the dock's sweep: where recursive fs.watch is unavailable this poll is
+			// the only thing standing between a human pressing enter and the worker hearing it.
+			inboxUnwatch = watchWorkersRoot(store.inboxDir(workerId), () => void drainWorkerInbox(), { debounceMs: 60, fallbackMs: 750 });
+		},
+		stopMailbox: () => {
+			if (inboxUnwatch) {
+				inboxUnwatch();
+				inboxUnwatch = undefined;
+			}
+			deliveredUnreadMessageIds = [];
 		},
 	});
 	const parentRuntime = createParentRuntime({

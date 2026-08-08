@@ -139,6 +139,38 @@ export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_in
 	};
 }
 
+/**
+ * Applied when the worker's runtime has actually taken a message off its inbox — never when a
+ * transport merely accepted it (ADR-0008).
+ *
+ * A bound answer resolves the one question it names and leaves the rest open, so a worker with
+ * two questions and one answer stays blocked on the second instead of being recorded as fully
+ * answered. An unbound message is a redirection: the worker is being told what to do next, so
+ * its outstanding questions are cleared and it resumes.
+ *
+ * A terminal worker is left entirely alone. Its process may still be alive and willing to chat,
+ * but its published deliverable and pending verdict must survive the conversation.
+ */
+export function messageDeliveredTransition(input: { replyTo?: string } = {}): WorkerTransition {
+	return (current) => {
+		if (TERMINAL_STATES.has(current.state)) return undefined;
+		const resume: Partial<WorkerStatus> = { state: "active", question: undefined, questions: [], reviewedAt: undefined };
+		if (!input.replyTo) return resume;
+		const open = current.questions ?? [];
+		const remaining = open.filter((question) => question.id !== input.replyTo);
+		// Unknown id: the question is already gone, so treat it as a plain redirection rather
+		// than leaving the worker blocked on something nothing can answer.
+		if (remaining.length === open.length || remaining.length === 0) return resume;
+		return {
+			state: "needs_input",
+			question: remaining.length === 1 ? remaining[0]!.text : `${remaining.length} questions`,
+			questions: remaining,
+			reviewedAt: undefined,
+		};
+	};
+}
+
+/** Legacy tmux transport only: receipt is unobservable there, so the state moves on send. */
 export function parentReplyAcceptedTransition(before: Pick<WorkerStatus, "state" | "question" | "questions">): WorkerTransition {
 	return (current) => {
 		if (current.state !== before.state && TERMINAL_STATES.has(current.state)) return undefined;

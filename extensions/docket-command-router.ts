@@ -10,7 +10,7 @@ import { storedDeliverableWorkerProjection, type LoadedArtifactContext, type Loa
 import type { NavigatorMode } from "./docket-navigator.js";
 import type { DocketIntent } from "./docket-command-grammar.js";
 import type { Artifact, CheckpointIndexEntry } from "./types.js";
-import type { WorkerCommands } from "./worker-commands.js";
+import type { WorkerCommands, WorkerTellOptions } from "./worker-commands.js";
 import type { WorkerStore } from "./worker-store.js";
 import { workerDeliverableArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 import type { DeliverableLifecycle } from "./deliverable-lifecycle.js";
@@ -236,10 +236,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 		deps.announceChipChange(artifact, "ref", chipResult);
 	};
 
-	const tellWorker = async (ref: string, text?: string, artifact?: Artifact): Promise<void> => {
+	const tellWorker = async (ref: string, text?: string, artifact?: Artifact, options: WorkerTellOptions = {}): Promise<void> => {
 		const trimmed = text?.trim();
 		if (trimmed) {
-			await deps.workerCommands.tell(ref, trimmed);
+			await deps.workerCommands.tell(ref, trimmed, options);
 			await deps.refreshWorkerDockWidget();
 			return;
 		}
@@ -253,7 +253,7 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 		const placeholder = artifact ? docketMetaString(artifact, "question") ?? artifact.title : questions;
 		const message = (await deps.input(`Tell ${label}`, placeholder ?? "instruction, answer, or follow-up"))?.trim();
 		if (!message) return;
-		await deps.workerCommands.tell(ref, message);
+		await deps.workerCommands.tell(ref, message, options);
 		await deps.refreshWorkerDockWidget();
 	};
 
@@ -273,7 +273,10 @@ export function createDocketCommandRouter(deps: DocketCommandRouterDeps) {
 			}
 
 			if (intent.kind === "tell") {
-				await tellWorker(intent.worker, intent.text);
+				await tellWorker(intent.worker, intent.text, undefined, {
+					...(intent.replyTo ? { replyTo: intent.replyTo } : {}),
+					...(intent.deliverAs ? { deliverAs: intent.deliverAs } : {}),
+				});
 				return;
 			}
 

@@ -2,7 +2,7 @@
 
 Docket is a pi extension whose first-use promise is **delegate safely without losing control**. Explicit workers are the primary story: spawn → watch/peek/tell → verdict → Report/diff/Hunk → decide. Durable deliverables preserve approved work outside a worker.
 
-The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved deliverable). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — evidence first, worker claims second, never the transcript. Automatic worker → parent flow is **metadata only**. **Workers** are human-started, independent background pi processes; **deliverables** are immutable, reusable records. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md); flat worker creation and execution-policy rationale lives in [ADR-0004](./adr/0004-human-started-workers-and-execution-policy.md).
+The unit of work is an **artifact**: a structured object derived from session activity (command, file edit, prompt, response, error, worker status, or saved deliverable). A small attention queue ranks unresolved artifacts as **review items**; the **verdict** card is where one worker decision is resolved — evidence first, worker claims second, never the transcript. Automatic worker → parent flow is **metadata only**. **Workers** are human-started, independent background pi processes; **deliverables** are immutable, reusable records. Pi owns session movement; Docket owns evidence and decisions. Rename rationale lives in [ADR-0002](./adr/0002-rename-to-docket.md); flat worker creation and execution-policy rationale lives in [ADR-0004](./adr/0004-human-started-workers-and-execution-policy.md); the parent↔worker message channel lives in [ADR-0008](./adr/0008-worker-messaging.md).
 
 If you're contributing, read this end-to-end. If you're using Docket, the README and [configuration.md](./configuration.md) are what you want.
 
@@ -31,6 +31,7 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
 | Worker Store | `extensions/worker-store.ts` | Flat worker persistence, stable window/pane targeting, status-file locking/atomic transitions, literal and bracketed-paste input, durable PTYs, task docs, session seeding, and exact-execution respawn. |
+| Worker Mailbox | `extensions/worker-mailbox.ts` | Message identity, durable inbox files, atomic claim, observed delivery states, and the worker-facing attribution frame. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
@@ -99,7 +100,8 @@ Per-worker state under `~/.pi/agent/docket/workers/<id>/`:
 | `artifacts.json` | worker heartbeat | Snapshot, signature-deduped between heartbeats. |
 | `deliverables/v<N>.json` | worker publication | Immutable primary ready generation: full body, evidence, recommendations, refs, frozen patch, provenance. |
 | `source-deliverable.md` | parent handoff | Byte-exact reviewed source body for a fresh Use → Worker destination. |
-| `events.ndjson` | worker live | Append-only event stream; rotated at 5 MB, one generation retained. |
+| `inbox/msg-*.json` | parent write, worker claim | One durable parent → worker Message each, carrying its observed delivery state. |
+| `events.ndjson` | worker live | Append-only event stream, both directions; rotated at 5 MB, one generation retained. |
 | `pane-tail.txt` | parent harvest | Last terminal lines captured from the dead tmux pane after the worker process exited. |
 | `session/` | parent (seeded) | Forked pi JSONL prefix, enables `--continue` + cache reuse. |
 | `workspace/` | parent (seeded) | Detached git worktree isolated from the parent's working copy. |
@@ -158,5 +160,7 @@ declare global {
 - **Worker overlap is surfaced, not prevented.** Isolated worktrees keep workers from clobbering each other while they work. Docket detects edited-file overlap and warns before promote; the parent remains the mediator.
 - **Attach means switch when already inside tmux.** `/docket attach` uses `switch-client` inside tmux and a copyable `attach` command outside. Workers record the human launch session's tmux target; `/docket attach parent` uses that value directly. Legacy `parentWorkerId` is not topology or fallback.
 - **Progress boards are informational.** `docket_todos` helps parent visibility, but `docket_done` is authoritative; stale progress never keeps a ready worker in a special unresolved state.
+- **Parent → worker is a channel, not keystrokes.** The parent writes a Message file into the worker's inbox; the worker's runtime claims it, records that it took it, and delivers the body through `pi.sendUserMessage(text, { deliverAs })` so pi chooses the landing point in its own agent loop. `queued`, `delivered`, and `read` are written only by the side that observed them, so no surface reports a delivery it inferred from an exit status. A reply naming a question id resolves that question alone. `tmux send-keys` remains the fallback for workers whose runtime predates the mailbox, and is labelled unconfirmed wherever it is reported. Rationale: [ADR-0008](./adr/0008-worker-messaging.md).
+- **A message outlives the worker it was addressed to.** The inbox is a directory in the worker dir, so a message queued for a crashed worker is delivered after respawn instead of being lost with the pane.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.
 - **Deliverables are claimed immutably.** Worker saves require exact terminal approval for the exact generation. Parent saves are explicit and synthetic-approved. Per-deliverable locks plus atomic claims make repeated and concurrent saves safe without a database.

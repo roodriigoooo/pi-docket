@@ -6,11 +6,14 @@ import path from "node:path";
 import { getAgentDir, SessionManager } from "@mariozechner/pi-coding-agent";
 import { appendWorkerQuestionPatch, buildWorkerInitialPrompt as buildBackgroundWorkerInitialPrompt, buildWorkerTaskDocument, workerInputAcceptedPatch, workerShortLabel, type WorkerQuestion, type WorkerStatus, type WorkerWorktree } from "./background-work.js";
 import { paneHarvestedTransition, parentReplyAcceptedTransition, respawnFailedTransition, respawnStartedTransition, type WorkerTransition } from "./worker-lifecycle.js";
+import { buildWorkerMessage, formatWorkerMessageForSession, listWorkerMessages, workerInboxDir, writeWorkerMessage, type WorkerMessage, type WorkerMessageInput, type WorkerMessageTransport } from "./worker-mailbox.js";
+import { appendWorkerEventSync } from "./worker-events.js";
 import type { Artifact, GitSnapshot } from "./types.js";
 import { readCurrentWorkerDeliverable, readWorkerDeliverable, workerDeliverableFile, workerDeliverablesDir, type WorkerDeliverable, type WorkerHandoffProvenance } from "./worker-deliverable.js";
 import { notifyTmuxAdapter } from "./docket-extension-surface.js";
 
 export { workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerState, type WorkerStatus } from "./background-work.js";
+export type { WorkerMessage, WorkerMessageInput, WorkerMessageTransport } from "./worker-mailbox.js";
 
 export const WORKER_TMUX_PREFIX = "docket-worker-";
 export const DOCKET_WORKER_ENV = "DOCKET_WORKER_ID";
@@ -44,6 +47,10 @@ export type WorkerStore = {
 	updateStatus(id: string, transition: WorkerTransition): Promise<{ before: WorkerStatus | undefined; after: WorkerStatus | undefined; changed: boolean }>;
 	writeArtifacts(id: string, artifacts: Artifact[]): Promise<void>;
 	addQuestion(id: string, text: string): Promise<WorkerStatus | undefined>;
+	/** Durable, observed parent → worker delivery. Falls back to the terminal for legacy workers. */
+	sendMessage(id: string, input: WorkerMessageInput): Promise<WorkerMessageSendResult>;
+	inboxDir(id: string): string;
+	listMessages(id: string): Promise<WorkerMessage[]>;
 	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
@@ -62,6 +69,22 @@ export type WorkerStore = {
 };
 
 export type PaneHarvestResult = "captured" | "window_gone" | "alive" | "not_found";
+
+export type WorkerMessageSendResult =
+	| { ok: true; transport: WorkerMessageTransport; message: WorkerMessage }
+	| { ok: false; reason: "not_found" | "empty" | "transport_failed" };
+
+/**
+ * Which transport can actually reach this worker.
+ *
+ * `mailboxAt` is the worker's own advertisement that its inbox reader is live. A worker that has
+ * never heartbeated is still booting, and a current build will drain its inbox the moment it
+ * starts — so queueing beats firing keystrokes at a terminal that is not listening yet. Only a
+ * worker proven to be running while never advertising a mailbox is a pre-mailbox build.
+ */
+export function workerUsesMailbox(status: Pick<WorkerStatus, "mailboxAt" | "heartbeatAt">): boolean {
+	return Boolean(status.mailboxAt) || !status.heartbeatAt;
+}
 
 export type SpawnInput = {
 	task: string;
@@ -557,6 +580,43 @@ export function createWorkerStore(): WorkerStore {
 			const question: WorkerQuestion = { id: `${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`, text: text.trim(), createdAt: new Date().toISOString() };
 			const patch = appendWorkerQuestionPatch(current, text, question);
 			return patch ? this.patchStatus(current.id, patch) : current;
+		},
+
+		inboxDir(id: string): string {
+			return workerInboxDir(workersRoot(), id);
+		},
+
+		listMessages(id: string): Promise<WorkerMessage[]> {
+			return listWorkerMessages(workersRoot(), id);
+		},
+
+		async sendMessage(id: string, input: WorkerMessageInput): Promise<WorkerMessageSendResult> {
+			const status = await this.find(id);
+			if (!status) return { ok: false, reason: "not_found" };
+			const message = buildWorkerMessage(input);
+			if (!message) return { ok: false, reason: "empty" };
+
+			if (workerUsesMailbox(status)) {
+				await writeWorkerMessage(workersRoot(), status.id, message);
+				appendWorkerEventSync(workersRoot(), status.id, {
+					kind: "message",
+					payload: { direction: "out", id: message.id, kind: message.kind, from: message.from, delivery: "queued", transport: "inbox", ...(message.replyTo ? { replyTo: message.replyTo } : {}) },
+				});
+				return { ok: true, transport: "inbox", message };
+			}
+
+			// Legacy worker: no reader will ever claim an inbox file, so keystrokes are the only
+			// path. Receipt is unobservable here, which is why the state moves on send and every
+			// surface reporting this transport says the receipt is unconfirmed.
+			const payload = formatWorkerMessageForSession(message);
+			const sent = sendKeysToWindow(status.tmuxSession, isMultilineInput(payload) ? normalizeMultilineInput(payload) : sanitizeSingleLineInput(payload), status.tmuxWindowId, status.tmuxPaneId, isMultilineInput(payload));
+			if (!sent) return { ok: false, reason: "transport_failed" };
+			await this.updateStatus(status.id, parentReplyAcceptedTransition(status));
+			appendWorkerEventSync(workersRoot(), status.id, {
+				kind: "message",
+				payload: { direction: "out", id: message.id, kind: message.kind, from: message.from, delivery: "unconfirmed", transport: "tmux" },
+			});
+			return { ok: true, transport: "tmux", message };
 		},
 
 		async sendInput(id: string, text: string): Promise<boolean> {
