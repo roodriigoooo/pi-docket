@@ -17,12 +17,24 @@ import path from "node:path";
  * written by the side that observed it.
  */
 
+/**
+ * Two mailboxes, one format. `inbox` is parent → worker and is claimed by the worker's runtime;
+ * `outbox` is worker → parent and is claimed by the parent's dock sweep. State that blocks a
+ * worker still lives in `status.json`; a mailbox only ever carries messages, which is what keeps
+ * a non-blocking notice from having to invent a lifecycle.
+ */
+export type WorkerMailbox = "inbox" | "outbox";
+
 export const WORKER_INBOX_DIR = "inbox";
+export const WORKER_OUTBOX_DIR = "outbox";
 const MESSAGE_FILE_PREFIX = "msg-";
 const MESSAGE_FILE_SUFFIX = ".json";
 
-/** `directive` is an unprompted instruction; `answer` resolves a specific worker question. */
-export type WorkerMessageKind = "directive" | "answer";
+/**
+ * `directive` is an unprompted instruction, `answer` resolves a specific worker question, and
+ * `notice` is a worker sharing something without blocking on it.
+ */
+export type WorkerMessageKind = "directive" | "answer" | "notice";
 
 /**
  * Where the message lands in the worker's agent loop. Pi owns this timing, which is the
@@ -32,7 +44,7 @@ export type WorkerMessageKind = "directive" | "answer";
 export type WorkerMessageDeliverAs = "steer" | "followUp";
 
 /** Author, and therefore how much authority the body carries. Never inferred, never omitted. */
-export type WorkerMessageAuthor = "human" | "parent-agent";
+export type WorkerMessageAuthor = "human" | "parent-agent" | "worker";
 
 export type WorkerMessageDelivery = "queued" | "delivered" | "read" | "undeliverable";
 
@@ -53,6 +65,10 @@ export type WorkerMessage = {
 	/** Question text as it stood when the answer was written, for the worker-facing header. */
 	replyToText?: string;
 	deliverAs: WorkerMessageDeliverAs;
+	/** Worker labels this notice names as intended recipients. Proposed, never routed on (P2). */
+	to?: string[];
+	/** The worker that authored a notice, so the parent can attribute it without guessing. */
+	fromWorker?: string;
 	createdAt: string;
 	delivery: WorkerMessageDelivery;
 	deliveredAt?: string;
@@ -66,6 +82,8 @@ export type WorkerMessageInput = {
 	replyTo?: string;
 	replyToText?: string;
 	deliverAs?: WorkerMessageDeliverAs;
+	to?: string[];
+	fromWorker?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -104,6 +122,8 @@ export function buildWorkerMessage(input: WorkerMessageInput, options: { now?: n
 		...(input.replyTo ? { replyTo: input.replyTo } : {}),
 		...(input.replyToText ? { replyToText: input.replyToText } : {}),
 		deliverAs: input.deliverAs ?? "steer",
+		...(input.to?.length ? { to: input.to } : {}),
+		...(input.fromWorker ? { fromWorker: input.fromWorker } : {}),
 		createdAt: new Date(now).toISOString(),
 		delivery: "queued",
 	};
@@ -126,13 +146,15 @@ export function parseWorkerMessage(raw: string): WorkerMessage | undefined {
 	return {
 		id,
 		body,
-		kind: record.kind === "answer" ? "answer" : "directive",
-		from: record.from === "parent-agent" ? "parent-agent" : "human",
+		kind: record.kind === "answer" ? "answer" : record.kind === "notice" ? "notice" : "directive",
+		from: record.from === "parent-agent" ? "parent-agent" : record.from === "worker" ? "worker" : "human",
 		...(typeof record.replyTo === "string" ? { replyTo: record.replyTo } : {}),
 		...(typeof record.replyToText === "string" ? { replyToText: record.replyToText } : {}),
 		deliverAs: record.deliverAs === "followUp" ? "followUp" : "steer",
 		createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
 		delivery: delivery === "delivered" || delivery === "read" || delivery === "undeliverable" ? delivery : "queued",
+		...(Array.isArray(record.to) ? { to: record.to.filter((entry): entry is string => typeof entry === "string") } : {}),
+		...(typeof record.fromWorker === "string" ? { fromWorker: record.fromWorker } : {}),
 		...(typeof record.deliveredAt === "string" ? { deliveredAt: record.deliveredAt } : {}),
 		...(typeof record.readAt === "string" ? { readAt: record.readAt } : {}),
 	};
@@ -150,8 +172,10 @@ export function markWorkerMessageRead(message: WorkerMessage, at = new Date().to
 	return { ...message, delivery: "read", readAt: at };
 }
 
-export function workerMessageAuthorLabel(from: WorkerMessageAuthor): string {
-	return from === "parent-agent" ? "parent agent" : "you";
+export function workerMessageAuthorLabel(from: WorkerMessageAuthor, fromWorker?: string): string {
+	if (from === "parent-agent") return "parent agent";
+	if (from === "worker") return fromWorker ?? "another worker";
+	return "you";
 }
 
 /**
@@ -165,7 +189,7 @@ export function formatWorkerMessageForSession(message: WorkerMessage, options: {
 	const context = question
 		? ` · re: ${question.length > maxQuestion ? `${question.slice(0, maxQuestion - 1)}…` : question}`
 		: "";
-	return `[docket · from ${workerMessageAuthorLabel(message.from)}${context}]\n${message.body}`;
+	return `[docket · from ${workerMessageAuthorLabel(message.from, message.fromWorker)}${context}]\n${message.body}`;
 }
 
 /**
@@ -228,12 +252,16 @@ export function pendingWorkerMessageLine(messages: WorkerMessage[], workerIsTerm
 // Filesystem adapter
 // ---------------------------------------------------------------------------
 
-export function workerInboxDir(root: string, workerId: string): string {
-	return path.join(root, workerId, WORKER_INBOX_DIR);
+export function workerMailboxDir(root: string, workerId: string, box: WorkerMailbox = "inbox"): string {
+	return path.join(root, workerId, box === "outbox" ? WORKER_OUTBOX_DIR : WORKER_INBOX_DIR);
 }
 
-export function workerMessageFile(root: string, workerId: string, messageId: string): string {
-	return path.join(workerInboxDir(root, workerId), `${messageId}${MESSAGE_FILE_SUFFIX}`);
+export function workerInboxDir(root: string, workerId: string): string {
+	return workerMailboxDir(root, workerId, "inbox");
+}
+
+export function workerMessageFile(root: string, workerId: string, messageId: string, box: WorkerMailbox = "inbox"): string {
+	return path.join(workerMailboxDir(root, workerId, box), `${messageId}${MESSAGE_FILE_SUFFIX}`);
 }
 
 async function writeMessageFile(file: string, message: WorkerMessage): Promise<void> {
@@ -242,23 +270,23 @@ async function writeMessageFile(file: string, message: WorkerMessage): Promise<v
 	await fs.rename(temp, file);
 }
 
-export async function writeWorkerMessage(root: string, workerId: string, message: WorkerMessage): Promise<WorkerMessage> {
-	await fs.mkdir(workerInboxDir(root, workerId), { recursive: true });
-	await writeMessageFile(workerMessageFile(root, workerId, message.id), message);
+export async function writeWorkerMessage(root: string, workerId: string, message: WorkerMessage, box: WorkerMailbox = "inbox"): Promise<WorkerMessage> {
+	await fs.mkdir(workerMailboxDir(root, workerId, box), { recursive: true });
+	await writeMessageFile(workerMessageFile(root, workerId, message.id, box), message);
 	return message;
 }
 
-export async function listWorkerMessages(root: string, workerId: string): Promise<WorkerMessage[]> {
+export async function listWorkerMessages(root: string, workerId: string, box: WorkerMailbox = "inbox"): Promise<WorkerMessage[]> {
 	let names: string[];
 	try {
-		names = await fs.readdir(workerInboxDir(root, workerId));
+		names = await fs.readdir(workerMailboxDir(root, workerId, box));
 	} catch {
 		return [];
 	}
 	const messages: WorkerMessage[] = [];
 	for (const name of names.filter(isWorkerMessageFile).sort()) {
 		try {
-			const parsed = parseWorkerMessage(await fs.readFile(path.join(workerInboxDir(root, workerId), name), "utf8"));
+			const parsed = parseWorkerMessage(await fs.readFile(path.join(workerMailboxDir(root, workerId, box), name), "utf8"));
 			if (parsed) messages.push(parsed);
 		} catch {
 			// A message being written right now reads as absent; the next sweep picks it up.
@@ -267,9 +295,9 @@ export async function listWorkerMessages(root: string, workerId: string): Promis
 	return messages;
 }
 
-export function readWorkerMessageSync(root: string, workerId: string, messageId: string): WorkerMessage | undefined {
+export function readWorkerMessageSync(root: string, workerId: string, messageId: string, box: WorkerMailbox = "inbox"): WorkerMessage | undefined {
 	try {
-		return parseWorkerMessage(fsSync.readFileSync(workerMessageFile(root, workerId, messageId), "utf8"));
+		return parseWorkerMessage(fsSync.readFileSync(workerMessageFile(root, workerId, messageId, box), "utf8"));
 	} catch {
 		return undefined;
 	}
@@ -280,13 +308,13 @@ export function readWorkerMessageSync(root: string, workerId: string, messageId:
  * session, so a crash between the two loses a message rather than silently replaying it into a
  * later turn with no trace.
  */
-export async function claimPendingWorkerMessages(root: string, workerId: string, at = new Date().toISOString()): Promise<WorkerMessage[]> {
+export async function claimPendingWorkerMessages(root: string, workerId: string, at = new Date().toISOString(), box: WorkerMailbox = "inbox"): Promise<WorkerMessage[]> {
 	const claimed: WorkerMessage[] = [];
-	for (const message of await listWorkerMessages(root, workerId)) {
+	for (const message of await listWorkerMessages(root, workerId, box)) {
 		if (!isPendingWorkerMessage(message)) continue;
 		const delivered = markWorkerMessageDelivered(message, at);
 		try {
-			await writeMessageFile(workerMessageFile(root, workerId, message.id), delivered);
+			await writeMessageFile(workerMessageFile(root, workerId, message.id, box), delivered);
 			claimed.push(delivered);
 		} catch {
 			// Leave it queued; it is retried on the next sweep.

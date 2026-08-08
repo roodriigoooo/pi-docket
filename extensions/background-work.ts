@@ -5,7 +5,7 @@ import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-life
 import type { WorkerThinking } from "./worker-spawn-policy.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
+export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "consulting" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
 export type WorkerTodoState = "pending" | "in_progress" | "completed";
 
@@ -45,6 +45,13 @@ export type WorkerQuestion = {
 	options?: string[];
 	/** Which option the worker recommends (matches one of `options`); pre-selected on the card. */
 	recommend?: string;
+	/** Who this question is for. `parent-agent` is the opt-in consult lane; absent means the human. */
+	audience?: "human" | "parent-agent";
+	/** Extra grounding the worker supplied with a consult. */
+	context?: string;
+	/** Set when a consult was handed back to the human; from then on it is an ordinary question. */
+	escalatedAt?: string;
+	escalatedReason?: string;
 };
 
 export type WorkerTaskDocumentInput = {
@@ -182,6 +189,7 @@ export function workerMascotFrame(worker: WorkerStatus | undefined, options: { n
 		const frameTime = Number.isFinite(options.now) ? options.now! : Date.now();
 		return frames[Math.floor(frameTime / FRAME_INTERVAL_MS) % frames.length]!;
 	}
+	if (state === "consulting") return "(?_o)";
 	if (state === "needs_input") return "(?_?)";
 	if (state === "ready_open_todos") return "(^_?)";
 	if (state === "ready") return "(^_^)";
@@ -209,6 +217,7 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	const face = state === "starting" || state === "thinking" ? "" : workerMascotFrame(worker, options);
 	let chip = `${label}${kindTag}${face}`;
 	if (!options.verbose) return chip;
+	if (state === "consulting") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "consulting"))}`;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
 	if (state === "ready_open_todos") return `${chip} ready · progress ${workerTodoSummary(worker) ?? ""}`.trim();
@@ -478,15 +487,17 @@ export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): Worke
 
 export function workerStateRank(worker: WorkerStatus, now = Date.now()): number {
 	const state = deriveWorkerState(worker, now);
+	// A consult ranks just under a question: the human is not the blocker on it yet.
 	if (state === "needs_input") return 0;
-	if (state === "failed") return 1;
-	if (state === "ready_open_todos") return 2;
-	if (state === "ready") return 3;
-	if (state === "thinking") return 4;
-	if (state === "starting") return 5;
-	if (state === "stale") return 6;
-	if (state === "reviewed") return 8;
-	return 7;
+	if (state === "consulting") return 1;
+	if (state === "failed") return 2;
+	if (state === "ready_open_todos") return 3;
+	if (state === "ready") return 4;
+	if (state === "thinking") return 5;
+	if (state === "starting") return 6;
+	if (state === "stale") return 7;
+	if (state === "reviewed") return 9;
+	return 8;
 }
 
 export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): boolean {
@@ -585,18 +596,20 @@ export function workerProtocolMessage(state: WorkerProtocolState, text?: string)
 
 export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Artifact | undefined {
 	const state = deriveWorkerState(worker, now);
-	if (state !== "needs_input" && state !== "ready_open_todos" && state !== "ready" && state !== "failed") return undefined;
+	if (state !== "needs_input" && state !== "consulting" && state !== "ready_open_todos" && state !== "ready" && state !== "failed") return undefined;
 	const label = workerSourceLabel(worker);
 	const questions = workerQuestions(worker);
 	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
 	const ready = state === "ready" || state === "ready_open_todos";
-	const text = state === "needs_input" ? questionText : ready ? worker.summary : worker.lastError;
+	const blocked = state === "needs_input" || state === "consulting";
+	const text = blocked ? questionText : ready ? worker.summary : worker.lastError;
 	const todoLines = workerTodoBoardLines(worker, { includeHeader: true });
 	const progress = workerTodoProgress(worker);
 	const openTodos = Math.max(0, progress.total - progress.completed);
 	const git = gitSnapshotLabel(worker.git);
-	const title = state === "needs_input"
-		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
+	const blockedLabel = state === "consulting" ? "consulting" : "needs input";
+	const title = blocked
+		? questions.length > 1 ? `${label} ${blockedLabel}: ${questions.length} questions` : `${label} ${blockedLabel}${questions[0]?.text ? `: ${questions[0].text}` : ""}`
 		: ready
 			? `${label} ${state === "ready_open_todos" ? `ready · progress ${progress.completed}/${progress.total}` : "ready"}${text ? `: ${text}` : ""}`
 			: `${label} failed${text ? `: ${text}` : ""}`;
@@ -610,6 +623,33 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		body: [`worker: ${label}`, `state: ${state}`, worker.deliverable ? `deliverable: ${worker.deliverable.ref} (v${worker.deliverable.version})` : undefined, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
 		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, ...(worker.deliverable ? { deliverableId: worker.deliverable.id, deliverableVersion: worker.deliverable.version, deliverableRef: worker.deliverable.ref } : {}), git: worker.git },
+	};
+}
+
+/**
+ * A worker notice as a review item.
+ *
+ * Notices deliberately do not travel as parent session messages: a custom message participates
+ * in model context, and a notice is worker-authored content the human never asked for. As an
+ * artifact it costs nothing until the human opens or chips it, which is the same bargain every
+ * other piece of worker evidence makes (ADR-0008).
+ */
+export function workerNoticeArtifact(worker: WorkerStatus, notice: { id: string; body: string; createdAt: string; to?: string[] }): Artifact | undefined {
+	const body = notice.body.trim();
+	if (!body) return undefined;
+	const label = workerSourceLabel(worker);
+	const headline = body.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? body;
+	const addressed = notice.to?.length ? `suggested for ${notice.to.join(", ")}` : undefined;
+	return {
+		id: `notice.${notice.id}`,
+		displayId: `notice.${notice.id}`,
+		ref: `worker-notice:${worker.id}:${notice.id}`,
+		kind: "response",
+		title: `${label} shared: ${truncatePlain(headline, 80)}`,
+		subtitle: addressed ?? workerDisplayName(worker),
+		body: [`worker: ${label}`, `task: ${worker.task}`, addressed ? `addressed: ${notice.to!.join(", ")}` : undefined, "", body].filter((line): line is string => line !== undefined).join("\n"),
+		timestamp: Date.parse(notice.createdAt) || Date.parse(worker.updatedAt),
+		meta: { workerId: worker.id, workerLabel: label, workerNotice: true, noticeId: notice.id, ...(notice.to?.length ? { noticeTo: notice.to } : {}) },
 	};
 }
 

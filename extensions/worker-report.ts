@@ -213,7 +213,7 @@ export function projectWorkerReport(
 	const resolvedChangeSet = changeSet ?? workerChangeSetArtifact(worker, resolvedDeliverable);
 	const label = workerSourceLabel(worker);
 	const state = deriveWorkerState(worker);
-	const stateLabel = state === "ready_open_todos" ? "ready · progress" : state === "needs_input" ? "needs reply" : state.replace(/_/g, " ");
+	const stateLabel = state === "ready_open_todos" ? "ready · progress" : state === "needs_input" ? "needs reply" : state === "consulting" ? "asking parent" : state.replace(/_/g, " ");
 	const summary = resolvedDeliverable ? resolvedDeliverable.body : displayWorkerSummary(worker);
 	const fromSummary = resolvedDeliverable ? firstWorkerReviewLine(resolvedDeliverable.summary) ?? firstWorkerReviewLine(resolvedDeliverable.body) : workerSummaryHeadline(worker) ?? firstWorkerReviewLine(summary);
 	const headline = fromSummary ?? (state === "failed" ? worker.lastError : undefined) ?? worker.task;
@@ -238,7 +238,7 @@ export function projectWorkerReport(
 
 	const questions = workerQuestions(worker);
 	const primarySection: WorkerReport["primarySection"] =
-		state === "needs_input" ? "question" : state === "failed" ? "failure" : "outcome";
+		state === "needs_input" || state === "consulting" ? "question" : state === "failed" ? "failure" : "outcome";
 	const primaryBody =
 		primarySection === "question"
 			? questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n") || worker.question || headline

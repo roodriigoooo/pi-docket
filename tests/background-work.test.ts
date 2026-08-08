@@ -44,9 +44,17 @@ test("Background Work derives reviewed state from reviewedAt on terminal workers
 
 test("Background Work workerStateRank orders reviewed below idle attention", () => {
 	const now = new Date().toISOString();
-	assert.equal(workerStateRank(worker({ state: "needs_input" })), 0);
-	assert.equal(workerStateRank(worker({ state: "ready", reviewedAt: now })), 8);
-	assert.equal(workerStateRank(worker({ state: "ready" })), 3);
+	const question = { id: "q1", text: "which?", createdAt: now };
+	const blocked = workerStateRank(worker({ state: "needs_input", questions: [question] }));
+	const consulting = workerStateRank(worker({ state: "needs_input", questions: [{ ...question, audience: "parent-agent" as const }] }));
+	const ready = workerStateRank(worker({ state: "ready" }));
+	const reviewed = workerStateRank(worker({ state: "ready", reviewedAt: now }));
+
+	// A question outranks a consult: only one of them is blocked on the human.
+	assert.equal(blocked, 0);
+	assert.ok(blocked < consulting, "a question outranks a consult");
+	assert.ok(consulting < ready, "a blocked worker outranks a ready one");
+	assert.ok(ready < reviewed, "reviewed sinks below everything still asking");
 });
 
 test("Background Work input/question patches clear reviewedAt so a reviewed worker re-surfaces", () => {

@@ -51,6 +51,8 @@ export type WorkerStore = {
 	sendMessage(id: string, input: WorkerMessageInput): Promise<WorkerMessageSendResult>;
 	inboxDir(id: string): string;
 	listMessages(id: string): Promise<WorkerMessage[]>;
+	/** Notices the worker shared without blocking (its outbox). */
+	listNotices(id: string): Promise<WorkerMessage[]>;
 	sendInput(id: string, text: string): Promise<boolean>;
 	spawn(input: SpawnInput): Promise<WorkerStatus>;
 	kill(id: string): Promise<boolean>;
@@ -588,6 +590,10 @@ export function createWorkerStore(): WorkerStore {
 
 		listMessages(id: string): Promise<WorkerMessage[]> {
 			return listWorkerMessages(workersRoot(), id);
+		},
+
+		listNotices(id: string): Promise<WorkerMessage[]> {
+			return listWorkerMessages(workersRoot(), id, "outbox");
 		},
 
 		async sendMessage(id: string, input: WorkerMessageInput): Promise<WorkerMessageSendResult> {

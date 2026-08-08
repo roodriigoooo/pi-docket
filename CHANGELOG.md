@@ -9,7 +9,15 @@
 - **`/docket tell` learns two flags**: `--after` waits for the worker to finish its current turn instead of steering it, `--q <id>` binds the reply to one question. Flags stop being flags once the message body starts.
 - **the dock stays quiet**: normal delivery adds no row and no line. Only a message the worker has not taken earns a sub-line, and inboxes are read only for workers that have actually exchanged a message.
 - **legacy workers still receive replies**: a worker whose runtime predates the mailbox gets the old keystrokes, and every surface reporting that path says `sent to terminal · receipt unconfirmed` instead of borrowing the language of a delivered message.
-- **rationale**: see [docs/adr/0008-worker-messaging.md](docs/adr/0008-worker-messaging.md) for the permission line, the consult lane, and the broadcast design this is the first phase of.
+- **workers can ask the parent a question you are not there to answer**: `docket_consult` blocks the worker like `docket_wait`, but its audience is the parent session. It is **off by default** (`messaging.autoAnswer`), and with it off a consult presents as an ordinary question with the same card, verbs, and reply binding — nothing is lost and nothing is stranded. `docket_wait` remains the only path for permission, scope, risk, or anything irreversible.
+- **`consulting` is its own state**: the dock renders it in accent, not warning, because "waiting on the parent agent" and "waiting on you" are different facts. It is derived, not persisted — a consult is a question tagged with an audience, so every existing status, transport, reply, and ledger path carries it unchanged.
+- **the exchange is one tool call in your transcript**: `✉ w1 consulted · answered by parent agent`, ctrl+o for the question, the answer, and the fact that no human reviewed it. No bespoke chip format; pi's own collapse control.
+- **an auto-answer never impersonates you**: the worker receives it framed `[docket · from parent agent]`. A worker that mistakes a model's guess for your decision builds on authority the decision never had.
+- **the parent agent can always decline**: `docket_escalate` hands a consult back to you as a normal question, and so does the `messaging.consultWindowSeconds` window expiring. The card says it was escalated and why, so a question that reached you late does not read like one that was always yours.
+- **who decided is now in the ledger**: `decisions.ndjson` rows carry `actor`, `/docket log decisions` marks parent-agent rows, and a parent-agent row can never satisfy deliverable approval — approval is a human act by definition.
+- **`docket_note` lets a worker share without stopping**: a notice never blocks the worker and never enters your model context. It surfaces as a review item you can open, chip, or ignore, plus one word on the dock's existing summary line. A worker may suggest recipients; only you send anything anywhere.
+- **notices cannot hijack a worker's answer**: they are excluded from result selection, so the newest notice never displaces the deliverable a worker actually published.
+- **rationale**: see [docs/adr/0008-worker-messaging.md](docs/adr/0008-worker-messaging.md) for the permission line, the consult lane, and the broadcast design still to come.
 
 ## 0.8.1
 

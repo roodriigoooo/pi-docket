@@ -228,6 +228,12 @@ When there are no workers yet, empty states stay tiny:
 docket · no workers yet · /docket spawn <task>
 ```
 
+Workers can also ask and share without you being in their session:
+
+- `docket_wait` — the question that always reaches you. Permission, scope, risk, anything irreversible.
+- `docket_consult` — a question the parent session may already be able to answer. Off by default; enabling it is the one setting that lets worker text reach your model context. Answers reach the worker labelled `[docket · from parent agent]`, and anything the agent will not answer escalates back to you.
+- `docket_note` — something worth sharing that does not block the worker. Becomes a review item at zero model-context cost.
+
 Bundled worker kinds:
 
 - `default`: plan-gated general work in a fresh isolated workspace.

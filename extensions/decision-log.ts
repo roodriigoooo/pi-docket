@@ -20,7 +20,14 @@ import type { WorkerDeliverablePointer } from "./worker-deliverable.js";
  * pure history we summarize over.
  */
 
-export type DecisionVerb = "accept" | "reject" | "rejectStop" | "chat" | "send";
+export type DecisionVerb = "accept" | "reject" | "rejectStop" | "chat" | "send" | "consult";
+
+/**
+ * Who resolved this. Absent means the human, which is what every legacy row is. A
+ * `parent-agent` row is an answer Docket produced under the opt-in consult policy, and the
+ * ledger is where "who decided this" has to be answerable — not just "what was decided".
+ */
+export type DecisionActor = "human" | "parent-agent";
 
 export type VerdictResolvedEvent = {
 	type: "verdict_resolved";
@@ -32,6 +39,8 @@ export type VerdictResolvedEvent = {
 	/** Derived worker state when the verdict opened (needs_input / ready / failed / …). */
 	state: string;
 	verb: DecisionVerb;
+	/** Who resolved it. Omitted on human decisions and on every legacy row. */
+	actor?: DecisionActor;
 	/** Option text for a send, the reply text for a chat/steer, otherwise omitted. */
 	option?: string;
 	/** Risk line shown on the card, if the worker surfaced one. */
@@ -77,9 +86,13 @@ export function latestDeliverableJudgment(events: DecisionEvent[], pointer: Work
 	return latest;
 }
 
-/** Approval is generation-bound; needs_input accepts and failed retries never qualify. */
+/**
+ * Approval is generation-bound; needs_input accepts and failed retries never qualify. A
+ * parent-agent row can never approve either — approval is a human act by definition.
+ */
 export function isDeliverableApproved(events: DecisionEvent[], pointer: WorkerDeliverablePointer): boolean {
 	const judgment = latestDeliverableJudgment(events, pointer);
+	if (judgment?.actor === "parent-agent") return false;
 	return judgment?.verb === "accept" && (judgment.state === "ready" || judgment.state === "ready_open_todos");
 }
 
@@ -106,6 +119,7 @@ const VERB_LABELS: Record<DecisionVerb, string> = {
 	rejectStop: "reject & stop",
 	chat: "chat",
 	send: "option",
+	consult: "consult answer",
 };
 
 export function verbLabel(verb: DecisionVerb): string {
@@ -131,7 +145,7 @@ export type DecisionSummary = {
 };
 
 function emptyVerbCounts(): Record<DecisionVerb, number> {
-	return { accept: 0, reject: 0, rejectStop: 0, chat: 0, send: 0 };
+	return { accept: 0, reject: 0, rejectStop: 0, chat: 0, send: 0, consult: 0 };
 }
 
 function withinWindow(timestamp: string, since: number): boolean {
@@ -182,11 +196,12 @@ function formatEventLine(event: DecisionEvent, now: number): string {
 	}
 	const optionText = event.option?.replace(/\s+/g, " ").trim();
 	const option = optionText ? ` "${optionText}"` : "";
+	const actor = event.actor === "parent-agent" ? "  (parent agent)" : "";
 	const risk = event.risk ? `  ⚠ ${event.risk}` : "";
 	const supportingRefs = event.evidenceRefs.filter((ref) => ref !== event.deliverableRef);
 	const evidence = supportingRefs.length > 0 ? `  [${supportingRefs.join(", ")}]` : "";
 	const version = event.deliverableRef ? `  [${event.deliverableRef}]` : "";
-	return `${when}  ${event.workerLabel}  ${verbLabel(event.verb)}${option}  (${event.state})${risk}${version}${evidence}`;
+	return `${when}  ${event.workerLabel}  ${verbLabel(event.verb)}${option}${actor}  (${event.state})${risk}${version}${evidence}`;
 }
 
 /** Human-readable decisions audit for `/docket log decisions`. Pure: easy to test. */

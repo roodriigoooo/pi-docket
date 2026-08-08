@@ -64,6 +64,7 @@ function fakeStore(workers: WorkerStatus[] = [worker]) {
 		},
 		inboxDir: (id) => `/tmp/workers/${id}/inbox`,
 		listMessages: async () => [],
+		listNotices: async () => [],
 		sendInput: async (id, text) => { sent.push({ id, text }); return true; },
 		spawn: async (input) => {
 			spawned.push(input);

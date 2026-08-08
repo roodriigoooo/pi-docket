@@ -34,6 +34,18 @@ _Avoid_: queue, channel, socket, buffer.
 What has actually been observed about one Message: `queued` (written, nothing else known), `delivered` (the worker's runtime took it), `read` (the worker's agent began a turn holding it), `undeliverable` (projected — queued, and the worker will not run again). Never inferred from a transport's exit status.
 _Avoid_: sent, ok, acknowledged, received.
 
+**Consult**:
+A worker question addressed to the *parent agent* rather than the human, raised with `docket_consult`. It blocks the worker exactly like a question, and it is the only path that spends parent model context — so it is off by default. Not a separate worker state: a consult is a Question whose audience is the parent agent, which is why escalation is a field change and not a lifecycle move.
+_Avoid_: auto-answer, delegation, agent reply.
+
+**Escalation**:
+Handing a Consult back to the human, either because the parent agent declined or because the consult outlived its window. The question keeps its id and its place, so a reply still binds to it; only the audience changes.
+_Avoid_: timeout, failure, fallback.
+
+**Notice**:
+Something a Worker shares with the parent without blocking, raised with `docket_note`. It is a Message in the worker's outbox and a review item in the parent, never a session message — a custom message participates in model context, and a notice is worker-authored content the human did not ask for. It may name suggested recipients; only the human sends it anywhere.
+_Avoid_: log line, update, broadcast.
+
 **Worker Kind**:
 Task intent and authority declared by markdown: description, read-only posture, plan gate, decision rights, output guidance, and soft limits. Kind does not choose model, thinking, context, workspace, or tmux layout.
 _Avoid_: execution preset, model profile, agent class.
@@ -162,6 +174,8 @@ _Avoid_: continue, resume, restore.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
 - A **Message** carries one instruction or answer to a Worker, or one question from it. Every edge is Worker ↔ parent; there is no Worker → Worker channel.
 - **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
+- A **Consult** is answerable by the parent agent only while the human has enabled it; otherwise it is an ordinary Question. Either way the worker is told who answered.
+- A **Notice** never changes a Worker's state and never enters parent model context.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
 - **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
 

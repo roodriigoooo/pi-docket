@@ -192,7 +192,7 @@ export function reviewBucket(artifact: Artifact, queueState: ReviewQueueState = 
 	if (queueState.pinnedRefs.has(artifact.ref)) return "pinned";
 	if (queueState.doneRefs.has(artifact.ref)) return "recent";
 	const workerStatus = artifactWorkerStatus(artifact);
-	if (workerStatus === "needs_input" || workerStatus === "ready" || workerStatus === "ready_open_todos" || workerStatus === "failed") return "needs";
+	if (workerStatus === "needs_input" || workerStatus === "consulting" || workerStatus === "ready" || workerStatus === "ready_open_todos" || workerStatus === "failed") return "needs";
 	if (isWorkerChangeSet(artifact)) return "needs";
 	if (artifact.kind === "error") return "needs";
 	if (isChangedFileArtifact(artifact) && artifact.source) return "needs";
@@ -206,6 +206,7 @@ function attentionRank(item: ReviewItem): number {
 	const artifact = item.artifact;
 	const status = artifactWorkerStatus(artifact);
 	if (status === "needs_input") return 0;
+	if (status === "consulting") return 0.5;
 	if (status === "failed") return 1;
 	if (artifact.kind === "error" || isFailedCommandArtifact(artifact)) return 2;
 	if (isWorkerChangeSet(artifact)) return 3;
@@ -220,7 +221,7 @@ function reviewReason(artifact: Artifact, bucket: ReviewBucket | undefined): Rev
 	const status = artifactWorkerStatus(artifact);
 	if (bucket === "pinned") return "pinned";
 	if (bucket === "recent") return "done";
-	if (status === "needs_input") return "workerNeedsInput";
+	if (status === "needs_input" || status === "consulting") return "workerNeedsInput";
 	if (status === "failed") return "workerFailed";
 	if (isWorkerChangeSet(artifact)) return "workerChangeSet";
 	if (status === "ready" || status === "ready_open_todos") return "workerReady";
@@ -258,7 +259,7 @@ export function reviewCategoryLabel(category: ReviewCategory | undefined): strin
 
 function primaryAction(artifact: Artifact): ReviewActionId {
 	const status = artifactWorkerStatus(artifact);
-	if (status === "needs_input" || status === "failed") return "openVerdict";
+	if (status === "needs_input" || status === "consulting" || status === "failed") return "openVerdict";
 	if (isWorkerChangeSet(artifact)) return "openVerdict";
 	if (artifact.kind === "file" && !artifactHasDiff(artifact)) return "openFile";
 	return "inspect";
@@ -274,6 +275,7 @@ function cardRecommendations(artifact: Artifact): string[] {
 function workerHeadline(artifact: Artifact, status: WorkerDerivedState, label: string): string {
 	const subtitle = artifact.subtitle?.trim();
 	const task = subtitle && subtitle.length > 0 ? subtitle : undefined;
+	if (status === "consulting") return task ? `${label} asking parent · ${task}` : `${label} asking parent`;
 	if (status === "needs_input") return task ? `${label} needs input · ${task}` : `${label} needs input`;
 	if (status === "failed") return task ? `${label} failed · ${task}` : `${label} failed`;
 	if (status === "ready" || status === "ready_open_todos") return task ? `${label} finished · ${task}` : `${label} finished`;
@@ -300,6 +302,7 @@ function cardHeadline(artifact: Artifact): string {
 
 function cardStatusChip(artifact: Artifact, bucket: ReviewBucket | undefined): string | undefined {
 	const status = artifactWorkerStatus(artifact);
+	if (status === "consulting") return "asking parent";
 	if (status === "needs_input") return "needs reply";
 	if (status === "failed") return "failed";
 	if (status === "ready") return isWorkerChangeSet(artifact) ? "change set" : "ready";
@@ -322,7 +325,7 @@ function cardProvenance(artifact: Artifact): string {
 function reviewActions(artifact: Artifact): ReviewActionId[] {
 	const actions: ReviewActionId[] = ["inspect"];
 	const status = artifactWorkerStatus(artifact);
-	if (status === "needs_input" || status === "failed" || isWorkerChangeSet(artifact)) actions.push("openVerdict");
+	if (status === "needs_input" || status === "consulting" || status === "failed" || isWorkerChangeSet(artifact)) actions.push("openVerdict");
 	if (isWorkerChangeSet(artifact)) actions.push("promoteWorker");
 	if (artifact.kind === "file") actions.push("openFile");
 	if (artifactWorkerRef(artifact)) actions.push("tellWorker");

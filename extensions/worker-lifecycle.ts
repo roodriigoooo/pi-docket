@@ -37,8 +37,18 @@ function lastSignalAt(worker: WorkerStatus): number {
 	return Math.max(updated, heartbeat);
 }
 
+/**
+ * A consult is not a persisted state: it is a `needs_input` question whose audience is the
+ * parent agent (ADR-0008). Keeping it out of `WorkerState` means every store-level transition,
+ * transport, and reply path carries it unchanged, and escalation is a field flip rather than a
+ * lifecycle move — which is why turning the feature off can never strand a blocked worker.
+ */
+function hasPendingConsult(worker: WorkerStatus): boolean {
+	return (worker.questions ?? []).some((question) => question.audience === "parent-agent" && !question.escalatedAt);
+}
+
 export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
-	if (worker.state === "needs_input") return "needs_input";
+	if (worker.state === "needs_input") return hasPendingConsult(worker) ? "consulting" : "needs_input";
 	if (worker.reviewedAt && TERMINAL_STATES.has(worker.state)) return "reviewed";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
 	if (worker.state === "ready") return "ready";
@@ -52,7 +62,7 @@ export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now(
 
 export function isReviewableWorker(worker: WorkerStatus, now = Date.now()): boolean {
 	const state = deriveWorkerLifecycleState(worker, now);
-	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
+	return state === "needs_input" || state === "consulting" || state === "failed" || state === "ready" || state === "ready_open_todos";
 }
 
 export function isRespawnEligible(worker: WorkerStatus): boolean {
@@ -136,6 +146,25 @@ export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_in
 			if (done.scopeConfidence) patch.scopeConfidence = done.scopeConfidence;
 		}
 		return patch;
+	};
+}
+
+/**
+ * Hand a consult back to the human. The question stays exactly where it was — same id, same
+ * text, same place in the backlog — so a reply still binds to it and the worker never learns a
+ * new protocol. Only the audience changes.
+ */
+export function consultEscalatedTransition(input: { questionId: string; reason?: string; at?: string }): WorkerTransition {
+	return (current) => {
+		const questions = current.questions ?? [];
+		const target = questions.find((question) => question.id === input.questionId);
+		if (!target || target.escalatedAt) return undefined;
+		const at = input.at ?? new Date().toISOString();
+		return {
+			questions: questions.map((question) => question.id === input.questionId
+				? { ...question, audience: "human" as const, escalatedAt: at, ...(input.reason ? { escalatedReason: input.reason } : {}) }
+				: question),
+		};
 	};
 }
 

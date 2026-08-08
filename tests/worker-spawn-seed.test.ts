@@ -60,6 +60,7 @@ function fakeStore(): { store: WorkerStore; spawned: SpawnInput[] } {
 		sendMessage: async () => ({ ok: true as const, transport: "inbox" as const, message: buildWorkerMessage({ body: "x" })! }),
 		inboxDir: (id: string) => `/tmp/workers/${id}/inbox`,
 		listMessages: async () => [],
+		listNotices: async () => [],
 		sendInput: async () => true,
 		spawn: async (input: SpawnInput) => { spawned.push(input); return { ...baseWorker, state: "starting" }; },
 		kill: async () => true,

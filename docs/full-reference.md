@@ -279,6 +279,30 @@ A message addressed to a worker that has died stays in its inbox and is delivere
 
 Workers started by a Docket build older than the mailbox still receive replies as terminal keystrokes. That path cannot confirm receipt, so it reports `sent to terminal · receipt unconfirmed` rather than borrowing the language of a delivered message.
 
+### When a worker asks you something
+
+`docket_wait` is the question that always reaches you. It blocks the worker, opens a verdict card, and is where anything about permission, scope, risk, or an irreversible step belongs.
+
+`docket_consult` is for the other kind of question — which file the project settled on, what a sibling worker concluded, whether a convention was already decided. It blocks the worker the same way, but its audience is the parent session rather than you. The dock shows it as `consulting` in accent rather than `needs input` in warning, because the two states mean different things: one of them says you are the blocker and the other does not.
+
+**It is off by default.** With `messaging.autoAnswer` unset, a consult presents exactly like an ordinary question and you answer it from the same card with the same verbs. Turning it on is you authorizing a standing policy, and it is the only setting in Docket that lets worker text reach your model context — the parent agent has to read the question to answer it.
+
+With it on, the parent agent answers or declines, and the exchange appears in your transcript as one tool call:
+
+```text
+  ✉ w1 consulted · answered by parent agent                         ctrl+o
+```
+
+Expanding shows the question, the answer, and that no human reviewed it. The worker receives it framed `[docket · from parent agent]`, never `[docket · from you]` — a worker that mistakes a model's guess for your decision will build on it with authority the decision never had.
+
+The agent can always decline. `docket_escalate` hands the consult back to you as a normal question, and so does the `messaging.consultWindowSeconds` window expiring. Either way the card tells you it was escalated and why, so a question that reached you late does not read like one that was always yours. Every auto-answer is written to `decisions.ndjson` with `actor: "parent-agent"`, so `/docket log decisions` never conflates it with something you decided.
+
+### When a worker shares something
+
+`docket_note` lets a worker tell you something without stopping: an interface changed, a task assumption was wrong, a constraint turned up. It never blocks the worker and never enters your model context — the notice becomes a review item you can open, chip, or ignore, and the dock adds one word to its summary line (`2 shared`) rather than a row.
+
+A worker may name the workers it thinks should hear a notice. That is a suggestion recorded alongside it; nothing is sent anywhere without you. Workers cannot address each other directly, and the parent remains the only router.
+
 ### Reviewed workers go dim
 
 When you accept or dismiss a ready/failed worker on the verdict card, Docket stamps `reviewedAt` on the worker. The dock row turns dim with a `✓` chip and the worker stops counting toward `waiting`/`failed`/`ready` in the dock summary — an acknowledged worker no longer keeps asking for review. Reviewed workers stay listed (dim) so you can still re-open them with `/docket verdict w<N>`; after `worker.dockIdleHideMinutes` they hide from the dock and after `worker.pruneAfterHours` they are pruned.

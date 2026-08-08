@@ -60,6 +60,28 @@ When the decision has discrete answers, pass them as `options` (2–4 concrete c
 
 **Do not** call `docket_wait` for trivial style/aesthetic preferences you can answer reasonably yourself.
 
+### `docket_consult` — ask the parent a context question and pause
+
+Same pause as `docket_wait`, different audience. A consult is for questions the *parent session* may already be able to answer from its own context: which file or convention the project settled on, what a sibling worker concluded, whether something was already decided upstream.
+
+**Call when** the answer is a fact about the project or the surrounding work rather than a judgment call, and you cannot get it from the repo in a few reads.
+
+**Never call it for** permission, scope, risk, or anything irreversible. Those are always `docket_wait`, which always reaches the human.
+
+Pass `context` with one or two lines of what you already found and why it is ambiguous; pass `options` and `recommend` when the answer is one of a few concrete choices.
+
+**Read the attribution on the reply.** An answer is labelled `[docket · from parent agent]` or `[docket · from you]`. The first came from a model working off the parent's context and no human reviewed it, so treat it as a well-informed default rather than an instruction — if it conflicts with what you can see in the repo, say so with `docket_wait` instead of following it. A consult may also be escalated to the human, in which case the answer takes longer and arrives from them.
+
+### `docket_note` — tell the parent something without stopping
+
+**Call when** you learn something the human or another worker would want and it does not block you: an interface changed, a task assumption turned out to be wrong, a constraint you discovered, work that is now redundant.
+
+It does not pause you, does not ask anything, and is never a substitute for `docket_done`, `docket_wait`, or `docket_fail`. Keep working after calling it.
+
+Pass `to` with worker labels you think should hear it. That is a suggestion the human confirms — you cannot send anything to another worker yourself.
+
+**Do not** narrate routine progress with it. Use `docket_todos` for that. A note is for something that changes what someone else would do.
+
 ### `docket_done` — mark output ready for parent review
 
 **Call when:**

@@ -31,7 +31,8 @@ Each module owns its data, its interface, and its tests. Adapters at the seam ta
 | Hunk Diff Review | `extensions/worker-diff-review.ts` | Hunk process adapter: availability, exact patch extraction, launch, comment harvesting, and comment formatting. |
 | Worker Commands | `extensions/worker-commands.ts` | `spawn` / `tell` / `delete` / `load` / `unload` / completion. |
 | Worker Store | `extensions/worker-store.ts` | Flat worker persistence, stable window/pane targeting, status-file locking/atomic transitions, literal and bracketed-paste input, durable PTYs, task docs, session seeding, and exact-execution respawn. |
-| Worker Mailbox | `extensions/worker-mailbox.ts` | Message identity, durable inbox files, atomic claim, observed delivery states, and the worker-facing attribution frame. |
+| Worker Mailbox | `extensions/worker-mailbox.ts` | Message identity, durable inbox/outbox files, atomic claim, observed delivery states, and the worker-facing attribution frame. |
+| Worker Consult | `extensions/worker-consult.ts` | Pure consult policy: resolution, pending/expiry selectors, the parent-agent prompt, and collapsed surface text. |
 | Worker Events | `extensions/worker-events.ts` | NDJSON append + tail + rotation. |
 | Worker Snapshot Cache | `extensions/worker-dock-cache.ts` | mtime-cached status/artifacts read, `fs.watch`, sticky recent-event ring. |
 | Worker Eviction | `extensions/worker-eviction.ts` | Dock idle-hide window, prune-after-hours sweep. |
@@ -83,7 +84,9 @@ One contract for every kind. The MD body of a kind extends the universal guardra
 | Tool | When | Effect |
 |---|---|---|
 | `docket_todos` | Multi-step work. | Replaces the visible progress board; informational, not completion. |
-| `docket_wait` | Ambiguity, blocked auth, irreversible action. | Worker → `needs_input`, parent gets an inbox row. |
+| `docket_wait` | Ambiguity, blocked auth, irreversible action. | Worker → `needs_input`, parent gets an inbox row. Always reaches the human. |
+| `docket_consult` | A fact about the project or sibling work the parent may already know. | Worker → `needs_input` with a parent-agent audience; renders as `consulting`. Answered by the parent agent when enabled, otherwise by the human; escalates on its window. |
+| `docket_note` | Something worth sharing that does not block. | Writes to the worker's outbox; surfaces as a parent review item. No state change. |
 | `docket_done` | Finished with useful output. | Requires `outcome`, `summary`, `evidence`. Vague work is rejected back to `docket_wait`. |
 | `docket_fail` | Cannot continue, no useful partial output. | Worker → `failed`. |
 
@@ -101,6 +104,7 @@ Per-worker state under `~/.pi/agent/docket/workers/<id>/`:
 | `deliverables/v<N>.json` | worker publication | Immutable primary ready generation: full body, evidence, recommendations, refs, frozen patch, provenance. |
 | `source-deliverable.md` | parent handoff | Byte-exact reviewed source body for a fresh Use → Worker destination. |
 | `inbox/msg-*.json` | parent write, worker claim | One durable parent → worker Message each, carrying its observed delivery state. |
+| `outbox/msg-*.json` | worker write, parent read | Notices the worker shared without blocking; surfaced as review items at zero model-context cost. |
 | `events.ndjson` | worker live | Append-only event stream, both directions; rotated at 5 MB, one generation retained. |
 | `pane-tail.txt` | parent harvest | Last terminal lines captured from the dead tmux pane after the worker process exited. |
 | `session/` | parent (seeded) | Forked pi JSONL prefix, enables `--continue` + cache reuse. |
@@ -161,6 +165,9 @@ declare global {
 - **Attach means switch when already inside tmux.** `/docket attach` uses `switch-client` inside tmux and a copyable `attach` command outside. Workers record the human launch session's tmux target; `/docket attach parent` uses that value directly. Legacy `parentWorkerId` is not topology or fallback.
 - **Progress boards are informational.** `docket_todos` helps parent visibility, but `docket_done` is authoritative; stale progress never keeps a ready worker in a special unresolved state.
 - **Parent → worker is a channel, not keystrokes.** The parent writes a Message file into the worker's inbox; the worker's runtime claims it, records that it took it, and delivers the body through `pi.sendUserMessage(text, { deliverAs })` so pi chooses the landing point in its own agent loop. `queued`, `delivered`, and `read` are written only by the side that observed them, so no surface reports a delivery it inferred from an exit status. A reply naming a question id resolves that question alone. `tmux send-keys` remains the fallback for workers whose runtime predates the mailbox, and is labelled unconfirmed wherever it is reported. Rationale: [ADR-0008](./adr/0008-worker-messaging.md).
+- **A consult is a question with a different audience.** `docket_consult` writes an ordinary `needs_input` question tagged `audience: "parent-agent"`, so the existing status, verdict, reply-binding, and ledger paths carry it unchanged and `consulting` is derived rather than persisted. Escalation flips the audience back, which is why disabling the feature can never strand a blocked worker. Only two things are new: the parent tools, registered solely while `messaging.autoAnswer` is on, and the sweep that hands one consult at a time to the parent agent as a `followUp` so it never pre-empts the human's turn. Rationale: [ADR-0008](./adr/0008-worker-messaging.md).
+- **The permission line is the context boundary.** Questions and notices flow without per-message authorization because they cost the parent nothing — a question is a card, a notice is a review item. A consult is gated because answering it requires the parent agent to read the worker's words. The gate is not policy layered on the architecture; it is the point where a mechanism would otherwise cross it.
+- **Notices are artifacts, not messages.** A pi custom message participates in model context, so surfacing a worker's notice that way would auto-inject worker-authored content into the parent. It becomes a review item instead, costing nothing until the human opens or chips it.
 - **A message outlives the worker it was addressed to.** The inbox is a directory in the worker dir, so a message queued for a crashed worker is delivered after respawn instead of being lost with the pane.
 - **Multiline stays multiline.** One-line replies go through `send-keys -l`; a reply with newlines is loaded into a tmux buffer and bracketed-pasted so the worker reads the whole block at once instead of running it on the first newline.
 - **Deliverables are claimed immutably.** Worker saves require exact terminal approval for the exact generation. Parent saves are explicit and synthetic-approved. Per-deliverable locks plus atomic claims make repeated and concurrent saves safe without a database.

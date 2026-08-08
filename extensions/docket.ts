@@ -37,7 +37,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerNoticeArtifact, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerQuestion, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands } from "./checkpoint-commands.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
@@ -62,8 +62,9 @@ import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
-import { claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
+import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { CONSULT_POLICY_OFF, consultCallSummary, consultAnswerSummary, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
+import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -809,7 +810,7 @@ async function showDocketBrowser(
 type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send" | "report" | "use" | "save";
 export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
-type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
+type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; provenance?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
 
 export function diffBar(additions: number, deletions: number, width: number): string {
 	const slots = Math.max(1, Math.floor(width));
@@ -846,7 +847,9 @@ function fitVerdictCardLines(lines: string[], maxHeight: number | undefined, foo
 }
 
 export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, options: string[] = [], canUse = false, deliverable = false): VerdictVerb[] {
-	if (state === "needs_input") {
+	// A consult offers the same verbs: answering it by hand is exactly answering a question,
+	// which is what makes turning auto-answer off a no-op rather than a lost capability.
+	if (state === "needs_input" || state === "consulting") {
 		if (options.length > 0) return [
 			...options.map((option): VerdictVerb => ({ id: "send", label: option, description: "send to worker", send: option })),
 			{ id: "reject", label: "Steer", description: "something else · stays alive" },
@@ -897,10 +900,14 @@ function primaryWorkerQuestion(worker: WorkerStatus) {
 
 export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact, deliverable?: WorkerDeliverable): VerdictPayload {
 	const state = deriveWorkerState(worker);
-	if (state === "needs_input") {
+	if (state === "needs_input" || state === "consulting") {
 		const lines = workerQuestions(worker).map((question) => question.text);
-		const risk = primaryWorkerQuestion(worker)?.risk;
-		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}) };
+		const question = primaryWorkerQuestion(worker);
+		const risk = question?.risk;
+		// An escalated consult must not read like an ordinary question: the worker expected a
+		// fast answer, did not get one, and has been blocked longer than it planned to be.
+		const provenance = question ? escalatedQuestionNote(question) : undefined;
+		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}), ...(provenance ? { provenance } : {}) };
 	}
 	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
 	const report = projectWorkerReport(worker, [], changeSet, deliverable);
@@ -955,7 +962,8 @@ export class DocketVerdictView implements Component {
 		this.artifacts = artifacts;
 		this.deliverable = deliverable;
 		const question = primaryWorkerQuestion(worker);
-		this.options = deriveWorkerState(worker) === "needs_input" && question?.options ? question.options : [];
+		const blocked = deriveWorkerState(worker);
+		this.options = (blocked === "needs_input" || blocked === "consulting") && question?.options ? question.options : [];
 		this.recommend = question?.recommend;
 		const recommendIndex = this.recommend ? this.options.indexOf(this.recommend) : -1;
 		if (recommendIndex >= 0) this.selected = recommendIndex;
@@ -1116,8 +1124,11 @@ export class DocketVerdictView implements Component {
 			}
 			this.container.addChild(new Spacer(1));
 			this.addSectionHeading(listWidth, muted, "Actions");
-		} else if (state === "needs_input") {
-			this.addSectionHeading(listWidth, muted, "Question");
+		} else if (state === "needs_input" || state === "consulting") {
+			this.addSectionHeading(listWidth, muted, state === "consulting" ? "Consult" : "Question");
+			if (payload.provenance) {
+				this.container.addChild(new Text(truncateToWidth(`  ${dim(payload.provenance)}`, listWidth - 2), 1, 0));
+			}
 			if (payload.risk) {
 				for (const wrapped of wrapPlainText(payload.risk, listWidth - 6, 2)) this.container.addChild(new Text(truncateToWidth(`  ${warning(`⚠ ${wrapped}`)}`, listWidth - 2), 1, 0));
 				this.container.addChild(new Spacer(1));
@@ -1417,6 +1428,8 @@ type ParallelSource = "all" | string;
 	const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
 
 function workerStateColor(theme: any, state: WorkerDerivedState, text: string): string {
+	// Warning is reserved for "you are the blocker". A consult is nobody's blocker yet.
+	if (state === "consulting") return theme.fg("accent", text);
 	if (state === "needs_input" || state === "ready_open_todos") return theme.fg("warning", text);
 	if (state === "ready") return theme.fg("success", text);
 	if (state === "failed") return theme.fg("error", text);
@@ -1462,6 +1475,7 @@ function workerRowNeedsAction(row: WorkerActivityRow): boolean {
 
 function workerStatusBadgeLabel(row: WorkerActivityRow): string {
 	if (row.state === "needs_input") return "needs input";
+	if (row.state === "consulting") return "consulting";
 	if (row.state === "ready_open_todos") return "ready";
 	if (row.state === "thinking" || row.state === "starting") return "active";
 	if (row.state === "empty") return "done";
@@ -1634,6 +1648,7 @@ async function readWorkerArtifactsForReview(worker: WorkerStatus, deliverable?: 
 	const resolved = deliverable ?? await currentWorkerDeliverableForReview(worker, artifacts);
 	const paneTail = worker.paneCapturedAt ? await store.readPaneTail(worker.id) : undefined;
 	const tail = paneTail ? workerPaneTailArtifact(worker, paneTail) : undefined;
+	const notices = await readWorkerNotices(worker);
 	if (worker.deliverable && !resolved) return [];
 	if (resolved) {
 		const primaryBase = workerDeliverableArtifact(resolved);
@@ -1644,11 +1659,24 @@ async function readWorkerArtifactsForReview(worker: WorkerStatus, deliverable?: 
 		const supporting = artifacts
 			.filter((artifact) => frozenRefs.has(artifact.ref) && artifact.kind !== "response" && artifact.kind !== "code" && artifact.meta?.workerStatus === undefined && artifact.meta?.workerChangeSet !== true)
 			.map((artifact) => ({ ...artifact, meta: { ...artifact.meta, supportingEvidence: true, workerId: worker.id, workerLabel: workerSourceLabel(worker) } }));
-		return [primary, ...supporting, tail].filter((artifact): artifact is Artifact => artifact !== undefined);
+		return [primary, ...supporting, ...notices, tail].filter((artifact): artifact is Artifact => artifact !== undefined);
 	}
 	const status = workerStatusArtifact(worker);
 	const changes = worker.state === "ready" || worker.state === "failed" || worker.state === "ended" || worker.state === "needs_input" ? workerChangeSetArtifact(worker) : undefined;
-	return [status, changes, ...artifacts.filter((artifact) => artifact.ref !== status?.ref && artifact.ref !== changes?.ref), tail].filter((artifact): artifact is Artifact => artifact !== undefined);
+	return [status, changes, ...notices, ...artifacts.filter((artifact) => artifact.ref !== status?.ref && artifact.ref !== changes?.ref), tail].filter((artifact): artifact is Artifact => artifact !== undefined);
+}
+
+/** Notices a worker shared without blocking. Zero context until the human opens one. */
+async function readWorkerNotices(worker: WorkerStatus): Promise<Artifact[]> {
+	try {
+		const store = createWorkerStore();
+		const notices = await store.listNotices(worker.id);
+		return notices
+			.map((notice) => workerNoticeArtifact(worker, { id: notice.id, body: notice.body, createdAt: notice.createdAt, ...(notice.to?.length ? { to: notice.to } : {}) }))
+			.filter((artifact): artifact is Artifact => artifact !== undefined);
+	} catch {
+		return [];
+	}
 }
 
 function parallelEntries(workers: WorkerStatus[], artifactsByWorker: Map<string, Artifact[]>, source: ParallelSource, filter: ParallelKindFilter, dismissed: Set<string>): ParallelWorkEntry[] {
@@ -2391,6 +2419,10 @@ export default function docketExtension(pi: ExtensionAPI) {
 	let deliveredUnreadMessageIds: string[] = [];
 	/** Assigned by the protocol registration; a parent message is new direction, so the nudge budget resets. */
 	let resetWorkerNudges: () => void = () => {};
+	let consultPolicy: ConsultPolicy = CONSULT_POLICY_OFF;
+	/** Consults already handed to the parent agent this session; keeps one question to one prompt. */
+	let promptedConsultIds = new Set<string>();
+	let parentConsultToolsRegistered = false;
 	let workerDockUnwatch: Unwatcher | undefined;
 	let workerDockCache: WorkerSnapshotCache | undefined;
 	let workerDockPending = false;
@@ -2496,7 +2528,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				const report = workerResultReport(snapshot.worker, snapshot.artifacts, snapshot.deliverable);
 				const headline = workerResultHeadline(snapshot.worker, snapshot.artifacts, 78, snapshot.deliverable);
 				const container = new Container();
-				const stateColor = report.state === "failed" ? errorColor : report.state === "needs_input" ? warning : success;
+				const stateColor = report.state === "failed" ? errorColor : report.state === "needs_input" ? warning : report.state === "consulting" ? theme.fg.bind(theme, "accent") : success;
 				const headerLine = `${accent(theme.bold("docket"))} ${dim("·")} ${accent(report.label)} ${dim("·")} ${stateColor(report.stateLabel)}  ${muted(headline)}`;
 				container.addChild(new Text(headerLine, 0, 0));
 				if (!snapshot.expanded) return container;
@@ -2693,12 +2725,13 @@ export default function docketExtension(pi: ExtensionAPI) {
 			await reconcileOrphanedWorkers(allWorkers);
 			await harvestDeadWorkerPanes(allWorkers);
 			const now = Date.now();
+			await serviceConsults(allWorkers, now);
 			const promptWorkers = allWorkers.filter((worker) => isPromptDockWorker(worker, now) && !isDockIdleEvictable(worker, now, workerDockIdleHideMs));
 			const key = sessionProjectKey ?? projectKey(ctx.cwd);
 			const workers = promptWorkers.filter((worker) => workerInProject(worker, key));
 			const otherWorkers = promptWorkers.filter((worker) => !workerInProject(worker, key));
 			const otherProjectCount = new Set(otherWorkers.map(workerProjectKey)).size;
-			const otherWaiting = otherWorkers.filter((worker) => deriveWorkerState(worker, now) === "needs_input").length;
+			const otherWaiting = otherWorkers.filter((worker) => { const state = deriveWorkerState(worker, now); return state === "needs_input" || state === "consulting"; }).length;
 			const otherFailed = otherWorkers.filter((worker) => deriveWorkerState(worker, now) === "failed").length;
 			const otherReady = otherWorkers.filter((worker) => { const derived = deriveWorkerState(worker, now); return derived === "ready" || derived === "ready_open_todos"; }).length;
 			const otherAttentionLabel = [otherWaiting ? `${otherWaiting} waiting` : "", otherFailed ? `${otherFailed} failed` : "", otherReady ? `${otherReady} ready` : ""].filter(Boolean).join(" · ");
@@ -2720,11 +2753,17 @@ export default function docketExtension(pi: ExtensionAPI) {
 			// Inboxes are only read for workers that have ever exchanged a message, so a fleet
 			// nobody has spoken to costs the dock nothing.
 			const messagesByWorker = new Map<string, WorkerMessage[]>();
+			let sharedNotices = 0;
 			await Promise.all(workers
 				.filter((worker) => (eventsByWorker.get(worker.id) ?? []).some((event) => event.kind === "message"))
 				.map(async (worker) => {
-					const messages = await createWorkerStore().listMessages(worker.id).catch(() => []);
+					const store = createWorkerStore();
+					const [messages, notices] = await Promise.all([
+						store.listMessages(worker.id).catch(() => []),
+						store.listNotices(worker.id).catch(() => []),
+					]);
 					if (messages.length) messagesByWorker.set(worker.id, messages);
+					sharedNotices += notices.length;
 				}));
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker, messagesByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
@@ -2743,6 +2782,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 						if (counts.readyOpenTodos) attentionParts.push(`${counts.readyOpenTodos} ready/progress`);
 						if (counts.ready) attentionParts.push(`${counts.ready} ready`);
 						if (counts.loaded) attentionParts.push(`${counts.loaded} loaded`);
+						// One word in a line that already exists, rather than a row of its own.
+						if (sharedNotices) attentionParts.push(`${sharedNotices} shared`);
 						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.active - counts.reviewed;
 						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
 						const reviewedPart = counts.reviewed > 0 ? dim(`${counts.reviewed} reviewed`) : "";
@@ -2785,6 +2826,163 @@ export default function docketExtension(pi: ExtensionAPI) {
 				docket: { kind: message.artifactKind, title: message.title, subtitle: message.subtitle },
 			} as DocketMessageDetails & { docket: { kind: ArtifactKind; title: string; subtitle: string } },
 		}, { triggerTurn: false });
+	};
+
+	/**
+	 * Hand one consult back to the human. Called on escalation from the parent agent and on the
+	 * window expiring; both land in the same place, because from the human's side there is no
+	 * difference between "the agent declined" and "the agent never got to it".
+	 */
+	const escalateConsult = async (worker: WorkerStatus, question: WorkerQuestion, reason: string): Promise<void> => {
+		const store = createWorkerStore();
+		const update = await store.updateStatus(worker.id, consultEscalatedTransition({ questionId: question.id, reason }));
+		if (!update.changed) return;
+		promptedConsultIds.delete(question.id);
+		appendWorkerEventSync(store.root(), worker.id, {
+			kind: "state",
+			payload: { state: "needs_input", escalated: true, questionId: question.id, reason },
+		});
+		if (activeCtx?.hasUI) activeCtx.ui.notify(`Docket: ${workerSourceLabel(worker)} needs you — ${reason}`, "warning");
+		await refreshWorkerDockWidget();
+	};
+
+	/**
+	 * Parent side of the consult lane. Runs inside the dock sweep rather than on its own timer:
+	 * the sweep is already the parent's heartbeat over worker state, and a consult is worker
+	 * state. With the policy off this does nothing at all and consults present as questions.
+	 */
+	const serviceConsults = async (workers: WorkerStatus[], now: number): Promise<void> => {
+		if (!consultPolicy.autoAnswer || workerId) return;
+		for (const worker of workers) {
+			const question = pendingConsult(worker);
+			if (!question) continue;
+			if (isConsultExpired(question, consultPolicy, now)) {
+				await escalateConsult(worker, question, "the parent agent did not answer in time");
+				continue;
+			}
+			if (promptedConsultIds.has(question.id)) continue;
+			promptedConsultIds.add(question.id);
+			// followUp never interrupts: an idle parent answers immediately, a busy one answers
+			// when its own work is done. The human's turn is never pre-empted by a worker.
+			pi.sendMessage(
+				{
+					customType: "docket",
+					content: consultPromptText(worker, question),
+					display: false,
+					details: { kind: "notice", heading: "docket · consult", subject: consultCallSummary(workerSourceLabel(worker), question.text) } satisfies DocketMessageDetails,
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+		}
+	};
+
+	const consultTargets = async (ref: string): Promise<{ worker: WorkerStatus; question: WorkerQuestion } | undefined> => {
+		const worker = await createWorkerStore().find(ref);
+		if (!worker) return undefined;
+		const question = pendingConsult(worker);
+		return question ? { worker, question } : undefined;
+	};
+
+	/**
+	 * The parent agent's two moves, registered only while the consult policy is on. With it off
+	 * the parent model has no way to reach a worker at all, which is the guarantee that makes
+	 * "off by default" mean something stronger than a skipped prompt.
+	 */
+	const registerParentConsultTools = (): void => {
+		if (parentConsultToolsRegistered || workerId) return;
+		parentConsultToolsRegistered = true;
+
+		pi.registerTool({
+			name: "docket_answer",
+			label: "Docket Answer",
+			description: "Answer a Docket worker's open consult from this session's context. Only for questions this conversation already establishes the answer to.",
+			promptSnippet: "Answer a Docket worker's consult when this conversation already establishes the answer.",
+			promptGuidelines: ["Call docket_answer only when this conversation already establishes the answer to the worker's consult. If it does not, call docket_escalate — the answer reaches the worker with your authority attached, so guessing is more expensive than waiting."],
+			parameters: Type.Object({
+				worker: Type.String({ description: "Worker label, e.g. w1" }),
+				answer: Type.String({ description: "The answer, in the worker's terms. State the decision, not your reasoning." }),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+				const found = await consultTargets(params.worker);
+				if (!found) return { content: [{ type: "text", text: `No open Docket consult for ${params.worker}.` }], details: {} };
+				const { worker, question } = found;
+				const label = workerSourceLabel(worker);
+				const result = await createWorkerStore().sendMessage(worker.id, {
+					body: params.answer,
+					from: "parent-agent",
+					replyTo: question.id,
+					replyToText: question.text,
+				});
+				if (!result.ok) return { content: [{ type: "text", text: `Could not reach ${label}; the consult stays open.` }], details: {} };
+				promptedConsultIds.delete(question.id);
+				await createDecisionLog().recordVerdict({
+					workerId: worker.id,
+					workerLabel: label,
+					state: "consulting",
+					verb: "consult",
+					actor: "parent-agent",
+					option: params.answer,
+					evidenceRefs: [],
+					task: worker.task,
+				});
+				await refreshWorkerDockWidget();
+				return {
+					content: [{ type: "text", text: `Answered ${label}. It was told the answer came from you, not the human.` }],
+					details: { worker: label, question: question.text, answer: params.answer, messageId: result.message.id },
+				};
+			},
+			renderCall(args, theme) {
+				const params = args as { worker?: string; answer?: string };
+				return new Text(theme.fg("dim", consultAnswerSummary(params.worker ?? "worker", params.answer ?? "")), 0, 0);
+			},
+			renderResult(result, options, theme) {
+				const details = (result as { details?: { worker?: string; question?: string; answer?: string } }).details ?? {};
+				const head = new Box(0, 0);
+				head.addChild(new Text(theme.fg("accent", `✉ ${details.worker ?? "worker"} consulted · answered by parent agent`), 0, 0));
+				if (options?.expanded) {
+					if (details.question) head.addChild(new Text(theme.fg("dim", `Q  ${details.question}`), 0, 0));
+					if (details.answer) head.addChild(new Text(theme.fg("muted", `A  ${details.answer}`), 0, 0));
+					head.addChild(new Text(theme.fg("dim", "not reviewed by you · recorded in /docket log decisions"), 0, 0));
+				}
+				return head;
+			},
+		});
+
+		pi.registerTool({
+			name: "docket_escalate",
+			label: "Docket Escalate",
+			description: "Hand a Docket worker's open consult to the human because this session cannot answer it.",
+			promptSnippet: "Hand a Docket consult to the human when this session cannot answer it.",
+			promptGuidelines: ["Call docket_escalate whenever a consult needs judgment, permission, or knowledge this conversation does not contain. Escalating is the correct outcome, not a failure."],
+			parameters: Type.Object({
+				worker: Type.String({ description: "Worker label, e.g. w1" }),
+				why: Type.String({ description: "One line on what you would need in order to answer" }),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+				const found = await consultTargets(params.worker);
+				if (!found) return { content: [{ type: "text", text: `No open Docket consult for ${params.worker}.` }], details: {} };
+				await escalateConsult(found.worker, found.question, params.why);
+				const label = workerSourceLabel(found.worker);
+				return {
+					content: [{ type: "text", text: `Escalated ${label} to the human. It stays blocked until they answer.` }],
+					details: { worker: label, question: found.question.text, why: params.why },
+				};
+			},
+			renderCall(args, theme) {
+				const params = args as { worker?: string; why?: string };
+				return new Text(theme.fg("dim", consultEscalationSummary(params.worker ?? "worker", params.why ?? "")), 0, 0);
+			},
+			renderResult(result, options, theme) {
+				const details = (result as { details?: { worker?: string; question?: string; why?: string } }).details ?? {};
+				const box = new Box(0, 0);
+				box.addChild(new Text(theme.fg("warning", `✉ ${details.worker ?? "worker"} consulted · escalated to you`), 0, 0));
+				if (options?.expanded) {
+					if (details.question) box.addChild(new Text(theme.fg("dim", `Q  ${details.question}`), 0, 0));
+					if (details.why) box.addChild(new Text(theme.fg("muted", `needs  ${details.why}`), 0, 0));
+				}
+				return box;
+			},
+		});
 	};
 
 	const refreshWorkerCarryoverForReview = async (): Promise<void> => {
@@ -2874,7 +3072,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 		state: WorkerProtocolState,
 		text?: string,
 		doneInput?: WorkerDoneInput,
-		questionMeta?: { risk?: string; options?: string[]; recommend?: string },
+		questionMeta?: { risk?: string; options?: string[]; recommend?: string; audience?: "human" | "parent-agent"; context?: string },
 		toolCallId?: string,
 	): Promise<WorkerStatus | undefined> => {
 		if (!workerId) return undefined;
@@ -3067,6 +3265,72 @@ export default function docketExtension(pi: ExtensionAPI) {
 		});
 
 		pi.registerTool({
+			name: "docket_consult",
+			label: "Docket Consult",
+			description: "Docket worker only: ask the parent session a question it can answer from its own context, and wait. Use for facts about the project or sibling work — never for permission, scope, or anything irreversible.",
+			promptSnippet: "Ask the parent a context question a Docket worker cannot answer alone; waits like docket_wait but the parent may answer without the human.",
+			promptGuidelines: ["Use docket_consult only for questions the parent session can answer from what it already knows — which file or convention the project settled on, what another worker concluded. Anything about permission, scope, risk, or an irreversible step belongs in docket_wait, which always reaches the human."],
+			parameters: Type.Object({
+				question: Type.String({ description: "Concise question the parent session can answer from its own context" }),
+				context: Type.Optional(Type.String({ description: "One or two lines of grounding: what you already found, and why this is ambiguous." })),
+				options: Type.Optional(Type.Array(Type.String({ description: "A concrete choice" }), { description: "2–4 concrete options; the chosen one is sent back to you verbatim." })),
+				recommend: Type.Optional(Type.String({ description: "Which option you would choose (must match one of `options`)." })),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				markWorkerProtocolCalled();
+				const options = Array.isArray(params.options) ? params.options.map((option) => String(option).trim()).filter((option) => option.length > 0) : [];
+				const questionMeta = {
+					audience: "parent-agent" as const,
+					...(typeof params.context === "string" && params.context.trim() ? { context: params.context.trim() } : {}),
+					...(options.length ? { options } : {}),
+					...(typeof params.recommend === "string" && params.recommend.trim() ? { recommend: params.recommend.trim() } : {}),
+				};
+				await applyWorkerState(ctx, "needs_input", params.question, undefined, questionMeta);
+				return {
+					content: [{ type: "text", text: "Docket consult recorded. Stop now and wait. The parent agent answers if it can; otherwise this escalates to the human and takes longer. An answer will say who wrote it — weigh it accordingly." }],
+					details: { state: "needs_input", question: params.question, ...questionMeta },
+				};
+			},
+		});
+
+		pi.registerTool({
+			name: "docket_note",
+			label: "Docket Note",
+			description: "Docket worker only: tell the parent something useful without stopping. Does not block, does not ask, and does not complete the task.",
+			promptSnippet: "Share a finding with the parent without blocking a Docket worker.",
+			promptGuidelines: ["Use docket_note when you learn something the rest of the fleet or the human would want — a changed interface, a wrong assumption in the task, a constraint you discovered. It never blocks you and never substitutes for docket_done, docket_wait, or docket_fail."],
+			parameters: Type.Object({
+				text: Type.String({ description: "What you learned, in one or two sentences" }),
+				to: Type.Optional(Type.Array(Type.String({ description: "Worker label, e.g. w3" }), { description: "Workers you believe should hear this. A suggestion only: the human confirms who receives it." })),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+				// Deliberately not markWorkerProtocolCalled(): a note is not a completion signal,
+				// so a turn that only shares something still gets the protocol nudge it needs.
+				if (!workerId) return { content: [{ type: "text", text: "Docket note is only available inside a worker." }], details: {} };
+				const store = createWorkerStore();
+				const current = await store.find(workerId);
+				const to = Array.isArray(params.to) ? params.to.map((entry) => String(entry).trim()).filter(Boolean) : [];
+				const message = buildWorkerMessage({
+					body: params.text,
+					kind: "notice",
+					from: "worker",
+					...(current ? { fromWorker: workerSourceLabel(current) } : {}),
+					...(to.length ? { to } : {}),
+				});
+				if (!message) return { content: [{ type: "text", text: "Docket note was empty; nothing recorded." }], details: {} };
+				await writeWorkerMessage(store.root(), workerId, message, "outbox");
+				appendWorkerEventSync(store.root(), workerId, {
+					kind: "message",
+					payload: { direction: "out", id: message.id, kind: "notice", from: "worker", delivery: "queued", transport: "outbox", ...(to.length ? { to } : {}) },
+				});
+				return {
+					content: [{ type: "text", text: "Docket note recorded. The parent sees it; you are not blocked and should keep working." }],
+					details: { noticeId: message.id, ...(to.length ? { to } : {}) },
+				};
+			},
+		});
+
+		pi.registerTool({
 			name: "docket_done",
 			label: "Docket Done",
 			description: "Docket worker only: mark this worker's useful output ready for parent review. Provide outcome, concise summary, evidence, and optional recommendations.",
@@ -3179,6 +3443,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 			workerDockIdleHideMs = 0;
 			void loadConfig(ctx.cwd).then((config) => {
 				workerDockIdleHideMs = dockIdleHideMs(config.worker);
+				consultPolicy = resolveConsultPolicy(config.messaging);
+				if (consultPolicy.autoAnswer) registerParentConsultTools();
 				void refreshWorkerDockWidget();
 			}).catch(() => undefined);
 			workerDockUnwatch = watchWorkersRoot(root, () => void refreshWorkerDockWidget());
@@ -3194,6 +3460,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 			workerDockPending = false;
 			workerDockRunning = false;
 			workerDockIdleHideMs = 0;
+			consultPolicy = CONSULT_POLICY_OFF;
+			promptedConsultIds = new Set();
 		},
 	});
 

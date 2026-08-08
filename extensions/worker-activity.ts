@@ -94,6 +94,7 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 	const conflict = conflictSummary(conflicts, 1);
 	let label: string;
 	if (conflict) label = conflict;
+	else if (state === "consulting") label = "asking parent";
 	else if (state === "needs_input") label = "needs reply";
 	else if (state === "starting" || state === "thinking") label = "working";
 	else if (state === "failed") label = "error";
@@ -243,6 +244,10 @@ export function dockEventSubLine(events: WorkerEvent[] | undefined, state: Worke
 	// the human already acted and nothing has happened yet.
 	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerProcessIsGone(options.worker)) : undefined;
 	if (pending) return pending;
+	if (state === "consulting") {
+		// Nobody is blocked on the human yet, so this is a status line, not a warning.
+		return "asking the parent agent · escalates to you if unanswered";
+	}
 	if (state === "needs_input") {
 		const questionTs = latestQuestionTs(options.worker);
 		const ageMs = questionTs === undefined ? 0 : now - questionTs;
@@ -294,13 +299,14 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
 		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
 	}
+	if (row.state === "consulting") return "asking parent";
 	if (row.state === "needs_input") return "needs reply";
 	if (row.state === "failed") return "error";
 	return "";
 }
 
 function dockChip(state: WorkerDerivedState): string | undefined {
-	if (state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos") return "f8 verdict";
+	if (state === "needs_input" || state === "consulting" || state === "failed" || state === "ready" || state === "ready_open_todos") return "f8 verdict";
 	if (state === "reviewed") return "✓";
 	return undefined;
 }
@@ -340,6 +346,7 @@ export function dockRowsForRender(
 }
 
 export function workerActivityStateLabel(state: WorkerDerivedState): string {
+	if (state === "consulting") return "consulting";
 	if (state === "needs_input") return "needs input";
 	if (state === "ready_open_todos") return "ready/progress";
 	if (state === "ready") return "ready";
@@ -390,7 +397,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 		const answerLine = answer && !review.resultIsStatus ? firstWorkerReviewLine(answer.title) ?? firstWorkerReviewLine(answer.body) : undefined;
 		const questions = review.questions;
 		const questionText = questions.map((question, index) => `${index + 1}. ${question.text}`).join(" ");
-		const message = state === "needs_input" && questionText ? questionText : review.summary || workerDisplayName(worker);
+		const message = (state === "needs_input" || state === "consulting") && questionText ? questionText : review.summary || workerDisplayName(worker);
 		const summary = review.summarySource;
 		const recommendations = review.recommendations.length || countWorkerRecommendations(summary);
 		const computedEvidence = computeEvidence(artifacts);
@@ -453,7 +460,7 @@ export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActiv
 }
 
 function previewOutcomeBody(row: WorkerActivityRow): string {
-	if (row.state === "needs_input" && row.questions.length) return row.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n");
+	if ((row.state === "needs_input" || row.state === "consulting") && row.questions.length) return row.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n");
 	if (row.state === "failed") return row.worker.lastError || row.message || "Failure recorded without detail.";
 	if (row.state === "starting" || row.state === "thinking") return `${row.taskLabel} — working`;
 	return row.message || row.answerLine || row.taskLabel;

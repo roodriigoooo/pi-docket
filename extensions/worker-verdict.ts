@@ -60,6 +60,7 @@ export function verdictCandidateRank(worker: WorkerStatus): number {
 	if (!isReviewableWorker(worker)) return 100;
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input") return 0;
+	if (state === "consulting") return 1;
 	if (state === "failed") return 1;
 	if (state === "ready" || state === "ready_open_todos") return 2;
 	return 100;
@@ -100,7 +101,8 @@ const STATE_BOUND_VERBS = new Set<DocketVerdictAction["verb"]>(["accept", "rejec
  * answer to an already-finished worker and demote it out of `ready`.
  */
 function verdictFamily(worker: WorkerStatus): "answer" | "judgment" {
-	return deriveWorkerState(worker) === "needs_input" ? "answer" : "judgment";
+	const state = deriveWorkerState(worker);
+	return state === "needs_input" || state === "consulting" ? "answer" : "judgment";
 }
 
 function visibleDecisionContext(worker: WorkerStatus, changeSet: Artifact | undefined, deliverable?: WorkerDeliverable): { risk?: string; evidenceRefs: string[] } {
@@ -171,7 +173,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const state = deriveWorkerState(latest);
 		// The card presents the newest open question, so a reply from it answers that one and
 		// leaves any earlier question open instead of clearing the whole backlog.
-		const answering = state === "needs_input" ? workerQuestions(latest).at(-1) : undefined;
+		const answering = state === "needs_input" || state === "consulting" ? workerQuestions(latest).at(-1) : undefined;
 		const replyOptions = answering ? { replyTo: answering.id } : {};
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest, deliverable);
 		const statusArtifact = workerStatusArtifact(latest);
@@ -233,7 +235,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			return "advance";
 		}
 		if (result.verb === "accept") {
-			if (state === "needs_input") {
+			if (state === "needs_input" || state === "consulting") {
 				if ((await deps.workerCommands.tell(label, "Approved. Proceed.", replyOptions)) === false) continue;
 			} else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
@@ -263,7 +265,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			return "advance";
 		}
 		if (result.verb === "reject") {
-			if (state === "needs_input") {
+			if (state === "needs_input" || state === "consulting") {
 				const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
 				if (!text) continue;
 				if ((await deps.workerCommands.tell(label, text)) === false) continue;
