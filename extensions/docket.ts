@@ -3189,11 +3189,14 @@ export default function docketExtension(pi: ExtensionAPI) {
 						// One word in a line that already exists, rather than a row of its own.
 						if (sharedNotices) attentionParts.push(`${sharedNotices} shared`);
 						// Settled rows are folded, so "running" is counted over what is actually on
-						// screen rather than over a roster the dock no longer shows.
-						const idle = visibleDockRows.length - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.active;
-						const idlePart = idle > 0 ? `${idle} running` : "";
+						// screen rather than over a roster the dock no longer shows. Everything
+						// visible that is not asking for a decision is running, including the
+						// workers that are simply thinking — otherwise a dock full of live work
+						// summarises itself as nothing at all.
+						const running = visibleDockRows.length - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos;
+						const runningPart = running > 0 ? `${running} running` : "";
 						const attentionJoined = attentionParts.length ? attentionParts.join(" · ") : "";
-						const summary = counts.workers > 0 ? [attentionJoined, idlePart || (!attentionJoined && settledDockRows.length === 0 ? plural(counts.workers, "worker") : "")].filter(Boolean).join(" · ") : "no workers in this project";
+						const summary = counts.workers > 0 ? [attentionJoined, runningPart].filter(Boolean).join(" · ") || plural(counts.workers, "worker") : "no workers in this project";
 						const heading = `${accent(theme.bold("docket"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
 						// The fold says it once, where the rows used to be. The heading does not
