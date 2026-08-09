@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import {
 	CONSULT_POLICY_OFF,
 	DEFAULT_CONSULT_WINDOW_MS,
+	consultAnswerCallSummary,
 	consultAnswerSummary,
 	consultCallSummary,
+	consultEscalationCallSummary,
+	consultEscalationNotice,
 	consultEscalationSummary,
 	consultPromptText,
 	escalatedQuestionNote,
@@ -118,7 +121,22 @@ test("consult surfaces collapse to one true line", () => {
 	assert.equal(consultCallSummary("w1", "Which file?"), "w1 asked · Which file?");
 	assert.match(consultCallSummary("w1", "x".repeat(200), 20), /^w1 asked · x{19}…$/);
 	assert.match(consultAnswerSummary("w1", "new file"), /^answered w1 · new file$/);
-	assert.match(consultEscalationSummary("w1", "needs a scope call"), /^escalated w1 to you · needs a scope call$/);
+	// The collapsed escalation line carries the question, because answering it is what the human
+	// has to do; the agent's reason for declining lives behind the expand control.
+	assert.match(consultEscalationSummary("w1", "Where should expiry live?"), /^w1 needs you · Where should expiry live\?$/);
+});
+
+test("an escalation says each thing once across its surfaces", () => {
+	const question = "Where should expiry live?";
+	const why = "not established by this session";
+	// The in-flight line names the act, never the content: pi draws it directly above the result,
+	// so anything it repeats is read twice before the human has pressed anything.
+	assert.equal(consultEscalationCallSummary("w1"), "handing w1's question to you");
+	assert.doesNotMatch(consultEscalationCallSummary("w1"), /expiry|established/);
+	// The notification is a pointer to the decision, not a copy of the reasoning behind it.
+	assert.match(consultEscalationNotice("w1", question), /^w1 needs you · Where should expiry live\?$/);
+	assert.ok(!consultEscalationNotice("w1", question).includes(why));
+	assert.equal(consultAnswerCallSummary("w1"), "answering w1");
 });
 
 test("a consulting worker still produces a status artifact the human can open", () => {

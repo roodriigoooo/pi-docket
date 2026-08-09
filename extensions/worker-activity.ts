@@ -4,7 +4,7 @@ import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
 import { pendingWorkerMessageLine, type WorkerMessage } from "./worker-mailbox.js";
-import { isReviewableWorker } from "./worker-lifecycle.js";
+import { isAttentionWorker, isReviewableWorker, workerIsGone } from "./worker-lifecycle.js";
 import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export type WorkerEvidence = {
@@ -38,6 +38,8 @@ export type WorkerActivityRow = {
 	conflicts: WorkerFileConflict[];
 	summary?: string;
 	updatedAt: number;
+	/** Observed: no process remains to act on anything this row offers. */
+	gone: boolean;
 };
 
 export type WorkerActivityStackLine = {
@@ -181,6 +183,8 @@ export type DockRow = {
 	ageLabel: string;
 	attention: boolean;
 	loaded: boolean;
+	/** Observed: the worker's process is gone, whatever its work amounts to. */
+	gone: boolean;
 	chip?: string;
 	kindLabel?: string;
 	modelBadge?: string;
@@ -233,16 +237,11 @@ function latestQuestionTs(worker: WorkerStatus | undefined): number | undefined 
 	return latest ? Date.parse(latest.createdAt) : Date.parse(worker.updatedAt);
 }
 
-/** Definitely not running: no runtime will ever claim what is sitting in its inbox. */
-function workerProcessIsGone(worker: WorkerStatus | undefined): boolean {
-	return worker?.state === "ended" || worker?.state === "error" || worker?.state === "failed";
-}
-
 export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus; messages?: WorkerMessage[] } = {}): string | undefined {
 	const now = options.now ?? Date.now();
 	// A message the worker has not taken outranks every other hint: it is the one case where
 	// the human already acted and nothing has happened yet.
-	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerProcessIsGone(options.worker)) : undefined;
+	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerIsGone(options.worker, now)) : undefined;
 	if (pending) return pending;
 	if (state === "consulting") {
 		// Nobody is blocked on the human yet, so this is a status line, not a warning.
@@ -302,6 +301,7 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 	if (row.state === "consulting") return "asking parent";
 	if (row.state === "needs_input") return "needs reply";
 	if (row.state === "failed") return "error";
+	if (row.state === "stopped") return "no report";
 	return "";
 }
 
@@ -312,7 +312,7 @@ function dockChip(state: WorkerDerivedState): string | undefined {
 }
 
 function isAttentionState(worker: WorkerStatus, now: number): boolean {
-	return isReviewableWorker(worker, now);
+	return isAttentionWorker(worker, now);
 }
 
 export function dockRowsForRender(
@@ -337,6 +337,7 @@ export function dockRowsForRender(
 			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
 			attention: isAttentionState(row.worker, now),
 			loaded: row.loaded,
+			gone: row.gone,
 			...(chip ? { chip } : {}),
 			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),
@@ -355,6 +356,7 @@ export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "thinking") return "active";
 	if (state === "starting") return "starting";
 	if (state === "stale") return "stale";
+	if (state === "stopped") return "stopped";
 	if (state === "empty") return "done/empty";
 	return "idle";
 }
@@ -370,17 +372,19 @@ export type WorkerActivityActionProjection = {
 	enter: "verdict" | "details";
 	load: boolean;
 	peek: "peek";
-	tell: "tell";
-	stop: "stop";
+	/** `queue` when nothing is running to take it: the key still works, the promise does not. */
+	tell: "tell" | "queue";
+	stop: "stop" | "dismiss";
 };
 
 export function workerActivityActionProjection(row: WorkerActivityRow, now = Date.now()): WorkerActivityActionProjection {
+	const gone = row.gone;
 	return {
 		enter: isReviewableWorker(row.worker, now) || deriveWorkerState(row.worker, now) === "reviewed" ? "verdict" : "details",
 		load: !row.loaded,
 		peek: "peek",
-		tell: "tell",
-		stop: "stop",
+		tell: gone ? "queue" : "tell",
+		stop: gone ? "dismiss" : "stop",
 	};
 }
 
@@ -428,6 +432,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			conflicts,
 			...(summary ? { summary } : {}),
 			updatedAt: Date.parse(worker.updatedAt) || 0,
+			gone: workerIsGone(worker, now),
 		};
 	}).sort((a, b) => workerStateRank(a.worker, now) - workerStateRank(b.worker, now) || b.updatedAt - a.updatedAt);
 }
@@ -463,6 +468,7 @@ function previewOutcomeBody(row: WorkerActivityRow): string {
 	if ((row.state === "needs_input" || row.state === "consulting") && row.questions.length) return row.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n");
 	if (row.state === "failed") return row.worker.lastError || row.message || "Failure recorded without detail.";
 	if (row.state === "starting" || row.state === "thinking") return `${row.taskLabel} — working`;
+	if (row.state === "stopped") return "Stopped before reporting. The evidence below is how far it had got.";
 	return row.message || row.answerLine || row.taskLabel;
 }
 

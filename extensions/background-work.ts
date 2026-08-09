@@ -5,7 +5,7 @@ import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-life
 import type { WorkerThinking } from "./worker-spawn-policy.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "consulting" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
+export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "consulting" | "ready_open_todos" | "ready" | "stopped" | "empty" | "failed" | "idle" | "reviewed";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
 export type WorkerTodoState = "pending" | "in_progress" | "completed";
 
@@ -105,6 +105,9 @@ export type WorkerStatus = {
 	/** Last proof-of-life from the worker process. Separate from `updatedAt`, which only moves
 	 * when something about the worker actually changed. */
 	heartbeatAt?: string;
+	/** When the worker's process was observed to leave. Written by the side that saw it go, and
+	 * kept apart from `state` so a reported outcome survives the session that produced it. */
+	exitedAt?: string;
 	/** Set by the worker once its inbox reader is live. Absent on builds that predate the
 	 * mailbox, which is how the parent knows to fall back to the tmux transport (ADR-0008). */
 	mailboxAt?: string;
@@ -198,7 +201,7 @@ export function workerMascotFrame(worker: WorkerStatus | undefined, options: { n
 	if (state === "ready") return "(^_^)";
 	if (state === "failed") return "(x_x)";
 	if (state === "stale") return "(-_-)";
-	if (state === "empty") return "(-.-)";
+	if (state === "stopped" || state === "empty") return "(-.-)";
 	return "(._.)";
 }
 
@@ -227,6 +230,7 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	if (state === "ready") return `${chip} ${truncateWorkerStatus(worker.summary ?? workerTodoSummary(worker) ?? workerStatusText(worker, "ready"))}`;
 	if (state === "reviewed") return `${chip} reviewed`;
 	if (state === "stale") return `${chip} stale`;
+	if (state === "stopped") return `${chip} stopped · did not report`;
 	if (state === "empty") return `${chip} done`;
 	return `${chip} ${truncateWorkerStatus(workerTodoSummary(worker) ?? workerDisplayName(worker, 28))}`;
 }
@@ -500,6 +504,7 @@ export function workerStateRank(worker: WorkerStatus, now = Date.now()): number 
 	if (state === "thinking") return 5;
 	if (state === "starting") return 6;
 	if (state === "stale") return 7;
+	if (state === "stopped") return 7;
 	if (state === "reviewed") return 9;
 	return 8;
 }

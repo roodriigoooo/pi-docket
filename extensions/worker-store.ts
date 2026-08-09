@@ -148,7 +148,10 @@ const WORKER_EXIT_PATCH_SCRIPT = [
 	`const until = Date.now() + 5000;`,
 	`for (;;) { try { fs.mkdirSync(lock); break; } catch (err) { if (err.code !== "EEXIST") process.exit(0); try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) { fs.rmSync(lock,{recursive:true,force:true}); continue; } } catch {} if (Date.now() >= until) process.exit(0); sleep(20); } }`,
 	`let status;`,
-	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); if (status && (!runToken || status.runToken === runToken) && !["needs_input", "ready", "failed", "error", "ended"].includes(status.state)) { const code = Number(rawCode); if (code === 0) status.state = "ended"; else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; } status.updatedAt = new Date().toISOString(); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(status, null, 2) + "\\n", "utf8"); fs.renameSync(tmp,file); } } catch {} finally { try { fs.rmSync(lock,{recursive:true,force:true}); } catch {} }`,
+	// The exit is recorded even for a worker that already reported an outcome: that a process is
+	// gone and what its work amounts to are two facts, and folding the first into `state` is what
+	// made a finished-then-quit worker indistinguishable from one still sitting there.
+	`try { status = JSON.parse(fs.readFileSync(file, "utf8")); if (status && (!runToken || status.runToken === runToken)) { const terminal = ["needs_input", "ready", "failed", "error", "ended"].includes(status.state); if (!terminal) { const code = Number(rawCode); if (code === 0) status.state = "ended"; else { status.state = "failed"; const label = Number.isFinite(code) ? String(code) : rawCode; status.lastError = "worker process exited before reporting ready (exit " + label + ")"; } status.updatedAt = new Date().toISOString(); } if (!terminal || !status.exitedAt) { if (!status.exitedAt) status.exitedAt = new Date().toISOString(); const tmp = file + "." + process.pid + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(status, null, 2) + "\\n", "utf8"); fs.renameSync(tmp,file); } } } catch {} finally { try { fs.rmSync(lock,{recursive:true,force:true}); } catch {} }`,
 ].join("");
 
 export function currentPiCommandParts(argv: string[] = process.argv, execPath = process.execPath): string[] {
@@ -742,7 +745,7 @@ export function createWorkerStore(): WorkerStore {
 			const status = await this.find(id);
 			if (!status) return false;
 			killTmux(status.tmuxSession, status.tmuxWindowId);
-			await this.patchStatus(status.id, { state: "ended" });
+			await this.patchStatus(status.id, { state: "ended", exitedAt: new Date().toISOString() });
 			return true;
 		},
 

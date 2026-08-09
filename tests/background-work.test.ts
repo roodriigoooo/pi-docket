@@ -25,7 +25,10 @@ test("Background Work derives attention states", () => {
 	assert.equal(deriveWorkerState(worker({ state: "needs_input" })), "needs_input");
 	assert.equal(deriveWorkerState(worker({ state: "error" })), "failed");
 	assert.equal(deriveWorkerState(worker({ state: "ready", todos: normalizeWorkerTodos([{ text: "Report findings", state: "pending" }]) })), "ready");
-	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 2 })), "ready");
+	// Reading files is not handing work in. Only `docket_done` writes a summary/outcome, so only
+	// that earns `ready`; a process that merely stopped is `stopped`.
+	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 2 })), "stopped");
+	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 2, summary: "did the thing" })), "ready");
 	assert.equal(deriveWorkerState(worker({ state: "ended", artifactCount: 0 })), "empty");
 	assert.equal(deriveWorkerState(worker({ state: "active", updatedAt: "2026-01-01T00:00:00.000Z" }), Date.parse("2026-01-01T00:02:00.000Z")), "stale");
 });

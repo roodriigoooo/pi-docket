@@ -62,11 +62,11 @@ import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, processExitedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, workerIsGone, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
 import { applyBroadcastSuggestions, broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
 import { appendBulletinEntry, bulletinExistsSync, bulletinFile } from "./worker-bulletin.js";
-import { CONSULT_POLICY_OFF, consultCallSummary, consultAnswerSummary, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
-import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
+import { CONSULT_POLICY_OFF, consultAnswerCallSummary, consultCallSummary, consultEscalationCallSummary, consultEscalationNotice, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
+import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageIsStuck, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -878,6 +878,13 @@ export function verdictVerbs(state: WorkerDerivedState, hasChangeSet: boolean, o
 		{ id: "rejectStop", label: "Reject & stop", description: "kill worker + remove workspace" },
 		{ id: "chat", label: "Chat", description: "send follow-up" },
 	];
+	// Nothing was handed in, so there is no claim to accept. Relaunching is the only way to get
+	// one, and Chat is absent because no process remains to read it.
+	if (state === "stopped") return [
+		{ id: "accept", label: "Respawn", description: "relaunch worker · queued messages deliver" },
+		{ id: "reject", label: "Dismiss", description: "drop from inbox" },
+		{ id: "rejectStop", label: "Discard", description: "remove workspace" },
+	];
 	return [
 		{ id: "accept", label: hasChangeSet ? "Promote" : deliverable ? "Approve" : "Acknowledge", description: hasChangeSet ? "apply diff into your worktree" : deliverable ? "record approval" : "mark reviewed" },
 		{ id: "reject", label: hasChangeSet ? "Discard" : "Dismiss", description: hasChangeSet ? "drop changes · keep worktree" : "drop from inbox" },
@@ -1062,15 +1069,20 @@ export class DocketVerdictView implements Component {
 		const border = (s: string) => this.theme.fg("border", s);
 		const divider = (s: string) => this.theme.fg("borderMuted", s);
 		const warning = (s: string) => this.theme.fg("warning", s);
-		const stateLabel = state === "ready_open_todos" ? "ready · progress" : state.replace(/_/g, " ");
+		const gone = workerIsGone(this.worker);
+		const baseStateLabel = state === "ready_open_todos" ? "ready · progress" : state.replace(/_/g, " ");
+		// Two facts, stated separately. Folding "not running" into the state word would make a
+		// reviewable deliverable look withdrawn; leaving it out entirely is what let the card
+		// offer to steer a worker that had already quit.
+		const stateLabel = gone && state !== "stopped" ? `${baseStateLabel} · not running` : baseStateLabel;
 		const active = state === "starting" || state === "thinking";
-		const glyph = active ? workerPulseGlyph() : "●";
+		const glyph = active ? workerPulseGlyph() : workerLivenessDot(gone);
 		const label = workerSourceLabel(this.worker);
 		const task = workerSummaryName(this.worker, 28);
 		const headerLeft = ` ${accent(this.theme.bold("docket"))} ${dim("·")} ${accent("verdict")} `;
 		const headerRight = ` ${dim("Esc close")} `;
 		this.container.addChild(new Text(fitBorder(headerLeft, headerRight, innerWidth, border, TOP_CORNERS), 0, 0));
-		const head = `${workerStateColor(this.theme, state, glyph)}  ${text(`${label} · ${task}`)}  ${muted(`${stateLabel} · ${relativeTime(Date.parse(this.worker.updatedAt))}`)}`;
+		const head = `${gone ? dim(glyph) : workerStateColor(this.theme, state, glyph)}  ${text(`${label} · ${task}`)}  ${muted(`${stateLabel} · ${relativeTime(Date.parse(this.worker.updatedAt))}`)}`;
 		this.container.addChild(new Text(truncateToWidth(` ${head}`, listWidth - 2), 1, 0));
 		if (this.deliverable) {
 			const source = this.deliverable.sourceHandoff ? ` · handoff ${this.deliverable.sourceHandoff.sourceRef}` : "";
@@ -1443,6 +1455,18 @@ type ParallelSource = "all" | string;
 
 	const PARALLEL_KIND_FILTERS: ParallelKindFilter[] = ["all", "error", "response", "file", "command", "checkpoint", "code", "prompt"];
 
+/**
+ * One glyph, two facts. A filled dot means a process is there; a hollow one means it is not,
+ * whatever the work amounts to. Liveness rides alongside state rather than replacing it, because
+ * a finished worker whose pi was quit is still ready for review and is still unreachable.
+ */
+const WORKER_LIVE_DOT = "●";
+const WORKER_GONE_DOT = "○";
+
+function workerLivenessDot(gone: boolean): string {
+	return gone ? WORKER_GONE_DOT : WORKER_LIVE_DOT;
+}
+
 function workerStateColor(theme: any, state: WorkerDerivedState, text: string): string {
 	// Warning is reserved for "you are the blocker". A consult is nobody's blocker yet.
 	if (state === "consulting") return theme.fg("accent", text);
@@ -1450,7 +1474,7 @@ function workerStateColor(theme: any, state: WorkerDerivedState, text: string): 
 	if (state === "ready") return theme.fg("success", text);
 	if (state === "failed") return theme.fg("error", text);
 	if (state === "starting" || state === "thinking") return theme.fg("accent", text);
-	if (state === "reviewed") return theme.fg("dim", text);
+	if (state === "reviewed" || state === "stopped") return theme.fg("dim", text);
 	return theme.fg("muted", text);
 }
 
@@ -1486,7 +1510,9 @@ function fitColumn(text: string, width: number): string {
 type WorkerTableColumns = { label: number; status: number; task: number; result: number };
 
 function workerRowNeedsAction(row: WorkerActivityRow): boolean {
-	return workerActivityActionProjection(row).enter === "verdict";
+	// Openable and worth interrupting for are different questions: a worker the human stopped is
+	// still openable, and colouring it as unfinished business is how a quiet tool gets noisy.
+	return row.state !== "stopped" && workerActivityActionProjection(row).enter === "verdict";
 }
 
 function workerStatusBadgeLabel(row: WorkerActivityRow): string {
@@ -1495,6 +1521,8 @@ function workerStatusBadgeLabel(row: WorkerActivityRow): string {
 	if (row.state === "ready_open_todos") return "ready";
 	if (row.state === "thinking" || row.state === "starting") return "active";
 	if (row.state === "empty") return "done";
+	// The work is still ready to review; the worker is not there to take anything further.
+	if (row.gone && row.state === "ready") return "ready · gone";
 	return row.state.replace(/_/g, " ");
 }
 
@@ -1542,7 +1570,7 @@ function workerActivityHeaderText(width: number): string {
 }
 
 function workerActivityRowText(row: WorkerActivityRow, width: number, selected = false): string {
-	const rail = selected ? "▌" : workerRowNeedsAction(row) ? "●" : " ";
+	const rail = selected ? "▌" : workerRowNeedsAction(row) ? workerLivenessDot(row.gone) : " ";
 	if (width < 92) {
 		return truncateToWidth(`${rail} ${row.label} ${workerStatusText(row)} ${row.taskLabel} — ${workerResultLabel(row)}`, width, "");
 	}
@@ -1566,7 +1594,9 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 		const rail = selected
 			? theme.fg("accent", "▌")
 			: workerRowNeedsAction(row)
-				? workerStateColor(theme, row.state, "●")
+				? row.gone
+					? theme.fg("dim", WORKER_GONE_DOT)
+					: workerStateColor(theme, row.state, WORKER_LIVE_DOT)
 				: " ";
 		const colored = `${rail}${coloredBody}`;
 		const line = selected ? theme.fg("text", theme.bold(colored)) : colored;
@@ -1575,14 +1605,21 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 }
 
 function dockRowText(theme: any, row: DockRow, width: number, now: number): string {
-	// Active workers breathe; everyone else (attention, idle) holds a steady dot.
-	const markerText = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : "●";
-	const marker = row.attention ? workerStateColor(theme, row.state, markerText) : theme.fg("dim", markerText);
+	// Active workers breathe; everyone else (attention, idle) holds a steady dot, hollow when
+	// there is no process left behind it.
+	const markerText = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : workerLivenessDot(row.gone);
+	const marker = row.attention && !row.gone ? workerStateColor(theme, row.state, markerText) : theme.fg("dim", markerText);
 	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
 	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
 	const labelCell = `${row.label}${kindCell}${modelCell}`;
-	const stateCell = row.state === "thinking" || row.state === "starting" ? "" : row.state === "ready_open_todos" ? "ready/progress" : row.state.replace(/_/g, " ");
-	const stateStyled = stateCell ? workerStateColor(theme, row.state, stateCell) : "";
+	const stateCell = row.state === "thinking" || row.state === "starting"
+		? ""
+		: row.state === "ready_open_todos"
+			? "ready/progress"
+			: row.gone && row.state === "ready"
+				? "ready · gone"
+				: row.state.replace(/_/g, " ");
+	const stateStyled = stateCell ? (row.gone ? theme.fg("dim", stateCell) : workerStateColor(theme, row.state, stateCell)) : "";
 	const docketing = [row.progressLabel, row.loaded ? theme.fg("muted", "loaded") : undefined, row.ageLabel].filter(Boolean).join(" · ");
 	const left = `${marker} ${labelCell}${stateStyled ? ` ${stateStyled}` : ""} ${row.taskLabel}`.trim();
 	const action = row.chip ? row.attention ? workerStateColor(theme, row.state, row.chip) : theme.fg("dim", row.chip) : undefined;
@@ -2505,8 +2542,8 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 	return (message, options, theme) => {
 		const details = (message.details ?? { kind: "notice" }) as DocketMessageDetails;
 		const kind = details.kind ?? "notice";
-		const labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
-		const glyph = KIND_GLYPH[kind] ?? "·";
+		let labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
+		let glyph = KIND_GLYPH[kind] ?? "·";
 		const headingText = details.heading ?? `docket · ${kind}`;
 		const expanded = options?.expanded === true;
 		let subject = details.subject;
@@ -2521,10 +2558,21 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 		const sent = details.sentMessage;
 		const live = sent ? readWorkerMessageSync(createWorkerStore().root(), sent.workerId, sent.messageId) : undefined;
 		let timeline: string | undefined;
+		let stuck = false;
 		if (sent) {
-			subject = `tell ${sent.workerLabel} · ${sentWorkerMessageStateLabel(sent.transport, live)}`;
+			// Liveness is re-read with the message: a worker that was running when the chip was
+			// printed may not be running now, and the chip is what the human is still looking at.
+			const gone = workerIsGone(readWorkerStatusSync(sent.workerId));
+			stuck = sentWorkerMessageIsStuck(sent.transport, live, gone);
+			subject = `tell ${sent.workerLabel} · ${sentWorkerMessageStateLabel(sent.transport, live, gone)}`;
 			if (!expanded) content = collapseWorkerMessageBody(content);
-			timeline = sentWorkerMessageTimeline(sent.transport, live);
+			timeline = sentWorkerMessageTimeline(sent.transport, live, { workerIsGone: gone, workerLabel: sent.workerLabel });
+			// A message that cannot arrive is not a success, and re-reading it as one is exactly
+			// the false claim ADR-0008 set out to remove.
+			if (stuck) {
+				labelColor = KIND_COLOR.warning;
+				glyph = KIND_GLYPH.warning;
+			}
 		}
 		const box = new Box(1, 1, (s) => theme.bg("customMessageBg", s));
 
@@ -2556,7 +2604,7 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 			}
 		}
 
-		if (timeline && expanded) {
+		if (timeline && (expanded || stuck)) {
 			box.addChild(new Text("", 0, 0));
 			box.addChild(new Text(dim(timeline), 0, 0));
 		}
@@ -2990,7 +3038,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 	 * window expiring; both land in the same place, because from the human's side there is no
 	 * difference between "the agent declined" and "the agent never got to it".
 	 */
-	const escalateConsult = async (worker: WorkerStatus, question: WorkerQuestion, reason: string): Promise<void> => {
+	const escalateConsult = async (worker: WorkerStatus, question: WorkerQuestion, reason: string, options: { notify?: boolean } = {}): Promise<void> => {
 		const store = createWorkerStore();
 		const update = await store.updateStatus(worker.id, consultEscalatedTransition({ questionId: question.id, reason }));
 		if (!update.changed) return;
@@ -2999,7 +3047,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 			kind: "state",
 			payload: { state: "needs_input", escalated: true, questionId: question.id, reason },
 		});
-		if (activeCtx?.hasUI) activeCtx.ui.notify(`Docket: ${workerSourceLabel(worker)} needs you — ${reason}`, "warning");
+		// The sweep escalates with no card to point at, so the notification is the only surface
+		// and carries the question. When a tool call escalated, the card is already on screen and
+		// a toast repeating its contents is the third copy of one sentence.
+		if (options.notify !== false && activeCtx?.hasUI) {
+			activeCtx.ui.notify(`Docket: ${consultEscalationNotice(workerSourceLabel(worker), question.text)}`, "warning");
+		}
 		await refreshWorkerDockWidget();
 	};
 
@@ -3237,8 +3290,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				};
 			},
 			renderCall(args, theme) {
-				const params = args as { worker?: string; answer?: string };
-				return new Text(theme.fg("dim", consultAnswerSummary(params.worker ?? "worker", params.answer ?? "")), 0, 0);
+				const params = args as { worker?: string };
+				return new Text(theme.fg("dim", consultAnswerCallSummary(params.worker ?? "worker")), 0, 0);
 			},
 			renderResult(result, options, theme) {
 				const details = (result as { details?: { worker?: string; question?: string; answer?: string } }).details ?? {};
@@ -3266,7 +3319,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 			async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 				const found = await consultTargets(params.worker);
 				if (!found) return { content: [{ type: "text", text: `No open Docket consult for ${params.worker}.` }], details: {} };
-				await escalateConsult(found.worker, found.question, params.why);
+				await escalateConsult(found.worker, found.question, params.why, { notify: false });
 				const label = workerSourceLabel(found.worker);
 				return {
 					content: [{ type: "text", text: `Escalated ${label} to the human. It stays blocked until they answer.` }],
@@ -3274,16 +3327,20 @@ export default function docketExtension(pi: ExtensionAPI) {
 				};
 			},
 			renderCall(args, theme) {
-				const params = args as { worker?: string; why?: string };
-				return new Text(theme.fg("dim", consultEscalationSummary(params.worker ?? "worker", params.why ?? "")), 0, 0);
+				const params = args as { worker?: string };
+				return new Text(theme.fg("dim", consultEscalationCallSummary(params.worker ?? "worker")), 0, 0);
 			},
 			renderResult(result, options, theme) {
 				const details = (result as { details?: { worker?: string; question?: string; why?: string } }).details ?? {};
+				const label = details.worker ?? "worker";
 				const box = new Box(0, 0);
-				box.addChild(new Text(theme.fg("warning", `✉ ${details.worker ?? "worker"} consulted · escalated to you`), 0, 0));
+				// Collapsed: who is blocked and on what. Everything else — the full question, why
+				// the agent declined, where to answer — is one keypress away and appears once.
+				box.addChild(new Text(theme.fg("warning", `✉ ${consultEscalationSummary(label, details.question ?? "")}`), 0, 0));
 				if (options?.expanded) {
-					if (details.question) box.addChild(new Text(theme.fg("dim", `Q  ${details.question}`), 0, 0));
-					if (details.why) box.addChild(new Text(theme.fg("muted", `needs  ${details.why}`), 0, 0));
+					if (details.question) box.addChild(new Text(theme.fg("dim", details.question), 0, 0));
+					if (details.why) box.addChild(new Text(theme.fg("muted", `parent agent declined · ${details.why}`), 0, 0));
+					box.addChild(new Text(theme.fg("dim", `f8 → ${label} → Enter to answer`), 0, 0));
 				}
 				return box;
 			},
@@ -3747,7 +3804,15 @@ export default function docketExtension(pi: ExtensionAPI) {
 				clearInterval(heartbeatTimer);
 				heartbeatTimer = undefined;
 			}
-			try { await createWorkerStore().patchStatus(workerId!, { state: "ended" }); } catch { /* best-effort */ }
+			// Record the exit as its own fact. Overwriting `state` here used to erase a worker's
+			// reported outcome, which is how a worker that finished and was then quit came back
+			// as an `ended` worker with artifacts — and read, everywhere, as plain `ready`.
+			try {
+				await createWorkerStore().updateStatus(workerId!, (current) => ({
+					...(processExitedTransition(0)(current) ?? {}),
+					exitedAt: new Date().toISOString(),
+				}));
+			} catch { /* best-effort */ }
 		},
 		startMailbox: () => {
 			if (!workerId) return;

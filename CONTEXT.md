@@ -162,6 +162,14 @@ _Avoid_: backlog, stale worker, orphan.
 A user-opened, zero-context view of a ready worker's structured completion data and evidence metadata (full summary, recommendations, checks, changed files, refs). It is not a transcript, model summary, or context injection; closing it returns to the unresolved verdict without recording a decision.
 _Avoid_: attach, inject, summary message, transcript dump.
 
+**Liveness**:
+Whether a Worker's process is still there, observed separately from what its work amounts to. `gone` is written by the side that saw it leave — session end, the exit trap, `kill`, a pane confirmed dead, or a heartbeat older than the gone window. Absence of proof is `unknown`, never `live`. A Worker can be **ready and gone**: its deliverable still stands, and nothing will read another message until it is respawned. Rendered as a hollow `○` in place of the filled dot.
+_Avoid_: dead, offline, disconnected, healthy.
+
+**Stopped**:
+A Worker whose process ended without ever calling `docket_done`. It has evidence but no claim, so it is openable and never counted as attention: no colour, no chip, no `Outcome` section. Distinct from `failed` (it reported a failure) and from `ready` (it reported a result).
+_Avoid_: cancelled, aborted, empty, done.
+
 **Silence warning**:
 A passive dock hint for a running worker with no recent tool/todo event, shown as `silent Nm`. It is not a kill switch. Peek or attach if you need live scrollback.
 _Avoid_: deadman, timeout, auto-kill.
@@ -186,6 +194,8 @@ _Avoid_: continue, resume, restore.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
 - A **Message** carries one instruction or answer to a Worker, or one question from it. Every edge is Worker ↔ parent; there is no Worker → Worker channel.
 - **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
+- **Liveness** and lifecycle state are two facts, never folded into one. A Worker's exit is recorded as its own field and never overwrites what the Worker reported.
+- A Message to a Worker that is **gone** is `undeliverable` on every surface that mentions it — starting with the chip the human was looking at when they sent it — and delivers on respawn.
 - A **Consult** is answerable by the parent agent only while the human has enabled it; otherwise it is an ordinary Question. Either way the worker is told who answered.
 - A **Notice** never changes a Worker's state and never enters parent model context.
 - A **Broadcast** is proposed by Docket, confirmed by the human, and delivered without interrupting. It carries **Standing** and never answers a question a Worker is blocked on.

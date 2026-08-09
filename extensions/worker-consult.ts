@@ -82,20 +82,45 @@ export function consultPromptText(worker: WorkerStatus, question: WorkerQuestion
 	].join("\n");
 }
 
+function clip(text: string, max: number): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 /** One-line parent surface for a consult exchange, collapsed. */
 export function consultCallSummary(workerLabel: string, question: string, max = 72): string {
-	const flat = question.replace(/\s+/g, " ").trim();
-	return `${workerLabel} asked · ${flat.length > max ? `${flat.slice(0, max - 1)}…` : flat}`;
+	return `${workerLabel} asked · ${clip(question, max)}`;
+}
+
+/**
+ * The in-flight line, which pi draws above the result. It names the act and the worker and stops
+ * there: the result underneath carries the content, and a call line that repeats it turns one
+ * exchange into two paragraphs saying the same thing.
+ */
+export function consultAnswerCallSummary(workerLabel: string): string {
+	return `answering ${workerLabel}`;
+}
+
+export function consultEscalationCallSummary(workerLabel: string): string {
+	return `handing ${workerLabel}'s question to you`;
 }
 
 export function consultAnswerSummary(workerLabel: string, answer: string, max = 72): string {
-	const flat = answer.replace(/\s+/g, " ").trim();
-	return `answered ${workerLabel} · ${flat.length > max ? `${flat.slice(0, max - 1)}…` : flat}`;
+	return `answered ${workerLabel} · ${clip(answer, max)}`;
 }
 
-export function consultEscalationSummary(workerLabel: string, why: string, max = 72): string {
-	const flat = why.replace(/\s+/g, " ").trim();
-	return `escalated ${workerLabel} to you · ${flat.length > max ? `${flat.slice(0, max - 1)}…` : flat}`;
+/**
+ * The collapsed escalation line. It carries the *question*, because that is what the human has to
+ * act on; the agent's reason for declining is context for the decision, not the decision, and it
+ * lives behind the expand control with everything else that is longer than a line.
+ */
+export function consultEscalationSummary(workerLabel: string, question: string, max = 72): string {
+	return `${workerLabel} needs you · ${clip(question, max)}`;
+}
+
+/** Notification text. A pointer to where the decision is made, never a copy of it. */
+export function consultEscalationNotice(workerLabel: string, question: string, max = 64): string {
+	return `${workerLabel} needs you · ${clip(question, max)}`;
 }
 
 /**

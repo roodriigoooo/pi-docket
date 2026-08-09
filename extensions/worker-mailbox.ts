@@ -229,18 +229,31 @@ function clockLabel(iso: string): string {
  * What the parent's chip says about one sent message. `live` is the message re-read from disk,
  * so this reports the current fact rather than the one that held when the chip was created.
  */
-export function sentWorkerMessageStateLabel(transport: WorkerMessageTransport, live: WorkerMessage | undefined): string {
+export function sentWorkerMessageStateLabel(transport: WorkerMessageTransport, live: WorkerMessage | undefined, workerIsGone = false): string {
 	if (transport === "tmux") return "sent to terminal · receipt unconfirmed";
-	if (!live) return "queued";
+	if (!live) return workerIsGone ? "undeliverable · worker is not running" : "queued";
+	// The chip is where the human was looking when they sent it, so it is where the failure to
+	// arrive has to show. A dock sub-line they have to go find is not the same as being told.
+	if (projectWorkerMessageDelivery(live, workerIsGone) === "undeliverable") return "undeliverable · worker is not running";
 	return workerMessageDeliveryLabel(live.delivery);
 }
 
-export function sentWorkerMessageTimeline(transport: WorkerMessageTransport, live: WorkerMessage | undefined): string | undefined {
+/** Whether a sent message needs the human to do something before it can arrive. */
+export function sentWorkerMessageIsStuck(transport: WorkerMessageTransport, live: WorkerMessage | undefined, workerIsGone = false): boolean {
+	if (transport === "tmux") return false;
+	if (!workerIsGone) return false;
+	return !live || projectWorkerMessageDelivery(live, true) === "undeliverable";
+}
+
+export function sentWorkerMessageTimeline(transport: WorkerMessageTransport, live: WorkerMessage | undefined, options: { workerIsGone?: boolean; workerLabel?: string } = {}): string | undefined {
 	if (transport === "tmux") return "legacy worker · tmux keystrokes cannot confirm receipt";
 	if (!live) return undefined;
 	const parts = [`queued ${clockLabel(live.createdAt)}`];
 	if (live.deliveredAt) parts.push(`delivered ${clockLabel(live.deliveredAt)}`);
 	if (live.readAt) parts.push(`read ${clockLabel(live.readAt)}`);
+	if (projectWorkerMessageDelivery(live, options.workerIsGone === true) === "undeliverable") {
+		parts.push(`held on disk · /docket respawn ${options.workerLabel ?? "the worker"} delivers it`);
+	}
 	return parts.join(" · ");
 }
 

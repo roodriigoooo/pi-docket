@@ -244,7 +244,12 @@ export function projectWorkerReport(
 			? questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n") || worker.question || headline
 			: primarySection === "failure"
 				? worker.lastError ?? headline
-				: summary || headline;
+				// Nothing was handed in, so there is no outcome to show. Echoing the task back
+				// under an "Outcome" heading is how an abandoned worker came to read as a
+				// finished one.
+				: state === "stopped"
+					? "The worker's process ended before it reported anything. The evidence below is how far it had got."
+					: summary || headline;
 
 	const kind = worker.kind?.trim() && worker.kind !== "default" ? worker.kind : undefined;
 
