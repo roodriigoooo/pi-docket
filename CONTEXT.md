@@ -182,6 +182,10 @@ _Avoid_: cancelled, aborted, empty, done.
 A passive dock hint for a running worker with no recent tool/todo event, shown as `silent Nm`. It is not a kill switch. Peek or attach if you need live scrollback.
 _Avoid_: deadman, timeout, auto-kill.
 
+**Settled**:
+A Worker whose decision is behind it — `reviewed` or `stopped`. It leaves the dock, which answers "is anything waiting on me", and lives in the `f8` dashboard, which answers "what is the whole fleet doing", behind one keypress. Not a lifecycle state and not a time-based hide: it is derived from the states that already exist. A Message the Worker never took un-settles it, because there the human acted and nothing has happened yet.
+_Avoid_: archived, closed, done, hidden, dismissed.
+
 **Save vs Load**:
 **Save** writes an immutable deliverable from an approved exact worker generation or explicit parent authorship. **Load** mounts a deliverable or legacy bundle into the current Docket navigator. Neither appends a Pi session marker or replaces Pi's session commands.
 _Avoid_: continue, resume, restore.
@@ -206,6 +210,7 @@ _Avoid_: continue, resume, restore.
 - A Message to a Worker that is **gone** is `undeliverable` on every surface that mentions it — starting with the chip the human was looking at when they sent it — and delivers on respawn.
 - A promotion appends to the **Project journal** with no further authorization, because promotion is already a human act. Nothing else propagates automatically.
 - **Stale base** is derived through the Broadcast scorer. There is one notion of "affected" in Docket, and it is not duplicated for a second caller.
+- Each surface answers one question: the dock "is anything waiting on me", `f8` "what is the whole fleet doing", `/docket` "what needs a decision", `/docket verdict` resolves them. A **Settled** Worker therefore leaves the dock and stays in `f8`, and a recorded verdict outranks every warning on its row — neither an overlap nor a **Stale base** can change a decision already made.
 - A **Consult** is answerable by the parent agent only while the human has enabled it; otherwise it is an ordinary Question. Either way the worker is told who answered.
 - A **Notice** never changes a Worker's state and never enters parent model context.
 - A **Broadcast** is proposed by Docket, confirmed by the human, and delivered without interrupting. It carries **Standing** and never answers a question a Worker is blocked on.

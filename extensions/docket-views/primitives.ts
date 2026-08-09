@@ -33,6 +33,10 @@ export function padAnsi(text: string, width: number): string {
 	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 }
 
+export function padStartAnsi(text: string, width: number): string {
+	return `${" ".repeat(Math.max(0, width - visibleWidth(text)))}${text}`;
+}
+
 export function wrapPlainText(text: string, width: number, maxLines = Infinity): string[] {
 	const limit = Math.max(12, width);
 	const out: string[] = [];

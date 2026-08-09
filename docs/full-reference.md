@@ -379,9 +379,21 @@ If the worker had already finished, the fact follows its deliverable onto the ve
 
 Staleness only ever comes from the evidence a broadcast is scored against — a named path, a touched path, an approved plan's files. Task-text overlap is enough to *propose* a recipient to you; it is not enough to tell a worker its ground has shifted.
 
-### Reviewed workers go dim
+### Settled workers fold away
 
-When you accept or dismiss a ready/failed worker on the verdict card, Docket stamps `reviewedAt` on the worker. The dock row turns dim with a `✓` chip and the worker stops counting toward `waiting`/`failed`/`ready` in the dock summary — an acknowledged worker no longer keeps asking for review. Reviewed workers stay listed (dim) so you can still re-open them with `/docket verdict w<N>`; after `worker.dockIdleHideMinutes` they hide from the dock and after `worker.pruneAfterHours` they are pruned.
+Each surface answers one question. The dock answers **is anything waiting on me** — so it carries only rows something is still owed on. `f8` answers **what is the whole fleet doing**, `/docket` answers **what needs a decision**, and `/docket verdict` resolves them one at a time.
+
+A worker is **settled** when its decision is behind it: you accepted or dismissed it on the verdict card (`reviewedAt` is stamped, the state derives as `reviewed`), or its process ended without ever making a claim (`stopped`). Settled rows leave the dock and are replaced by a single line standing for all of them:
+
+```text
+    4 settled · f8
+```
+
+Press `f8` and they are one keypress away — the dashboard shows `+4 settled · tab to show`, and `tab` opens the band as its own group beneath every row that still needs something. Nothing is hidden by time here; `worker.dockIdleHideMinutes` still governs when an ended worker leaves `f8` too, and `worker.pruneAfterHours` when its directory is pruned.
+
+One message the worker never took un-settles its row and brings it back to the dock: there you already acted and nothing has happened yet, which is exactly what the dock exists to show. A recorded verdict also outranks the row's warnings — a settled row reads `reviewed` rather than an overlap warning, and never carries `base moved`, because neither can change a decision already made. If the worker produces another generation the staleness returns on the verdict card, which is where it acts.
+
+Dock rows are laid out in fixed columns — worker, state, task, detail, age, chip — so separators line up down the screen instead of landing wherever the previous cell ended. Under width pressure the detail column gives ground first, then the state word and the chip; the task text and the worker's kind give ground last, because those are what identify the row.
 
 Reviewed state clears automatically on new activity: telling the worker, respawning it, or any new protocol transition (`docket_wait`/`docket_done`/`docket_fail`) re-surfaces it. Replying to a `needs_input` question, retrying a failed worker, or sending a chat-back-for-revision does not mark a worker reviewed — only terminal verdicts (`accept`/`reject` on ready, `reject` on failed) do.
 

@@ -162,16 +162,18 @@ export function createScrollingKeymap(): DocketKeymap<ScrollKeyAction> {
 	]);
 }
 
-export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "next" | "help" | "progress" | "peek" | "open" | "load" | "tell" | "attach" | "stop";
+export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "settled" | "help" | "progress" | "peek" | "open" | "load" | "tell" | "attach" | "stop";
 
-export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | "details"; canLoad?: boolean } = {}): DocketKeymap<DashboardKeyAction> {
+export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | "details"; canLoad?: boolean; hasSettled?: boolean } = {}): DocketKeymap<DashboardKeyAction> {
 	const bindings: KeyBinding<DashboardKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "down", slots: ["footer"] },
 		{ keys: ["k", "up"], action: "up", label: "up", slots: ["footer"] },
 		{ keys: "g", action: "top", label: "top" },
 		{ keys: "G", action: "bottom", label: "bottom" },
-		{ keys: "tab", action: "next", label: "next worker", slots: ["help"] },
+		// Same key, same meaning as the broadcast picker's hidden band: one press reveals what was
+		// folded. Offered only when something is folded, so the footer stays quiet otherwise.
+		...(options.hasSettled ? [{ keys: "tab", action: "settled", label: "settled", slots: ["footer"] } satisfies KeyBinding<DashboardKeyAction>] : []),
 		{ keys: "?", action: "help", label: "more", slots: ["footer"] },
 		{ keys: "t", action: "progress", label: "progress details", slots: ["help"] },
 		{ keys: "p", action: "peek", label: "peek", slots: ["footer"] },

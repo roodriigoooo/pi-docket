@@ -51,7 +51,7 @@ import { createDocketCommandRouter, type LoadPickerMode, type LoadPickerSelectio
 import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavigatorState, navigatorSourceLabel, navigatorViewModel, reviewCategoryLabel, sameNavigatorSource, type EpisodeSummary, type NavigatorAction, type NavigatorIntent, type NavigatorMode, type NavigatorSource, type NavigatorState, type ReviewActionId, type ReviewBucket, type ReviewCategory, type ReviewItem, type ReviewQueueState, type ReviewReasonId } from "./docket-navigator.js";
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
-import { dockRowsForRender, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
+import { DOCK_GUTTER, dockColumns, dockRowCells, dockRowsForRender, dockSettledLine, isSettledDockState, partitionDockRows, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockColumns, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { freezeWorkerChangeSet, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
@@ -79,7 +79,7 @@ import { installDocketExtensionSurface, type DocketExtensionSurfaceInternals } f
 import { createSharedSessionRuntime } from "./shared-session-runtime.js";
 import { createParentRuntime } from "./parent-runtime.js";
 import { createWorkerRuntime } from "./worker-runtime.js";
-import { BOTTOM_CORNERS, fitBorder, padAnsi, TOP_CORNERS, wrapPlainText } from "./docket-views/primitives.js";
+import { BOTTOM_CORNERS, fitBorder, padAnsi, padStartAnsi, TOP_CORNERS, wrapPlainText } from "./docket-views/primitives.js";
 import { showArtifactViewer, showFileViewer, showTextViewer } from "./docket-views/artifact-viewers.js";
 import { createPickerKeymap, createVerdictKeymap, createWorkerDashboardKeymap, defineKeymap, formatKeyHints } from "./docket-keymap.js";
 
@@ -1655,40 +1655,34 @@ function renderWorkerActivityRows(theme: any, rows: WorkerActivityRow[], width: 
 	});
 }
 
-function dockRowText(theme: any, row: DockRow, width: number, now: number): string {
+function dockRowText(theme: any, row: DockRow, columns: DockColumns, width: number, now: number): string {
 	// Active workers breathe; everyone else (attention, idle) holds a steady dot, hollow when
 	// there is no process left behind it.
 	const markerText = row.state === "thinking" || row.state === "starting" ? workerPulseGlyph(now) : workerLivenessDot(row.gone);
 	const marker = row.attention && !row.gone ? workerStateColor(theme, row.state, markerText) : theme.fg("dim", markerText);
-	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
-	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
-	const labelCell = `${row.label}${kindCell}${modelCell}`;
-	const stateCell = row.state === "thinking" || row.state === "starting"
-		? ""
-		: row.state === "ready_open_todos"
-			? "ready/progress"
-			: row.gone && row.state === "ready"
-				? "ready · gone"
-				: row.state.replace(/_/g, " ");
-	const stateStyled = stateCell ? (row.gone ? theme.fg("dim", stateCell) : workerStateColor(theme, row.state, stateCell)) : "";
-	const docketing = [row.progressLabel, row.loaded ? theme.fg("muted", "loaded") : undefined, row.ageLabel].filter(Boolean).join(" · ");
-	const left = `${marker} ${labelCell}${stateStyled ? ` ${stateStyled}` : ""} ${row.taskLabel}`.trim();
-	const action = row.chip ? row.attention ? workerStateColor(theme, row.state, row.chip) : theme.fg("dim", row.chip) : undefined;
-	const right = [docketing, action].filter(Boolean).join(" · ");
-	const sep = "  ";
-	const rightLen = visibleWidth(right);
-	if (!right) return truncateToWidth(left, width, "");
-	const leftWidth = Math.max(0, width - rightLen - sep.length);
-	const leftFit = truncateToWidth(left, leftWidth, "");
-	const leftPad = padAnsi(leftFit, leftWidth);
-	return `${leftPad}${sep}${right}`;
+	const cells = dockRowCells(row);
+	const stateStyled = cells.state ? (row.gone ? theme.fg("dim", cells.state) : workerStateColor(theme, row.state, cells.state)) : "";
+	const metaStyled = [row.progressLabel, row.loaded ? theme.fg("muted", "loaded") : undefined].filter(Boolean).join(" · ");
+	const chipStyled = cells.chip ? (row.attention ? workerStateColor(theme, row.state, cells.chip) : theme.fg("dim", cells.chip)) : "";
+	// Fixed columns, so the eye reads down one instead of hunting across every line. Secondary
+	// columns hug the right edge exactly where the old single right-aligned blob put them.
+	const parts = [
+		fitColumn(cells.label, columns.label),
+		...(columns.state > 0 ? [fitColumn(stateStyled, columns.state)] : []),
+		padAnsi(truncateToWidth(cells.task, columns.task, "…"), columns.task),
+		...(columns.meta > 0 ? [padStartAnsi(truncateToWidth(metaStyled, columns.meta, "…"), columns.meta)] : []),
+		padStartAnsi(cells.age, columns.age),
+		...(columns.chip > 0 ? [padStartAnsi(truncateToWidth(chipStyled, columns.chip, "…"), columns.chip)] : []),
+	];
+	return truncateToWidth(`${marker} ${parts.join(" ".repeat(DOCK_GUTTER))}`.trimEnd(), width, "");
 }
 
-function renderDockRows(theme: any, rows: DockRow[], width: number, now: number): string[] {
+export function renderDockRows(theme: any, rows: DockRow[], width: number, now: number): string[] {
 	const muted = (s: string) => theme.fg("muted", s);
+	const columns = dockColumns(rows, width);
 	const out: string[] = [];
 	for (const row of rows) {
-		out.push(dockRowText(theme, row, width, now));
+		out.push(dockRowText(theme, row, columns, width, now));
 		if (row.eventLine) {
 			const sub = truncateToWidth(`    ${row.eventLine}`, width, "");
 			out.push(muted(sub));
@@ -1836,6 +1830,7 @@ export class DocketParallelWorkView implements Component {
 	private selected = 0;
 	private showHelp = false;
 	private showProgressDetail = false;
+	private showSettled = false;
 	private peek = false;
 	private peekTimer?: NodeJS.Timeout;
 	private cachedWidth?: number;
@@ -1876,10 +1871,26 @@ export class DocketParallelWorkView implements Component {
 		return parallelEntries(this.workers, this.artifactsByWorker, "all", "all", new Set());
 	}
 
-	private activityRows(): WorkerActivityRow[] {
+	private allRows(): WorkerActivityRow[] {
 		const rows = workerActivityRows(this.workers, this.artifactsByWorker, { explicitlyLoadedWorkerIds: this.explicitlyLoadedWorkerIds });
 		if (!this.groupByProject) return rows;
 		return [...rows].sort((a, b) => workerProjectKey(a.worker).localeCompare(workerProjectKey(b.worker)));
+	}
+
+	/**
+	 * The dock folds settled workers away; this view is where they still live, but they sit
+	 * behind one keypress so a fleet whose decisions are made does not bury the one that is not.
+	 */
+	private partitioned(): { open: WorkerActivityRow[]; settled: WorkerActivityRow[] } {
+		const open: WorkerActivityRow[] = [];
+		const settled: WorkerActivityRow[] = [];
+		for (const row of this.allRows()) (isSettledDockState(row.state) ? settled : open).push(row);
+		return { open, settled };
+	}
+
+	private activityRows(): WorkerActivityRow[] {
+		const { open, settled } = this.partitioned();
+		return this.showSettled ? [...open, ...settled] : open;
 	}
 
 	private selectedWorker(): WorkerStatus | undefined {
@@ -1895,17 +1906,12 @@ export class DocketParallelWorkView implements Component {
 		return { action: "details", worker: row.worker };
 	}
 
-	private selectNext(): void {
-		const max = Math.max(0, this.activityRows().length - 1);
-		this.selected = Math.min(max, this.selected + 1);
-	}
-
 	handleInput(data: string): void {
 		const rows = this.activityRows();
 		const max = Math.max(0, rows.length - 1);
 		const selectedRow = rows[this.selected];
 		const projection = selectedRow ? workerActivityActionProjection(selectedRow) : undefined;
-		const action = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true }).resolve(data);
+		const action = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true, hasSettled: this.partitioned().settled.length > 0 }).resolve(data);
 		if (action === "close") {
 			if (this.peek) {
 				this.setPeek(false);
@@ -1920,7 +1926,10 @@ export class DocketParallelWorkView implements Component {
 		else if (action === "up") this.selected = Math.max(0, this.selected - 1);
 		else if (action === "top") this.selected = 0;
 		else if (action === "bottom") this.selected = max;
-		else if (action === "next") this.selectNext();
+		else if (action === "settled") {
+			this.showSettled = !this.showSettled;
+			this.selected = 0;
+		}
 		else if (action === "help") this.showHelp = !this.showHelp;
 		else if (action === "progress") this.showProgressDetail = !this.showProgressDetail;
 		else if (action === "peek") this.setPeek(!this.peek);
@@ -1985,6 +1994,7 @@ export class DocketParallelWorkView implements Component {
 		const innerWidth = Math.max(20, width - 4);
 		const listWidth = Math.max(30, innerWidth);
 		const entries = this.entries();
+		const { open: openRows, settled: settledRows } = this.partitioned();
 		const activityRows = this.activityRows();
 		this.selected = Math.min(this.selected, Math.max(0, activityRows.length - 1));
 		const selectedRow = activityRows[this.selected];
@@ -2009,7 +2019,10 @@ export class DocketParallelWorkView implements Component {
 		this.container.addChild(new Text(truncateToWidth(` ${muted(status)}${dim(todoStatus)}${dim(artifactStatus)}`, innerWidth - 2), 1, 0));
 		this.container.addChild(new DynamicBorder(divider));
 
-		if (activityRows.length === 0) {
+		const bandWidth = listWidth - 2;
+		const band = (left: string, right: string): string => truncateToWidth(` ${dim(padAnsi(left, Math.max(0, bandWidth - visibleWidth(right) - 2)))}${dim(right)}`, bandWidth);
+
+		if (activityRows.length === 0 && settledRows.length === 0) {
 			this.container.addChild(new Spacer(1));
 			this.container.addChild(new Text(truncateToWidth(` ${muted("docket · no workers yet · /docket spawn <task>")}`, listWidth - 2), 1, 0));
 			this.container.addChild(new Spacer(1));
@@ -2019,6 +2032,8 @@ export class DocketParallelWorkView implements Component {
 			let previousProject: string | undefined;
 			for (let i = 0; i < activityRows.length; i++) {
 				const row = activityRows[i]!;
+				// The settled group announces itself once, where it begins.
+				if (this.showSettled && i === openRows.length) this.container.addChild(new Text(band(`settled (${settledRows.length})`, "tab to hide"), 1, 0));
 				if (this.groupByProject) {
 					const project = workerProjectKey(row.worker);
 					if (project !== previousProject) {
@@ -2028,13 +2043,14 @@ export class DocketParallelWorkView implements Component {
 				}
 				this.container.addChild(new Text(renderedRows[i]!, 1, 0));
 			}
+			if (!this.showSettled && settledRows.length > 0) this.container.addChild(new Text(band(`+${settledRows.length} settled`, "tab to show"), 1, 0));
 			if (this.peek && selectedRow) this.renderPeek(selectedRow, listWidth - 2);
 			else addWorkerActivityPreview(this.container, this.theme, selectedRow, listWidth - 2, this.showProgressDetail);
 		}
 
 		this.container.addChild(new DynamicBorder(divider));
 		const projection = selectedRow ? workerActivityActionProjection(selectedRow) : undefined;
-		const keymap = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true });
+		const keymap = createWorkerDashboardKeymap({ enterLabel: projection?.enter, canLoad: projection?.load ?? true, hasSettled: settledRows.length > 0 });
 		this.container.addChild(new Text(dim(formatKeyHints(keymap, "footer")), 1, 0));
 		if (this.showHelp) {
 			this.container.addChild(new Text(`${muted("Flow")} ${dim("rows stay collapsed; selected preview is informational; nothing enters context until loaded")}`, 1, 0));
@@ -3037,7 +3053,8 @@ export default function docketExtension(pi: ExtensionAPI) {
 				}));
 			}
 			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker, messagesByWorker, staleLineByWorker });
-			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
+			const { visible: visibleDockRows, settled: settledDockRows } = partitionDockRows(dockRows);
+			syncDockAnimation(visibleDockRows.some((row) => row.state === "thinking" || row.state === "starting"));
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
 				"docket-workers",
@@ -3055,17 +3072,22 @@ export default function docketExtension(pi: ExtensionAPI) {
 						if (counts.loaded) attentionParts.push(`${counts.loaded} loaded`);
 						// One word in a line that already exists, rather than a row of its own.
 						if (sharedNotices) attentionParts.push(`${sharedNotices} shared`);
-						const idle = counts.workers - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.active - counts.reviewed;
-						const idlePart = idle > 0 ? `${idle} ${idle === 1 ? "running" : "running"}` : "";
-						const reviewedPart = counts.reviewed > 0 ? dim(`${counts.reviewed} reviewed`) : "";
+						// Settled rows are folded, so "running" is counted over what is actually on
+						// screen rather than over a roster the dock no longer shows.
+						const idle = visibleDockRows.length - counts.waiting - counts.failed - counts.ready - counts.readyOpenTodos - counts.active;
+						const idlePart = idle > 0 ? `${idle} running` : "";
 						const attentionJoined = attentionParts.length ? attentionParts.join(" · ") : "";
-						const summary = counts.workers > 0 ? [attentionJoined, reviewedPart, idlePart || (!attentionJoined && !reviewedPart ? plural(counts.workers, "worker") : "")].filter(Boolean).join(" · ") : "no workers in this project";
+						const summary = counts.workers > 0 ? [attentionJoined, idlePart || (!attentionJoined && settledDockRows.length === 0 ? plural(counts.workers, "worker") : "")].filter(Boolean).join(" · ") : "no workers in this project";
 						const heading = `${accent(theme.bold("docket"))}${git ? ` ${dim("·")} ${dim(git)}` : ""} ${dim("·")} ${dim(summary)}`;
 						const rowWidth = Math.min(width, 110);
+						// The fold says it once, where the rows used to be. The heading does not
+						// repeat it, and `f8` is where the whole roster still lives.
+						const settledLine = dockSettledLine(settledDockRows.length);
 						const breadcrumb = otherWorkers.length > 0 ? dim(`↗ ${otherAttentionLabel || `${otherWorkers.length} worker${otherWorkers.length === 1 ? "" : "s"}`} in ${otherProjectCount} other project${otherProjectCount === 1 ? "" : "s"} · /docket workers --all`) : undefined;
 						return [
 							truncateToWidth(heading, width, ""),
-							...renderDockRows(theme, dockRows, rowWidth, renderNow),
+							...renderDockRows(theme, visibleDockRows, rowWidth, renderNow),
+							...(settledLine ? [truncateToWidth(dim(`    ${settledLine}`), width, "")] : []),
 							...(breadcrumb ? [truncateToWidth(breadcrumb, width, "")] : []),
 						];
 					},

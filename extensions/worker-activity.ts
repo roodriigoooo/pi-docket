@@ -1,3 +1,4 @@
+import { visibleWidth } from "@mariozechner/pi-tui";
 import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
@@ -185,10 +186,34 @@ export type DockRow = {
 	loaded: boolean;
 	/** Observed: the worker's process is gone, whatever its work amounts to. */
 	gone: boolean;
+	/** The decision is behind this row: it leaves the dock and lives in `f8`. */
+	settled: boolean;
+	/** Untruncated task text. The dock has a task column now, so the column decides the cut. */
+	taskFull: string;
 	chip?: string;
 	kindLabel?: string;
 	modelBadge?: string;
 	eventLine?: string;
+};
+
+/** Plain text of one dock row's cells, before any colour, so widths can be measured. */
+export type DockRowCells = {
+	label: string;
+	state: string;
+	task: string;
+	meta: string;
+	age: string;
+	chip: string;
+};
+
+/** Fixed column widths for one dock render. A zero width means the column is dropped. */
+export type DockColumns = {
+	label: number;
+	state: number;
+	task: number;
+	meta: number;
+	age: number;
+	chip: number;
 };
 
 export type WorkerActivityPreviewOptions = {
@@ -245,8 +270,10 @@ export function dockEventSubLine(events: WorkerEvent[] | undefined, state: Worke
 	if (pending) return pending;
 	// Next: the worker is building on something that is no longer true. It outranks the state
 	// hints below because those describe what the worker is doing, and this describes whether
-	// what it is doing still holds.
-	if (options.staleLine) return options.staleLine;
+	// what it is doing still holds. Not once a verdict is recorded, though: there is no decision
+	// left for it to change, and if the worker produces another generation the fact returns on
+	// the verdict card, which is where it acts.
+	if (options.staleLine && state !== "reviewed") return options.staleLine;
 	if (state === "consulting") {
 		// Nobody is blocked on the human yet, so this is a status line, not a warning.
 		return "asking the parent agent · escalates to you if unanswered";
@@ -294,9 +321,11 @@ function relativeAgeLabel(updatedAtMs: number, now: number): string {
 }
 
 function dockProgressLabel(row: WorkerActivityRow): string {
-	const conflict = conflictSummary(row.conflicts, 1);
-	if (conflict) return conflict;
+	// Overlap warns about a decision still to come. Once the verdict is recorded there is nothing
+	// left to warn about, so the settled state wins the cell.
 	if (row.state === "reviewed") return "reviewed";
+	const conflict = conflictSummary(row.conflicts, 1, { shortPaths: true });
+	if (conflict) return conflict;
 	if (row.progress.total > 0) return workerProgressCompact(row.progress) ?? `${row.progress.completed}/${row.progress.total} progress`;
 	if (row.state === "ready" || row.state === "ready_open_todos") {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
@@ -319,6 +348,105 @@ function isAttentionState(worker: WorkerStatus, now: number): boolean {
 	return isAttentionWorker(worker, now);
 }
 
+/**
+ * A settled worker has its decision behind it: the human recorded a verdict, or the process
+ * ended without ever making a claim. Nothing on such a row is waiting on anyone, so it leaves
+ * the dock — the dock answers "is anything waiting on me", and `f8` answers "what is the whole
+ * fleet doing".
+ *
+ * A message the worker never took un-settles it. There the human already acted and nothing has
+ * happened yet, which is precisely the case the dock exists to show.
+ */
+export function isSettledDockState(state: WorkerDerivedState): boolean {
+	return state === "reviewed" || state === "stopped";
+}
+
+/** Splits a rendered dock into the rows that stay and the rows the heading now stands for. */
+export function partitionDockRows(rows: DockRow[]): { visible: DockRow[]; settled: DockRow[] } {
+	const visible: DockRow[] = [];
+	const settled: DockRow[] = [];
+	for (const row of rows) (row.settled ? settled : visible).push(row);
+	return { visible, settled };
+}
+
+/** The one line that stands for every folded row. Absent when nothing is folded. */
+export function dockSettledLine(count: number): string | undefined {
+	return count > 0 ? `${count} settled · f8` : undefined;
+}
+
+export function dockRowCells(row: DockRow): DockRowCells {
+	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
+	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
+	const state = row.state === "thinking" || row.state === "starting"
+		? ""
+		: row.state === "ready_open_todos"
+			? "ready/progress"
+			: row.gone && row.state === "ready"
+				? "ready · gone"
+				: row.state.replace(/_/g, " ");
+	return {
+		label: `${row.label}${kindCell}${modelCell}`,
+		state,
+		task: row.taskFull || row.taskLabel,
+		meta: [row.progressLabel, row.loaded ? "loaded" : undefined].filter(Boolean).join(" · "),
+		age: row.ageLabel,
+		chip: row.chip ?? "",
+	};
+}
+
+/** Two spaces, not one: with the columns doing the separating, the air is what makes them read. */
+export const DOCK_GUTTER = 2;
+const DOCK_LABEL_MIN = 5;
+const DOCK_LABEL_MAX = 24;
+const DOCK_STATE_MAX = 14;
+const DOCK_META_MIN = 20;
+const DOCK_META_MAX = 34;
+const DOCK_TASK_PREFERRED = 30;
+const DOCK_CHIP_MAX = 12;
+const DOCK_AGE_MAX = 4;
+const DOCK_TASK_MIN = 18;
+
+/**
+ * One set of column widths for the whole dock, so the separators between rows line up instead of
+ * landing wherever the previous cell happened to end. Same discipline the `f8` table already
+ * uses; a dock that grows with the fleet has to be scannable down a column, not across a line.
+ *
+ * Under pressure the secondary columns go first — meta, then state, then the chip — because the
+ * task text is the handle a human actually navigates by.
+ */
+export function dockColumns(rows: DockRow[], width: number): DockColumns {
+	const cells = rows.map(dockRowCells);
+	const widest = (pick: (cell: DockRowCells) => string, max: number): number =>
+		Math.min(max, cells.reduce((acc, cell) => Math.max(acc, visibleWidth(pick(cell))), 0));
+	const columns: DockColumns = {
+		label: widest((cell) => cell.label, DOCK_LABEL_MAX),
+		state: widest((cell) => cell.state, DOCK_STATE_MAX),
+		task: 0,
+		meta: widest((cell) => cell.meta, DOCK_META_MAX),
+		age: widest((cell) => cell.age, DOCK_AGE_MAX),
+		chip: widest((cell) => cell.chip, DOCK_CHIP_MAX),
+	};
+	// The marker and its single space, then one gutter for every other column the task shares the
+	// line with.
+	const spent = (): number => 2 + [columns.label, columns.state, columns.meta, columns.age, columns.chip]
+		.reduce((acc, column) => column > 0 ? acc + column + DOCK_GUTTER : acc, 0);
+	// The ladder below encodes what a row is for. Task text and kind identify the worker, so they
+	// give ground last (P6: `w3` alone is never the only handle). Everything else is detail the
+	// card behind `f8` carries in full.
+	const short = (target: number): number => target - (width - spent());
+	// 1. A wide meta cell hands back what it can.
+	if (short(DOCK_TASK_PREFERRED) > 0) columns.meta = Math.max(Math.min(columns.meta, DOCK_META_MIN), columns.meta - short(DOCK_TASK_PREFERRED));
+	// 2. Then meta, the state word, and the chip leave entirely rather than starve the task.
+	for (const column of ["meta", "state", "chip"] as const) {
+		if (short(column === "meta" ? DOCK_TASK_PREFERRED : DOCK_TASK_MIN) <= 0) break;
+		columns[column] = 0;
+	}
+	// 3. Only then does the label give back its kind and model badge.
+	if (short(DOCK_TASK_MIN) > 0) columns.label = Math.max(DOCK_LABEL_MIN, columns.label - short(DOCK_TASK_MIN));
+	columns.task = Math.max(0, width - spent());
+	return columns;
+}
+
 export function dockRowsForRender(
 	rows: WorkerActivityRow[],
 	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]>; messagesByWorker?: ReadonlyMap<string, WorkerMessage[]>; staleLineByWorker?: ReadonlyMap<string, string> } = {},
@@ -332,6 +460,7 @@ export function dockRowsForRender(
 		const messages = options.messagesByWorker?.get(row.worker.id);
 		const staleLine = options.staleLineByWorker?.get(row.worker.id);
 		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker, ...(messages ? { messages } : {}), ...(staleLine ? { staleLine } : {}) });
+		const untaken = messages ? pendingWorkerMessageLine(messages, workerIsGone(row.worker, now)) : undefined;
 		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,
@@ -343,6 +472,8 @@ export function dockRowsForRender(
 			attention: isAttentionState(row.worker, now),
 			loaded: row.loaded,
 			gone: row.gone,
+			settled: isSettledDockState(row.state) && !untaken,
+			taskFull: workerDisplayName(row.worker, Number.POSITIVE_INFINITY),
 			...(chip ? { chip } : {}),
 			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),

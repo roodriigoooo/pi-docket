@@ -97,10 +97,15 @@ export function workerConflictMap(workers: WorkerStatus[], artifactsByWorker: Ma
 	return out;
 }
 
-export function conflictSummary(conflicts: WorkerFileConflict[], maxFiles = 2): string | undefined {
+/**
+ * `shortPaths` is for glance surfaces: the dock says which worker and roughly what, and the card
+ * it points at says exactly. A path cut mid-directory to fit a column tells the human neither.
+ */
+export function conflictSummary(conflicts: WorkerFileConflict[], maxFiles = 2, options: { shortPaths?: boolean } = {}): string | undefined {
 	if (conflicts.length === 0) return undefined;
 	const first = conflicts[0]!;
-	const files = first.files.slice(0, maxFiles).join(", ");
+	const shown = options.shortPaths ? first.files.map((file) => file.slice(file.lastIndexOf("/") + 1)) : first.files;
+	const files = shown.slice(0, maxFiles).join(", ");
 	const moreFiles = first.files.length > maxFiles ? ` +${first.files.length - maxFiles}` : "";
 	const moreWorkers = conflicts.length > 1 ? ` +${conflicts.length - 1} worker${conflicts.length === 2 ? "" : "s"}` : "";
 	return `overlap ${first.workerLabel}${files ? `: ${files}${moreFiles}` : ""}${moreWorkers}`;
