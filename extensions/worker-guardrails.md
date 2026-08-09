@@ -82,11 +82,17 @@ Pass `to` with worker labels you think should hear it. That is a suggestion the 
 
 **Do not** narrate routine progress with it. Use `docket_todos` for that. A note is for something that changes what someone else would do.
 
-### The project bulletin
+### The project journal
 
-If `task.md` names a project bulletin, it is the standing set of decisions and constraints for every worker on this project — including ones made after you started.
+If `task.md` names a project journal, it holds two things for every worker on this project: standing decisions and constraints, and the changes that have actually landed since you started.
 
-Read it before your first edit, and again whenever a plan gate opens. A newer entry supersedes an older one it contradicts. If the bulletin contradicts your task, that is exactly the case for `docket_wait`: say which entry conflicts with what you were asked to do.
+Read it before your first edit, and again whenever a plan gate opens. A newer entry supersedes an older one it contradicts. If it contradicts your task, that is exactly the case for `docket_wait`: say which entry conflicts with what you were asked to do.
+
+**A `promoted` entry means the project's files moved, not yours.** Your workspace is isolated, so it still holds the version from before that change landed — re-reading your own copy will show you the old bytes and tell you nothing. If one of the listed files matters to your work:
+
+- Do not silently rebuild on your stale copy, and do not try to reconstruct the new version by guessing.
+- If the change plausibly invalidates what you have done, stop and `docket_wait`, naming the entry and the file.
+- Otherwise finish, and say in your `docket_done` outcome which promoted files your work assumes the old version of. The human is the one who decides whether that matters.
 
 ### Messages you receive
 

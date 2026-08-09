@@ -1,21 +1,15 @@
-import fs from "node:fs/promises";
-import fsSync from "node:fs";
-import path from "node:path";
-
 /**
- * The standing project note every worker re-reads at its gates (ADR-0008).
+ * The legacy bulletin format (ADR-0008, P2), kept only so an existing one can be read once.
  *
- * A broadcast reaches the workers running right now. The bulletin reaches the ones that start
- * tomorrow, and it is what Docket proposes when it cannot tell who is affected — handing the
- * human a grid of checkboxes and calling that a choice is not the same as helping.
+ * The bulletin was the standing project note every worker re-read at its gates. P4 folded it into
+ * the project journal, which carries standing notes and landed changes in one append-only store
+ * and regenerates the worker-facing markdown from it. Nothing writes this format any more: a
+ * second writer would produce a file the journal's migration would import again on the next
+ * upgrade, duplicating every entry it recovered.
  *
- * It deliberately lives under the agent directory rather than in the repo: workers run in
- * isolated worktrees, so a file inside the working copy would be a stale snapshot for exactly
- * the workers that most need it current. One absolute path, shared by every worktree.
+ * What survives is the parser, so a project that had a bulletin before the journal existed does
+ * not look like its standing notes were thrown away.
  */
-
-const BULLETIN_DIR = "bulletins";
-const MAX_ENTRIES = 40;
 
 export type BulletinEntry = {
 	at: string;
@@ -23,29 +17,6 @@ export type BulletinEntry = {
 	from: string;
 	text: string;
 };
-
-export function bulletinFile(root: string, projectKey: string): string {
-	const safe = projectKey.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "project";
-	return path.join(root, BULLETIN_DIR, `${safe}.md`);
-}
-
-function formatEntry(entry: BulletinEntry): string {
-	const body = entry.text.replace(/\r\n/g, "\n").trim();
-	return `## ${entry.at} · from ${entry.from}\n\n${body}\n`;
-}
-
-/** Newest first: a worker skimming this should hit current constraints before historical ones. */
-export function renderBulletin(entries: BulletinEntry[]): string {
-	const header = [
-		"# Docket bulletin",
-		"",
-		"Standing notes for every worker on this project. Re-read this before your first edit and",
-		"whenever a plan gate opens. Entries are newest first; an older entry a newer one",
-		"contradicts is superseded.",
-		"",
-	].join("\n");
-	return `${header}\n${entries.slice(0, MAX_ENTRIES).map(formatEntry).join("\n")}`;
-}
 
 export function parseBulletin(markdown: string): BulletinEntry[] {
 	const entries: BulletinEntry[] = [];
@@ -59,31 +30,4 @@ export function parseBulletin(markdown: string): BulletinEntry[] {
 		if (text) entries.push({ at: match[1]!, from: match[2]!, text });
 	}
 	return entries;
-}
-
-export async function readBulletinEntries(file: string): Promise<BulletinEntry[]> {
-	try {
-		return parseBulletin(await fs.readFile(file, "utf8"));
-	} catch {
-		return [];
-	}
-}
-
-/** Prepend one entry and rewrite. Small file, bounded history, no locking worth its weight. */
-export async function appendBulletinEntry(file: string, entry: BulletinEntry): Promise<BulletinEntry[]> {
-	const existing = await readBulletinEntries(file);
-	const entries = [entry, ...existing].slice(0, MAX_ENTRIES);
-	await fs.mkdir(path.dirname(file), { recursive: true });
-	const temp = `${file}.${process.pid}.tmp`;
-	await fs.writeFile(temp, renderBulletin(entries), "utf8");
-	await fs.rename(temp, file);
-	return entries;
-}
-
-export function bulletinExistsSync(file: string): boolean {
-	try {
-		return fsSync.statSync(file).size > 0;
-	} catch {
-		return false;
-	}
 }

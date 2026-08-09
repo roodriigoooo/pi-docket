@@ -87,6 +87,21 @@ test("dockEventSubLine returns undefined for non-thinking states", () => {
 	assert.equal(dockEventSubLine(events, "failed"), undefined);
 });
 
+test("a moved base outranks state hints and yields to an untaken message", () => {
+	const now = Date.parse("2026-05-01T00:10:00.000Z");
+	const stale = "base moved · 1 file it works on landed since it started";
+	const queued = { id: "msg-1", kind: "directive" as const, from: "human" as const, body: "x", deliverAs: "steer" as const, createdAt: "2026-05-01T00:09:00.000Z", delivery: "queued" as const };
+
+	// Above the state hints: those describe what a worker is doing, this describes whether what
+	// it is doing still holds.
+	assert.equal(dockEventSubLine([], "consulting", { now, staleLine: stale }), stale);
+	assert.equal(dockEventSubLine([], "thinking", { now, staleLine: stale }), stale);
+	// Below an untaken message: there the human already acted and nothing has happened yet.
+	assert.equal(dockEventSubLine([], "thinking", { now, staleLine: stale, messages: [queued] }), "1 message queued · not taken yet");
+	// And silent when nothing landed.
+	assert.equal(dockEventSubLine([], "consulting", { now }), "asking the parent agent · escalates to you if unanswered");
+});
+
 test("dockEventSubLine warns on silent active workers", () => {
 	const now = Date.parse("2026-05-01T00:10:00.000Z");
 	const oldTool: WorkerEvent = { ts: now - WORKER_SILENCE_WARN_MS - 60_000, kind: "tool", payload: { tool: "read", target: "src/auth.ts" } };

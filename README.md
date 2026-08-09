@@ -240,7 +240,9 @@ When something lands that other workers need to know, one command tells the ones
 /docket broadcast auth middleware now takes a context arg
 ```
 
-Docket scores every running worker against paths the message names, paths each has touched, and files their approved plans declared, then shows you a card with the reason beside each proposed recipient and the task each is working on — never a bare `w3`. Enter sends to what it proposed. A broadcast never interrupts a worker mid-edit and never answers a question one is blocked on. When nothing is clearly affected, Docket posts to the project bulletin instead of asking you to guess.
+Docket scores every running worker against paths the message names, paths each has touched, and files their approved plans declared, then shows you a card with the reason beside each proposed recipient and the task each is working on — never a bare `w3`. Enter sends to what it proposed. A broadcast never interrupts a worker mid-edit and never answers a question one is blocked on. When nothing is clearly affected, Docket posts to the project journal instead of asking you to guess.
+
+Promotions propagate on their own. Approving a worker's changes appends them to the journal, and every worker that read, edited, or planned one of those files shows `base moved` — muted, uninterrupting, and read at the next gate it was already going to stop at. A promotion is the one worker output that already carries your signature, so it needs no second confirmation and costs no tokens.
 
 Bundled worker kinds:
 

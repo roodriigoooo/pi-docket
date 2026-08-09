@@ -237,12 +237,16 @@ function latestQuestionTs(worker: WorkerStatus | undefined): number | undefined 
 	return latest ? Date.parse(latest.createdAt) : Date.parse(worker.updatedAt);
 }
 
-export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus; messages?: WorkerMessage[] } = {}): string | undefined {
+export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus; messages?: WorkerMessage[]; staleLine?: string } = {}): string | undefined {
 	const now = options.now ?? Date.now();
 	// A message the worker has not taken outranks every other hint: it is the one case where
 	// the human already acted and nothing has happened yet.
 	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerIsGone(options.worker, now)) : undefined;
 	if (pending) return pending;
+	// Next: the worker is building on something that is no longer true. It outranks the state
+	// hints below because those describe what the worker is doing, and this describes whether
+	// what it is doing still holds.
+	if (options.staleLine) return options.staleLine;
 	if (state === "consulting") {
 		// Nobody is blocked on the human yet, so this is a status line, not a warning.
 		return "asking the parent agent · escalates to you if unanswered";
@@ -317,7 +321,7 @@ function isAttentionState(worker: WorkerStatus, now: number): boolean {
 
 export function dockRowsForRender(
 	rows: WorkerActivityRow[],
-	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]>; messagesByWorker?: ReadonlyMap<string, WorkerMessage[]> } = {},
+	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]>; messagesByWorker?: ReadonlyMap<string, WorkerMessage[]>; staleLineByWorker?: ReadonlyMap<string, string> } = {},
 ): DockRow[] {
 	const now = options.now ?? Date.now();
 	const workers = rows.map((row) => row.worker);
@@ -326,7 +330,8 @@ export function dockRowsForRender(
 		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
 		const messages = options.messagesByWorker?.get(row.worker.id);
-		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker, ...(messages ? { messages } : {}) });
+		const staleLine = options.staleLineByWorker?.get(row.worker.id);
+		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker, ...(messages ? { messages } : {}), ...(staleLine ? { staleLine } : {}) });
 		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,

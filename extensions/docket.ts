@@ -63,10 +63,10 @@ import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
 import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, processExitedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, workerIsGone, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
-import { applyBroadcastSuggestions, broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
-import { appendBulletinEntry, bulletinExistsSync, bulletinFile } from "./worker-bulletin.js";
+import { applyBroadcastSuggestions, broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastCandidate, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
+import { appendJournalEntry, deriveStaleBase, journalViewExistsSync, journalViewFile, promotionJournalEntry, readJournalEntries, staleBaseLine, staleBaseVerdictLine, type JournalEntry, type StaleBase } from "./worker-journal.js";
 import { CONSULT_POLICY_OFF, consultAnswerCallSummary, consultCallSummary, consultEscalationCallSummary, consultEscalationNotice, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
-import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageIsStuck, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
+import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageChipSubject, sentWorkerMessageIsStuck, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
 import { reviewWorkerChangeSet } from "./worker-change-review.js";
 import { createDecisionLog, isDeliverableApproved, latestDeliverableJudgment, reviewedDeliverableRefs, reviewedWorkerIds } from "./decision-log.js";
@@ -968,6 +968,7 @@ export class DocketVerdictView implements Component {
 		deliverable?: WorkerDeliverable,
 		private canUse = false,
 		private planCoverage?: PlanCoverage,
+		private staleBase?: StaleBase,
 	) {
 		this.changeSet = changeSet;
 		this.artifacts = artifacts;
@@ -1087,6 +1088,11 @@ export class DocketVerdictView implements Component {
 		if (this.deliverable) {
 			const source = this.deliverable.sourceHandoff ? ` · handoff ${this.deliverable.sourceHandoff.sourceRef}` : "";
 			this.container.addChild(new Text(truncateToWidth(`  ${muted(`v${this.deliverable.version} · ${this.deliverable.ref}${source}`)}`, listWidth - 2), 1, 0));
+		}
+		// Warning, not muted: unlike the dock's passive hint, this one is read at the moment the
+		// human is about to apply a diff, and applying it is what the fact bears on.
+		if (this.staleBase) {
+			this.container.addChild(new Text(truncateToWidth(`  ${warning(staleBaseVerdictLine(this.staleBase))}`, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new Spacer(1));
 
@@ -1216,6 +1222,48 @@ export class DocketVerdictView implements Component {
  * the byte-exact sidecar written at launch, so this reads from disk and never enters model
  * context. Any failure — no handoff, no diff, unparseable plan — simply yields no coverage.
  */
+/** The journal lives beside the worker directories, outside every worktree, as the bulletin did. */
+function journalRoot(): string {
+	return createWorkerStore().root().replace(/[\\/]workers$/, "");
+}
+
+/** Paths a worker has touched, read from the artifacts the dock already keeps. */
+function workerTouchedPaths(artifacts: Artifact[]): string[] {
+	return artifacts
+		.filter((artifact) => artifact.kind === "file")
+		.map((artifact) => artifact.title)
+		.filter((title): title is string => typeof title === "string" && title.length > 0);
+}
+
+function workerKeywords(artifacts: Artifact[]): string[] {
+	return artifacts.slice(-40).map((artifact) => artifact.title).filter(Boolean);
+}
+
+/**
+ * The same evidence a broadcast is scored against, assembled for one worker. Staleness and
+ * broadcast must see identical inputs, or "affected" quietly means two different things.
+ */
+async function staleCandidate(worker: WorkerStatus, artifacts: Artifact[]): Promise<BroadcastCandidate> {
+	const plannedPaths = await plannedPathsForWorker(worker);
+	return {
+		worker,
+		touchedPaths: workerTouchedPaths(artifacts),
+		keywords: workerKeywords(artifacts),
+		...(plannedPaths.length ? { plannedPaths } : {}),
+	};
+}
+
+/** Staleness for one worker, or nothing when the project has never promoted anything. */
+async function staleBaseForWorker(cwd: string, worker: WorkerStatus, artifacts: Artifact[]): Promise<StaleBase | undefined> {
+	try {
+		const entries = (await readJournalEntries(journalRoot(), projectKey(cwd))).filter((entry) => entry.kind === "promoted");
+		if (entries.length === 0) return undefined;
+		return deriveStaleBase({ worker, candidate: await staleCandidate(worker, artifacts), entries });
+	} catch {
+		return undefined;
+	}
+}
+
 /** Files the approved plan a worker is executing named. Empty for workers without one. */
 async function plannedPathsForWorker(worker: WorkerStatus): Promise<string[]> {
 	const sidecar = worker.sourceHandoff?.sidecarPath;
@@ -1261,7 +1309,10 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 		try { canUse = isDeliverableApproved(await createDecisionLog().read(), workerDeliverablePointer(deliverable)); } catch { /* ledger is best-effort */ }
 	}
 	const coverage = await readPlanCoverage(deliverable, changeSet);
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse, coverage), {
+	// The cheapest place this fact changes a decision. Approving a diff against a base that has
+	// since moved is the mistake, and the card is where the approval happens.
+	const stale = await staleBaseForWorker(ctx.cwd, worker, artifacts);
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse, coverage, stale), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
@@ -2544,7 +2595,7 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 		const kind = details.kind ?? "notice";
 		let labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
 		let glyph = KIND_GLYPH[kind] ?? "·";
-		const headingText = details.heading ?? `docket · ${kind}`;
+		let headingText = details.heading ?? `docket · ${kind}`;
 		const expanded = options?.expanded === true;
 		let subject = details.subject;
 		let content = typeof message.content === "string" ? message.content : "";
@@ -2564,9 +2615,14 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 			// printed may not be running now, and the chip is what the human is still looking at.
 			const gone = workerIsGone(readWorkerStatusSync(sent.workerId));
 			stuck = sentWorkerMessageIsStuck(sent.transport, live, gone);
-			subject = `tell ${sent.workerLabel} · ${sentWorkerMessageStateLabel(sent.transport, live, gone)}`;
+			subject = sentWorkerMessageChipSubject(sent.workerLabel, sent.transport, live, gone);
 			if (!expanded) content = collapseWorkerMessageBody(content);
 			timeline = sentWorkerMessageTimeline(sent.transport, live, { workerIsGone: gone, workerLabel: sent.workerLabel });
+			// A sent message is correspondence, not a command result. It is headed and glyphed as
+			// one so a session's traffic reads like a thread rather than like log output.
+			headingText = "docket · message";
+			glyph = "✉";
+			labelColor = "customMessageLabel";
 			// A message that cannot arrive is not a success, and re-reading it as one is exactly
 			// the false claim ADR-0008 set out to remove.
 			if (stuck) {
@@ -2970,7 +3026,17 @@ export default function docketExtension(pi: ExtensionAPI) {
 					if (messages.length) messagesByWorker.set(worker.id, messages);
 					sharedNotices += notices.length;
 				}));
-			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker, messagesByWorker });
+			// Staleness is derived only when something actually landed, so a project with no
+			// promotions pays one small file read and nothing else.
+			const staleLineByWorker = new Map<string, string>();
+			const promotions = (await readJournalEntries(journalRoot(), key).catch((): JournalEntry[] => [])).filter((entry) => entry.kind === "promoted");
+			if (promotions.length > 0) {
+				await Promise.all(workers.map(async (worker) => {
+					const stale = deriveStaleBase({ worker, candidate: await staleCandidate(worker, reviewArtifactsByWorker.get(worker.id) ?? []), entries: promotions });
+					if (stale) staleLineByWorker.set(worker.id, staleBaseLine(stale));
+				}));
+			}
+			const dockRows = dockRowsForRender(rows, { parentModelId: ctx.model?.id, eventsByWorker, messagesByWorker, staleLineByWorker });
 			syncDockAnimation(dockRows.some((row) => row.state === "thinking" || row.state === "starting"));
 			const git = gitSnapshotLabel(readGitSnapshot(ctx.cwd));
 			ctx.ui.setWidget(
@@ -3086,15 +3152,6 @@ export default function docketExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	const projectBulletinFile = (cwd: string): string => bulletinFile(createWorkerStore().root().replace(/[\\/]workers$/, ""), projectKey(cwd));
-
-	/** Paths a worker has touched, read from the artifacts the dock already keeps. */
-	const workerTouchedPaths = (artifacts: Artifact[]): string[] => artifacts
-		.filter((artifact) => artifact.kind === "file")
-		.map((artifact) => artifact.title)
-		.filter((title): title is string => typeof title === "string" && title.length > 0);
-
-	const workerKeywords = (artifacts: Artifact[]): string[] => artifacts.slice(-40).map((artifact) => artifact.title).filter(Boolean);
 
 	/**
 	 * One broadcast, end to end: score, confirm, deliver.
@@ -3167,8 +3224,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 		if (choice.action === "cancel") return false;
 
 		if (choice.action === "bulletin") {
-			await appendBulletinEntry(projectBulletinFile(ctx.cwd), {
+			await appendJournalEntry(journalRoot(), projectKey(ctx.cwd), {
 				at: new Date().toISOString(),
+				kind: source.kind === "worker" ? "note" : "standing",
 				from: source.kind === "worker" ? workerSourceLabel(source.worker) : "you",
 				text: formatBroadcastBody(text, source),
 			});
@@ -4050,11 +4108,11 @@ export default function docketExtension(pi: ExtensionAPI) {
 				maxActive: () => maxActive,
 				defaultKind: () => docketConfig?.worker?.defaultKind,
 				parentSeedPolicy: () => docketConfig?.worker?.parentSeedPolicy,
-				// Only point a worker at the bulletin once the project actually has one, so a
+				// Only point a worker at the journal once the project actually has one, so a
 				// fresh project's task.md does not carry a line about an empty file.
 				bulletinPath: () => {
-					const file = projectBulletinFile(ctx.cwd);
-					return bulletinExistsSync(file) ? file : undefined;
+					const key = projectKey(ctx.cwd);
+					return journalViewExistsSync(journalRoot(), key) ? journalViewFile(journalRoot(), key) : undefined;
 				},
 				hasUI: ctx.hasUI,
 				confirmSpawn: (title, detail) => ctx.hasUI ? ctx.ui.confirm(title, detail) : Promise.resolve(true),
@@ -4178,7 +4236,21 @@ export default function docketExtension(pi: ExtensionAPI) {
 						result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true, ...(frozen ? { changeSet: frozen } : {}) });
 					}
 					notifyDocket(pi, ctx, result.ok ? `${result.message} Stop the worker to free its workspace.` : result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
-					if (result.ok) await refreshWorkerDockWidget();
+					if (result.ok) {
+						// A promotion is the one worker output that already carries the human's
+						// signature, so it propagates without asking for a second one. Every
+						// worker whose evidence names one of these paths now derives `base
+						// moved`, and reads the entry at a gate it was already going to stop at.
+						try {
+							await appendJournalEntry(journalRoot(), projectKey(ctx.cwd), promotionJournalEntry({
+								worker,
+								paths: result.paths,
+								...(result.ref ? { ref: result.ref } : {}),
+								...(worker.summary ? { summary: worker.summary } : {}),
+							}));
+						} catch { /* the journal is propagation, never a gate on the promotion itself */ }
+						await refreshWorkerDockWidget();
+					}
 					return result.ok;
 				},
 				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({

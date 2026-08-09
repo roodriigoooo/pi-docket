@@ -121,15 +121,29 @@ export type BroadcastScoreInput = {
 	text: string;
 	source: BroadcastSource;
 	candidates: BroadcastCandidate[];
+	/**
+	 * Paths the caller already knows the subject touches, when they are a fact rather than
+	 * something to be read out of prose. A promotion knows exactly which files landed (P4); a
+	 * typed broadcast does not, and still relies on `extractBroadcastPaths`.
+	 */
+	paths?: string[];
+	/**
+	 * Which worker states may be scored. Defaults to workers that can still act on what they are
+	 * told, which is the right filter for a broadcast. Staleness widens it: a finished worker
+	 * cannot act, but its deliverable was still produced against a base that moved.
+	 */
+	eligibleStates?: ReadonlySet<WorkerStatus["state"]>;
 };
 
 export function scoreBroadcastRecipients(input: BroadcastScoreInput): BroadcastRecipient[] {
+	const eligibleStates = input.eligibleStates ?? ELIGIBLE_STATES;
 	const sourceWorkerId = input.source.kind === "worker" ? input.source.worker.id : undefined;
 	const addressed = new Set((input.source.kind === "worker" ? input.source.to ?? [] : []).map((label) => label.toLowerCase()));
 
 	// What the message is "about": paths it names, plus everything the source worker touched.
 	const subjectPaths = new Set<string>([
 		...extractBroadcastPaths(input.text).map(normalizePath),
+		...(input.paths ?? []).map(normalizePath),
 		...(input.source.kind === "worker" ? (input.source.touchedPaths ?? []).map(normalizePath) : []),
 	]);
 	const subjectBases = new Set([...subjectPaths].map(basename));
@@ -140,7 +154,7 @@ export function scoreBroadcastRecipients(input: BroadcastScoreInput): BroadcastR
 	for (const candidate of input.candidates) {
 		const worker = candidate.worker;
 		if (worker.id === sourceWorkerId) continue;
-		if (!ELIGIBLE_STATES.has(worker.state)) continue;
+		if (!eligibleStates.has(worker.state)) continue;
 		const label = workerSourceLabel(worker);
 
 		let band: BroadcastBand = "unrelated";

@@ -21,7 +21,9 @@ export type WorkerChangeSet = {
 };
 
 export type PromoteWorkerChangeSetResult =
-	| { ok: true; fileCount: number; message: string }
+	// `paths` is what makes a promotion propagate (P4): every other worker whose evidence names
+	// one of them is provably working from a base that just moved.
+	| { ok: true; fileCount: number; paths: string[]; ref?: string; message: string }
 	| { ok: false; needsConfirmation?: boolean; message: string };
 
 function gitOutput(cwd: string, args: string[], input?: string): string | undefined {
@@ -311,5 +313,11 @@ export function promoteWorkerChangeSet(
 	const applied = gitStatus(parentRoot, ["apply", "--whitespace=nowarn"], changeSet.patch);
 	if (applied.status !== 0) return { ok: false, message: applied.stderr || "Worker change set apply failed." };
 	markWorkspacePromoted(worker, changeSet.patch);
-	return { ok: true, fileCount: changeSet.files.length, message: `Promoted ${changeSet.files.length} file${changeSet.files.length === 1 ? "" : "s"} from ${workerSourceLabel(worker)}.` };
+	return {
+		ok: true,
+		fileCount: changeSet.files.length,
+		paths: changeSet.files.map((file) => file.path).filter(Boolean),
+		...(changeSet.deliverableRef ? { ref: changeSet.deliverableRef } : {}),
+		message: `Promoted ${changeSet.files.length} file${changeSet.files.length === 1 ? "" : "s"} from ${workerSourceLabel(worker)}.`,
+	};
 }

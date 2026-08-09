@@ -10,7 +10,7 @@ import {
 	workerLiveness,
 	workerReportedDone,
 } from "../extensions/worker-lifecycle.js";
-import { pendingWorkerMessageLine, sentWorkerMessageIsStuck, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, type WorkerMessage } from "../extensions/worker-mailbox.js";
+import { pendingWorkerMessageLine, sentWorkerMessageChipSubject, sentWorkerMessageIsStuck, sentWorkerMessageStateLabel, sentWorkerMessageTimeline, workerMessageDeliveryGlyph, type WorkerMessage } from "../extensions/worker-mailbox.js";
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
 
@@ -105,6 +105,31 @@ test("a stuck message names the one action that unsticks it", () => {
 	assert.match(timeline!, /\/docket respawn w2 delivers it$/);
 	// Nothing is added while delivery is proceeding normally.
 	assert.doesNotMatch(sentWorkerMessageTimeline("inbox", message({ delivery: "read", readAt: "2026-01-01T11:59:30.000Z" }), { workerIsGone: false })!, /respawn/);
+});
+
+test("a sent message reads as correspondence, and the tick never replaces the word", () => {
+	const queued = message();
+	const delivered = message({ delivery: "delivered", deliveredAt: "2026-01-01T11:59:20.000Z" });
+	const read = message({ delivery: "read", deliveredAt: "2026-01-01T11:59:20.000Z", readAt: "2026-01-01T11:59:30.000Z" });
+
+	// One tick sent, two arrived — the vocabulary every messaging client already taught its users.
+	assert.equal(workerMessageDeliveryGlyph("queued"), "✓");
+	assert.equal(workerMessageDeliveryGlyph("delivered"), "✓✓");
+	assert.equal(workerMessageDeliveryGlyph("read"), "✓✓");
+	assert.equal(workerMessageDeliveryGlyph("undeliverable"), "⚠");
+
+	// Direction, correspondent, state, time — a row in a mail client, not a log line.
+	assert.match(sentWorkerMessageChipSubject("w2", "inbox", queued), /^→ w2 · ✓ queued · /);
+	assert.match(sentWorkerMessageChipSubject("w2", "inbox", delivered), /^→ w2 · ✓✓ delivered · /);
+	assert.match(sentWorkerMessageChipSubject("w2", "inbox", read), /^→ w2 · ✓✓ read · /);
+	// A tick nobody can decode is worse than a word nobody shortened, so both always travel.
+	for (const live of [queued, delivered, read]) {
+		assert.match(sentWorkerMessageChipSubject("w2", "inbox", live), /queued|delivered|read/);
+	}
+
+	assert.match(sentWorkerMessageChipSubject("w2", "inbox", queued, true), /^→ w2 · ⚠ undeliverable · worker is not running/);
+	// The legacy path borrows neither the ticks nor the language of a delivered message.
+	assert.match(sentWorkerMessageChipSubject("w2", "tmux", undefined), /^→ w2 · ↗ sent to terminal · receipt unconfirmed/);
 });
 
 test("the dock and the chip agree about the same message", () => {

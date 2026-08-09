@@ -162,6 +162,14 @@ _Avoid_: backlog, stale worker, orphan.
 A user-opened, zero-context view of a ready worker's structured completion data and evidence metadata (full summary, recommendations, checks, changed files, refs). It is not a transcript, model summary, or context injection; closing it returns to the unresolved verdict without recording a decision.
 _Avoid_: attach, inject, summary message, transcript dump.
 
+**Project journal**:
+The append-only project-level record every Worker re-reads at its gates: standing decisions (`standing`), Worker notices you chose to publish (`note`), and changes that have landed (`promoted`). It lives outside every worktree so all Workers read the same current file. The markdown a Worker reads is regenerated in full from the ndjson behind it; it is a view and is never read back as truth. Supersedes the **Bulletin**, which is now one entry kind within it.
+_Avoid_: changelog, feed, inbox, broadcast log.
+
+**Stale base**:
+A derived fact that a Worker is building on files that have since landed under it. Scored from the same evidence a **Broadcast** is — a named path, a touched path, an approved plan's files — and only at `affected` strength. It is a modifier, not a lifecycle state: it rides alongside whatever the Worker is doing. It never wakes the Worker, never spends parent context, and never alters a workspace; the Worker reads it at a gate it already stops at, and the human sees it on the verdict card before approving a diff.
+_Avoid_: conflict, drift, out of date, rebase needed.
+
 **Liveness**:
 Whether a Worker's process is still there, observed separately from what its work amounts to. `gone` is written by the side that saw it leave — session end, the exit trap, `kill`, a pane confirmed dead, or a heartbeat older than the gone window. Absence of proof is `unknown`, never `live`. A Worker can be **ready and gone**: its deliverable still stands, and nothing will read another message until it is respawned. Rendered as a hollow `○` in place of the filled dot.
 _Avoid_: dead, offline, disconnected, healthy.
@@ -196,6 +204,8 @@ _Avoid_: continue, resume, restore.
 - **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
 - **Liveness** and lifecycle state are two facts, never folded into one. A Worker's exit is recorded as its own field and never overwrites what the Worker reported.
 - A Message to a Worker that is **gone** is `undeliverable` on every surface that mentions it — starting with the chip the human was looking at when they sent it — and delivers on respawn.
+- A promotion appends to the **Project journal** with no further authorization, because promotion is already a human act. Nothing else propagates automatically.
+- **Stale base** is derived through the Broadcast scorer. There is one notion of "affected" in Docket, and it is not duplicated for a second caller.
 - A **Consult** is answerable by the parent agent only while the human has enabled it; otherwise it is an ordinary Question. Either way the worker is told who answered.
 - A **Notice** never changes a Worker's state and never enters parent model context.
 - A **Broadcast** is proposed by Docket, confirmed by the human, and delivered without interrupting. It carries **Standing** and never answers a question a Worker is blocked on.

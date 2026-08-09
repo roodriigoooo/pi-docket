@@ -188,3 +188,40 @@ test("the ledger line names who received it and what they were told", () => {
 
 	assert.match(broadcastSummary(recipients.filter((recipient) => recipient.selected), "src/auth/middleware.ts changed"), /^w1 · src\/auth\/middleware\.ts changed$/);
 });
+
+test("known paths are additive, and eligibility is overridable without changing either default", () => {
+	// A promotion knows exactly which files landed (P4); prose does not, so the extractor still
+	// runs and the two sources merge rather than replacing one another.
+	const fromPaths = scoreBroadcastRecipients({
+		text: "the approved change landed",
+		paths: ["src/session/store.ts"],
+		source: { kind: "human" },
+		candidates: candidates(),
+	});
+	assert.equal(fromPaths.find((r) => r.label === "w3")?.band, "affected");
+	assert.match(fromPaths.find((r) => r.label === "w3")!.reason, /touches src\/session\/store\.ts/);
+	assert.equal(fromPaths.find((r) => r.label === "w4")?.band, "unrelated");
+
+	const merged = scoreBroadcastRecipients({
+		text: "`src/api/limit.ts` moved too",
+		paths: ["src/session/store.ts"],
+		source: { kind: "human" },
+		candidates: candidates(),
+	});
+	assert.equal(merged.find((r) => r.label === "w2")?.band, "affected");
+	assert.equal(merged.find((r) => r.label === "w3")?.band, "affected");
+
+	// A finished worker is not a broadcast recipient by default — it can no longer act.
+	const ready = worker(5, "map session call sites", { state: "ready" });
+	const readyCandidate = [{ worker: ready, touchedPaths: ["src/session/store.ts"] }];
+	assert.equal(scoreBroadcastRecipients({ text: "x", paths: ["src/session/store.ts"], source: { kind: "human" }, candidates: readyCandidate }).length, 0);
+	// ...but staleness widens it, because its deliverable was produced against a base that moved.
+	const widened = scoreBroadcastRecipients({
+		text: "x",
+		paths: ["src/session/store.ts"],
+		source: { kind: "human" },
+		candidates: readyCandidate,
+		eligibleStates: new Set(["ready"]),
+	});
+	assert.equal(widened[0]?.band, "affected");
+});

@@ -225,6 +225,44 @@ function clockLabel(iso: string): string {
 	return Number.isNaN(at.getTime()) ? "?" : at.toLocaleTimeString();
 }
 
+function shortClockLabel(iso: string): string {
+	const at = new Date(iso);
+	if (Number.isNaN(at.getTime())) return "";
+	return at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * The glanceable half of a delivery state, in the vocabulary every messaging client already
+ * taught its users: one tick left, two ticks arrived, two lit ticks read. It is decoration over
+ * a fact, never instead of one — the word always travels beside it, because a tick nobody can
+ * decode is worse than a word nobody bothered to shorten.
+ */
+export function workerMessageDeliveryGlyph(delivery: WorkerMessageDelivery): string {
+	if (delivery === "queued") return "✓";
+	if (delivery === "delivered") return "✓✓";
+	if (delivery === "read") return "✓✓";
+	return "⚠";
+}
+
+/**
+ * The chip's own line: who it went to, how far it got, and when. Deliberately shaped like a row
+ * in a mail client — direction, correspondent, state, time — so a fleet's traffic reads as
+ * correspondence rather than as log output.
+ */
+export function sentWorkerMessageChipSubject(
+	workerLabel: string,
+	transport: WorkerMessageTransport,
+	live: WorkerMessage | undefined,
+	workerIsGone = false,
+): string {
+	const at = live?.readAt ?? live?.deliveredAt ?? live?.createdAt;
+	const time = at ? shortClockLabel(at) : "";
+	if (transport === "tmux") return [`→ ${workerLabel}`, "↗ sent to terminal · receipt unconfirmed", time].filter(Boolean).join(" · ");
+	const delivery = live ? projectWorkerMessageDelivery(live, workerIsGone) : workerIsGone ? "undeliverable" : "queued";
+	// One source for the words; the tick is a second reading of the same fact, never a third one.
+	return [`→ ${workerLabel}`, `${workerMessageDeliveryGlyph(delivery)} ${sentWorkerMessageStateLabel(transport, live, workerIsGone)}`, time].filter(Boolean).join(" · ");
+}
+
 /**
  * What the parent's chip says about one sent message. `live` is the message re-read from disk,
  * so this reports the current fact rather than the one that held when the chip was created.

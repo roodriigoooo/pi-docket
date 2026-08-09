@@ -343,16 +343,41 @@ w2 · in worktree, not promoted                  a constraint, not code you can 
 w2 · notice, unreviewed                         nobody has checked it
 ```
 
-### The bulletin
+### The project journal
 
-When nothing scores as affected, Docket does not hand you a grid of checkboxes and call that a choice — it offers the bulletin instead:
+When nothing scores as affected, Docket does not hand you a grid of checkboxes and call that a choice — it offers the journal instead:
 
 ```text
   no clear recipients · post to bulletin instead?
   every worker reads it at its next gate           ⏎ post · esc discard
 ```
 
-The bulletin is the standing set of decisions and constraints for the project. Workers are told to read it before their first edit and whenever a plan gate opens, and a newer entry supersedes an older one it contradicts. It lives at `~/.pi/agent/docket/bulletins/<project>.md` rather than in the repo, so workers in isolated worktrees all read the same current file instead of a snapshot taken when they started. `b` posts there from the broadcast card at any time.
+The journal holds two things: standing decisions and constraints, and the changes that have actually landed. Workers are told to read it before their first edit and whenever a plan gate opens, and a newer entry supersedes an older one it contradicts. It lives at `~/.pi/agent/docket/bulletins/<project>.md` rather than in the repo, so workers in isolated worktrees all read the same current file instead of a snapshot taken when they started. `b` posts there from the broadcast card at any time.
+
+The markdown is generated from `bulletins/<project>.ndjson` in full on every append. Editing it changes nothing.
+
+### A promotion tells the workers it invalidates
+
+Promoting a worker's change set appends a `promoted` entry naming the files that landed. Nothing else is required of you — a promotion is the one worker output that already carries your approval, so forwarding it needs neither a confirmation nor any model tokens.
+
+Any worker that read, edited, or has an approved plan naming one of those files now shows a dock sub-line:
+
+```text
+  ● w3·scout  map every session store call site           2m · f8 verdict
+      base moved · 1 file it works on landed since it started
+```
+
+It is muted, not amber: nobody is blocked, and nothing was interrupted. The worker keeps working and finds out at the next gate it was already going to stop at — where the journal tells it plainly that its isolated workspace still holds the version from *before* the change landed, and that it should say so in its outcome rather than rebuilding on a stale copy.
+
+If the worker had already finished, the fact follows its deliverable onto the verdict card instead, in warning colour, because that is the moment it bears on:
+
+```text
+  ○  w3 · map every session store call site    ready · not running · 4m
+     v1 · d7
+     produced before src/auth/middleware.ts landed · re-check before promoting
+```
+
+Staleness only ever comes from the evidence a broadcast is scored against — a named path, a touched path, an approved plan's files. Task-text overlap is enough to *propose* a recipient to you; it is not enough to tell a worker its ground has shifted.
 
 ### Reviewed workers go dim
 
