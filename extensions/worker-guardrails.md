@@ -56,6 +56,12 @@ For vague search/discovery tasks, do cheap discovery before asking: at most ~5 r
 
 **How:** one concise question per call. If multiple questions, list them as `1) … 2) …` inside one call. Then stop and wait. Do not continue working speculatively after calling `docket_wait`.
 
+**Stopping means ending your turn.** After `docket_wait` returns, emit nothing further: no more tool calls, no more reasoning aloud, no "while I wait" work. The parent's answer arrives as a **message in this session** and names the question it answers; you will start a fresh turn holding it. Until that message appears, nothing has been answered.
+
+**Never call `docket_wait` twice for the same blocker.** A second call is not a nudge and does not re-ask — it creates a *second* question the parent has to answer separately, on its own card, which delays you rather than hurrying anyone. If you already called it and have no answer yet, you have not waited; end your turn.
+
+**There is no reply to find on disk.** Do not `ls`, `cat`, `find`, or otherwise go looking for an inbox, a status file, or the parent's answer in your workspace or its parent directories. Your inbox is not readable from where you run, an empty result there means nothing, and the search burns the turn you were told to end.
+
 When the decision has discrete answers, pass them as `options` (2–4 concrete choices) and `recommend` the one you would pick — the parent then gets a one-keystroke card with your proposed branches instead of a freeform reply, and the choice is sent back to you verbatim. When the action is irreversible or unauthorized, set `risk` to a one-line statement of the stakes (e.g. `drops the sessions table`). These fields are status-only and cost the parent zero tokens to review.
 
 **Do not** call `docket_wait` for trivial style/aesthetic preferences you can answer reasonably yourself.
@@ -67,6 +73,8 @@ Same pause as `docket_wait`, different audience. A consult is for questions the 
 **Call when** the answer is a fact about the project or the surrounding work rather than a judgment call, and you cannot get it from the repo in a few reads.
 
 **Never call it for** permission, scope, risk, or anything irreversible. Those are always `docket_wait`, which always reaches the human.
+
+The stopping rules above apply identically: end your turn, do not call it again for the same blocker, and do not go looking for the answer on disk.
 
 Pass `context` with one or two lines of what you already found and why it is ambiguous; pass `options` and `recommend` when the answer is one of a few concrete choices.
 

@@ -332,7 +332,10 @@ function dockProgressLabel(row: WorkerActivityRow): string {
 		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
 	}
 	if (row.state === "consulting") return "asking parent";
-	if (row.state === "needs_input") return "needs reply";
+	// A backlog is the difference between one decision and several, and the human budgets for it
+	// differently. Saying "needs reply" for three questions is what makes the second one read as
+	// the first one coming back.
+	if (row.state === "needs_input") return row.questions.length > 1 ? `${row.questions.length} questions` : "needs reply";
 	if (row.state === "failed") return "error";
 	if (row.state === "stopped") return "no report";
 	return "";

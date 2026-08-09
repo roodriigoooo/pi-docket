@@ -38,6 +38,10 @@ _Avoid_: sent, ok, acknowledged, received.
 A worker question addressed to the *parent agent* rather than the human, raised with `docket_consult`. It blocks the worker exactly like a question, and it is the only path that spends parent model context — so it is off by default. Not a separate worker state: a consult is a Question whose audience is the parent agent, which is why escalation is a field change and not a lifecycle move.
 _Avoid_: auto-answer, delegation, agent reply.
 
+**Question backlog**:
+More than one open Question on the same Worker. Answered oldest first, because a Worker asks in the order it got stuck and anything it asked afterwards is usually downstream of the first answer it never got. Every surface states the count — the card marks which one it is answering, the dock row says how many — since a backlog nobody named reads as one question returning rephrased. Blocking ends the Worker's turn, so a backlog now only forms from questions a Worker genuinely holds at once, not from restatements.
+_Avoid_: queue, repeat question, loop.
+
 **Escalation**:
 Handing a Consult back to the human, either because the parent agent declined or because the consult outlived its window. The question keeps its id and its place, so a reply still binds to it; only the audience changes.
 _Avoid_: timeout, failure, fallback.
@@ -213,7 +217,7 @@ _Avoid_: continue, resume, restore.
 - **Use** = explicitly queue the exact full body for the next parent submission or start a fresh confirmed worker.
 - A resolved verdict appends to the **Decision ledger**; a terminal **Worker** pruned with no verdict becomes **Decision debt**.
 - A **Message** carries one instruction or answer to a Worker, or one question from it. Every edge is Worker ↔ parent; there is no Worker → Worker channel.
-- **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection.
+- **Delivery state** is written only by the side that observed it. A reply naming a question resolves that question alone; an unbound reply is a redirection. A **Question backlog** drains oldest first, and every surface says how much is left.
 - **Liveness** and lifecycle state are two facts, never folded into one. A Worker's exit is recorded as its own field and never overwrites what the Worker reported.
 - A Message to a Worker that is **gone** is `undeliverable` on every surface that mentions it — starting with the chip the human was looking at when they sent it — and delivers on respawn.
 - A promotion appends to the **Project journal** with no further authorization, because promotion is already a human act. Nothing else propagates automatically.

@@ -338,6 +338,20 @@ Nothing claims more than it observed. The chip reads `queued` when the message i
 
 A reply bound to a question resolves that question and leaves any other open — a worker with two questions and one answer stays blocked on the second. With exactly one question open the binding is inferred. An unbound reply is a redirection: the worker resumes and re-asks anything still blocking it.
 
+The card answers the **oldest** open question. A worker asks in the order it got stuck, and anything it asked afterwards is usually downstream of the first answer it never got. Answering newest-first resolves the derivative and saves the real question for last, which is what makes a drained backlog read as one question coming back rephrased.
+
+When more than one question is open, every surface says so rather than letting you discover it one card at a time:
+
+```text
+  Question
+    answering 1 of 3 · the rest stay open
+    ▸ 1. Required context arg, or optional with a default?
+      2. No concrete choice came back. Please confirm the signature.
+      3. I am blocked by the plan gate because no option was selected.
+```
+
+The dock row reads `3 questions` instead of `needs reply`, and answering one announces how many remain.
+
 A message addressed to a worker that has died stays in its inbox and is delivered when you `/docket respawn` it. The dock shows `undeliverable` while no runtime can take it.
 
 Workers started by a Docket build older than the mailbox still receive replies as terminal keystrokes. That path cannot confirm receipt, so it reports `sent to terminal · receipt unconfirmed` rather than borrowing the language of a delivered message.
@@ -345,6 +359,8 @@ Workers started by a Docket build older than the mailbox still receive replies a
 ### When a worker asks you something
 
 `docket_wait` is the question that always reaches you. It blocks the worker, opens a verdict card, and is where anything about permission, scope, risk, or an irreversible step belongs.
+
+**Blocking ends the worker's turn.** Both wait tools abort the worker's current agent operation once the call is recorded, rather than asking the model to stop and hoping it does. A model that keeps generating restates the same blocker, and every restatement becomes another question you answer on another card — which is how one decision turns into four. Two `docket_wait` calls in a single assistant message are two questions the worker genuinely holds and both still land; a second call after another model round-trip loses its turn. The tool call and its result stay in the worker's transcript either way, so the worker reads them when a reply resumes it.
 
 `docket_consult` is for the other kind of question — which file the project settled on, what a sibling worker concluded, whether a convention was already decided. It blocks the worker the same way, but its audience is the parent session rather than you. The dock shows it as `consulting` in accent rather than `needs input` in warning, because the two states mean different things: one of them says you are the blocker and the other does not.
 

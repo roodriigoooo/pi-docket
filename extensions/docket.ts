@@ -37,7 +37,7 @@ import {
 	type Component,
 	type TUI,
 } from "@mariozechner/pi-tui";
-import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerNoticeArtifact, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerQuestion, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
+import { deriveWorkerState, DOCK_PULSE_INTERVAL_MS, heartbeatArtifactSignature, HEARTBEAT_ARTIFACT_CAP, isPaneHarvestCandidate, isPromptDockWorker, namespaceWorkerArtifacts, openWorkerQuestion, workerActivityChip, workerPulseGlyph, workerDisplayName, workerDoneClarificationQuestion, workerLaunchDetail, workerLaunchSubject, workerNoticeArtifact, workerPaneTailArtifact, workerProtocolMessage, workerProtocolResultText, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, workerSummaryName, workerTodoProgress, type WorkerDerivedState, type WorkerDoneInput, type WorkerProtocolState, type WorkerQuestion, type WorkerStatus, type WorkerTodoInput } from "./background-work.js";
 import { artifactFilePath, createArtifactCatalog, formatArtifact, type ArtifactCatalog } from "./artifact-catalog.js";
 import { createCheckpointCommands } from "./checkpoint-commands.js";
 import { createCheckpointStore, type CheckpointSummary } from "./checkpoint-store.js";
@@ -815,7 +815,7 @@ async function showDocketBrowser(
 type VerdictVerbId = "accept" | "reject" | "rejectStop" | "chat" | "send" | "report" | "use" | "save";
 export type VerdictVerb = { id: VerdictVerbId; label: string; description: string; send?: string };
 
-type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; provenance?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
+type VerdictPayload = { lines: string[]; additions: number; deletions: number; hunkCount?: number; hasChangeSet: boolean; intent?: string; risk?: string; provenance?: string; backlog?: string; fileEntries?: Array<{ path: string; additions?: number; deletions?: number }> };
 
 export function diffBar(additions: number, deletions: number, width: number): string {
 	const slots = Math.max(1, Math.floor(width));
@@ -906,20 +906,23 @@ export function verdictOptionForDigit(verbs: VerdictVerb[], data: string): Verdi
 }
 
 function primaryWorkerQuestion(worker: WorkerStatus) {
-	const questions = workerQuestions(worker);
-	return questions.length ? questions[questions.length - 1] : undefined;
+	return openWorkerQuestion(worker);
 }
 
 export function workerVerdictPayload(worker: WorkerStatus, changeSet?: Artifact, deliverable?: WorkerDeliverable): VerdictPayload {
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input" || state === "consulting") {
-		const lines = workerQuestions(worker).map((question) => question.text);
+		const all = workerQuestions(worker);
 		const question = primaryWorkerQuestion(worker);
+		// Mark the one this card answers. Listing several and offering options for one of them,
+		// with nothing saying which, is what makes the next card read as a repeat.
+		const lines = all.map((entry, index) => all.length > 1 ? `${entry.id === question?.id ? "▸" : " "} ${index + 1}. ${entry.text}` : entry.text);
 		const risk = question?.risk;
 		// An escalated consult must not read like an ordinary question: the worker expected a
 		// fast answer, did not get one, and has been blocked longer than it planned to be.
 		const provenance = question ? escalatedQuestionNote(question) : undefined;
-		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}), ...(provenance ? { provenance } : {}) };
+		const backlog = all.length > 1 ? `answering 1 of ${all.length} · the rest stay open` : undefined;
+		return { lines: lines.length ? lines : [worker.question ?? "Worker needs input."], additions: 0, deletions: 0, hasChangeSet: false, ...(risk ? { risk } : {}), ...(provenance ? { provenance } : {}), ...(backlog ? { backlog } : {}) };
 	}
 	if (state === "failed") return { lines: [worker.lastError ?? "Worker failed."], additions: 0, deletions: 0, hasChangeSet: false };
 	const report = projectWorkerReport(worker, [], changeSet, deliverable);
@@ -1160,6 +1163,9 @@ export class DocketVerdictView implements Component {
 			this.addSectionHeading(listWidth, muted, "Actions");
 		} else if (state === "needs_input" || state === "consulting") {
 			this.addSectionHeading(listWidth, muted, state === "consulting" ? "Consult" : "Question");
+			if (payload.backlog) {
+				this.container.addChild(new Text(truncateToWidth(`  ${dim(payload.backlog)}`, listWidth - 2), 1, 0));
+			}
 			if (payload.provenance) {
 				this.container.addChild(new Text(truncateToWidth(`  ${dim(payload.provenance)}`, listWidth - 2), 1, 0));
 			}
@@ -1940,6 +1946,8 @@ function renderParallelWorkList(workers: WorkerStatus[], artifactsByWorker: Map<
 
 const PEEK_VISIBLE_LINES = 24;
 const PEEK_REFRESH_MS = 1000;
+/** Wide enough for sibling tool calls in one assistant message; far short of a model round-trip. */
+const BLOCKED_TURN_END_DELAY_MS = 250;
 
 export class DocketParallelWorkView implements Component {
 	private container: Container | Box = new Container();
@@ -3765,6 +3773,29 @@ export default function docketExtension(pi: ExtensionAPI) {
 		let workerNudgesThisSession = 0;
 		const MAX_WORKER_NUDGES = 1;
 		const markWorkerProtocolCalled = (): void => { workerProtocolCalledThisTurn = true; };
+
+		/**
+		 * Blocking means the worker stops. Until now that was a sentence in a tool result, and a
+		 * model that kept generating turned one blocked decision into a pile of questions the
+		 * human had to answer one card at a time — each restatement arriving as its own card and
+		 * reading like the previous one coming back.
+		 *
+		 * Ending the turn is pi's own operation, so ask for it rather than hope. Fired after the
+		 * tool result resolves, so the call and its answer stay in the transcript for the worker
+		 * to read when a reply resumes it. `agent_end`'s nudge already skips a turn that called a
+		 * protocol tool, so this cannot provoke one.
+		 *
+		 * The delay is what separates the two cases that look identical from inside one call. Two
+		 * `docket_wait` calls in a *single* assistant message are two questions the worker holds
+		 * right now, and they run well inside this window. A second call after another model
+		 * round-trip is a restatement of a question nobody has answered, and no round-trip
+		 * completes this fast — so that one loses its turn, which is what it was told to do.
+		 */
+		const endTurnAfterBlocking = (ctx: ExtensionContext): void => {
+			setTimeout(() => {
+				try { ctx.abort(); } catch { /* best-effort; the result text still says to stop */ }
+			}, BLOCKED_TURN_END_DELAY_MS);
+		};
 		resetWorkerNudges = (): void => { workerNudgesThisSession = 0; };
 
 		pi.on("turn_start", () => {
@@ -3848,8 +3879,10 @@ export default function docketExtension(pi: ExtensionAPI) {
 					...(options.length ? { options } : {}),
 					...(typeof params.recommend === "string" && params.recommend.trim() ? { recommend: params.recommend.trim() } : {}),
 				};
-				await applyWorkerState(ctx, "needs_input", params.question, undefined, questionMeta);
-				return { content: [{ type: "text", text: workerProtocolResultText("needs_input") }], details: { state: "needs_input", question: params.question, ...questionMeta } };
+				const blocked = await applyWorkerState(ctx, "needs_input", params.question, undefined, questionMeta);
+				const openQuestions = blocked ? workerQuestions(blocked).length : 1;
+				endTurnAfterBlocking(ctx);
+				return { content: [{ type: "text", text: workerProtocolResultText("needs_input", openQuestions) }], details: { state: "needs_input", question: params.question, openQuestions, ...questionMeta } };
 			},
 		});
 
@@ -3875,8 +3908,9 @@ export default function docketExtension(pi: ExtensionAPI) {
 					...(typeof params.recommend === "string" && params.recommend.trim() ? { recommend: params.recommend.trim() } : {}),
 				};
 				await applyWorkerState(ctx, "needs_input", params.question, undefined, questionMeta);
+				endTurnAfterBlocking(ctx);
 				return {
-					content: [{ type: "text", text: "Docket consult recorded. Stop now and wait. The parent agent answers if it can; otherwise this escalates to the human and takes longer. An answer will say who wrote it — weigh it accordingly." }],
+					content: [{ type: "text", text: "Docket consult recorded. End your turn now — stop generating, do not call this tool again, and do not look for the reply on disk; it arrives as a message in this session. The parent agent answers if it can; otherwise this escalates to the human and takes longer. An answer will say who wrote it — weigh it accordingly." }],
 					details: { state: "needs_input", question: params.question, ...questionMeta },
 				};
 			},

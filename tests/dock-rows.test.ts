@@ -248,6 +248,23 @@ test("dockRowCells keeps liveness and lifecycle in one cell each", () => {
 	assert.equal(dockRowCells(dock[0]!).state, "ready · gone");
 });
 
+test("a worker with a backlog says how many questions, not just that it needs a reply", () => {
+	const one = makeWorker({ id: "a", index: 1, state: "needs_input" });
+	one.questions = [{ id: "q1", text: "Required or optional?", createdAt: "2026-05-01T00:01:00.000Z" }];
+	const several = makeWorker({ id: "b", index: 2, state: "needs_input" });
+	several.questions = [
+		{ id: "q1", text: "Required or optional?", createdAt: "2026-05-01T00:01:00.000Z" },
+		{ id: "q2", text: "Confirm the signature.", createdAt: "2026-05-01T00:02:00.000Z" },
+		{ id: "q3", text: "Which option?", createdAt: "2026-05-01T00:03:00.000Z" },
+	];
+
+	const dock = dockRowsForRender(workerActivityRows([one, several]));
+	const byLabel = new Map(dock.map((row) => [row.label, row]));
+
+	assert.equal(byLabel.get("w1")!.progressLabel, "needs reply");
+	assert.equal(byLabel.get("w2")!.progressLabel, "3 questions", "one decision and three read differently to a human budgeting time");
+});
+
 test("dockRowsForRender exposes kindLabel for non-default kinds", () => {
 	const scout = makeWorker({ id: "a", index: 1, state: "active", kind: "scout" });
 	const patcher = makeWorker({ id: "b", index: 2, state: "ready", kind: "patcher" });

@@ -489,6 +489,19 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	return [];
 }
 
+/**
+ * The question a reply answers when the human does not name one: the **oldest** still open.
+ *
+ * A worker asks in the order it got stuck. Anything it asked afterwards is usually downstream of
+ * the first answer it never got — a restatement, or a question that only exists because the first
+ * one is unanswered. Answering newest-first therefore resolves the derivative and leaves the real
+ * question for last, which is what makes a drained backlog read as the same question coming back
+ * rephrased.
+ */
+export function openWorkerQuestion(worker: WorkerStatus): WorkerQuestion | undefined {
+	return workerQuestions(worker)[0];
+}
+
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	return deriveWorkerLifecycleState(worker, now);
 }
@@ -580,8 +593,16 @@ export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolS
 	return patch;
 }
 
-export function workerProtocolResultText(state: WorkerProtocolState): string {
-	if (state === "needs_input") return "Docket wait recorded. Stop now and wait for parent reply.";
+export function workerProtocolResultText(state: WorkerProtocolState, openQuestions = 0): string {
+	if (state === "needs_input") {
+		// A worker that calls this while already blocked has not stopped, and is usually restating
+		// the question it is still waiting on. Every restatement becomes another card the human
+		// has to answer separately, so the result says exactly what the extra call cost.
+		if (openQuestions > 1) {
+			return `Docket wait recorded, but you were already waiting on ${openQuestions - 1} question${openQuestions === 2 ? "" : "s"}; this one was added, so the parent now has ${openQuestions} to answer separately and you will be unblocked later than if you had asked once. End your turn now — do not call this tool again, do not look for an inbox on disk, and do not keep working speculatively. The answer arrives as a message in this session and names the question it answers.`;
+		}
+		return "Docket wait recorded. End your turn now — stop generating, do not call this tool again, and do not look for the reply on disk. The parent's answer arrives as a message in this session.";
+	}
 	if (state === "ready") return "Docket done recorded. Parent can review the worker output.";
 	return "Docket failure recorded. Parent can review the failure.";
 }

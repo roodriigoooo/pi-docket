@@ -110,6 +110,42 @@ test("runWorkerVerdict diff verb opens full diff in diff mode", async () => {
 	assert.deepEqual(seen, ["worker-changes:worker-1:0:builtin"]);
 });
 
+test("a backlog is answered oldest first and says how much is left", async () => {
+	// A worker that restated itself: everything after the first question exists only because the
+	// first one went unanswered, so answering newest-first resolves the derivative and leaves the
+	// real question for last — which is what reads as the same question coming back rephrased.
+	const w = worker({
+		state: "needs_input",
+		questions: [
+			{ id: "q1", text: "Required context arg, or optional with a default?", createdAt: "2026-01-01T00:01:00.000Z" },
+			{ id: "q2", text: "No concrete choice came back. Please confirm the signature.", createdAt: "2026-01-01T00:02:00.000Z" },
+			{ id: "q3", text: "I am blocked by the plan gate because no option was selected.", createdAt: "2026-01-01T00:03:00.000Z" },
+		],
+	});
+	const { deps, calls } = depsFor(w, {
+		showVerdict: async () => ({ verb: "send", worker: w, text: "required" }),
+		workerCommands: {
+			tell: async (ref: string, text: string, options?: { replyTo?: string }) => { calls.push(`tell:${ref}:${options?.replyTo ?? "unbound"}:${text}`); },
+			delete: async () => {},
+			respawn: async () => {},
+		},
+	});
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(calls.some((call) => call.startsWith("tell:w1:q1:")), true, "the reply binds to the question the worker asked first");
+	assert.equal(calls.some((call) => call.includes("2 more questions")), true, "and the human is told a backlog remains");
+});
+
+test("a single question says nothing about a backlog", async () => {
+	const w = worker({ state: "needs_input", questions: [{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" }] });
+	const { deps, calls } = depsFor(w, { showVerdict: async () => ({ verb: "send", worker: w, text: "required" }) });
+
+	await runWorkerVerdict(deps, w);
+
+	assert.equal(calls.some((call) => call.includes("more question")), false);
+});
+
 test("runWorkerVerdict overlap verb reads both sides and records nothing by itself", async () => {
 	const w = worker({ state: "ready" });
 	const cs = changeSet();

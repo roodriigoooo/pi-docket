@@ -88,8 +88,8 @@ One contract for every kind. The MD body of a kind extends the universal guardra
 | Tool | When | Effect |
 |---|---|---|
 | `docket_todos` | Multi-step work. | Replaces the visible progress board; informational, not completion. |
-| `docket_wait` | Ambiguity, blocked auth, irreversible action. | Worker → `needs_input`, parent gets an inbox row. Always reaches the human. |
-| `docket_consult` | A fact about the project or sibling work the parent may already know. | Worker → `needs_input` with a parent-agent audience; renders as `consulting`. Answered by the parent agent when enabled, otherwise by the human; escalates on its window. |
+| `docket_wait` | Ambiguity, blocked auth, irreversible action. | Worker → `needs_input`, parent gets an inbox row. Always reaches the human. Ends the worker's turn through `ctx.abort()` rather than asking the model to stop, so a restatement cannot become a second card. |
+| `docket_consult` | A fact about the project or sibling work the parent may already know. | Worker → `needs_input` with a parent-agent audience; renders as `consulting`. Ends the turn the same way. Answered by the parent agent when enabled, otherwise by the human; escalates on its window. |
 | `docket_note` | Something worth sharing that does not block. | Writes to the worker's outbox; surfaces as a parent review item. No state change. |
 | `docket_done` | Finished with useful output. | Requires `outcome`, `summary`, `evidence`. Vague work is rejected back to `docket_wait`. |
 | `docket_fail` | Cannot continue, no useful partial output. | Worker → `failed`. |

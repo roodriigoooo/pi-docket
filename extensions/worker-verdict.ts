@@ -1,4 +1,4 @@
-import { deriveWorkerState, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, openWorkerQuestion, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, type WorkerStatus } from "./background-work.js";
 import type { DecisionRecord, DecisionVerb } from "./decision-log.js";
 import { sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable } from "./worker-deliverable.js";
 import type { Artifact } from "./types.js";
@@ -173,9 +173,10 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		}
 		const label = workerSourceLabel(latest);
 		const state = deriveWorkerState(latest);
-		// The card presents the newest open question, so a reply from it answers that one and
-		// leaves any earlier question open instead of clearing the whole backlog.
-		const answering = state === "needs_input" || state === "consulting" ? workerQuestions(latest).at(-1) : undefined;
+		// The card presents the oldest open question, so a reply from it answers that one and
+		// leaves any later question open instead of clearing the whole backlog.
+		const answering = state === "needs_input" || state === "consulting" ? openWorkerQuestion(latest) : undefined;
+		const stillOpen = Math.max(0, workerQuestions(latest).length - 1);
 		const replyOptions = answering ? { replyTo: answering.id } : {};
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest, deliverable);
 		const statusArtifact = workerStatusArtifact(latest);
@@ -221,6 +222,9 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		if (result.verb === "send") {
 			if (!result.text || (await deps.workerCommands.tell(label, result.text, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "send", result.text, changeSet, deliverable);
+			// A backlog drains one question per answer, and a human who was not told there was a
+			// backlog reads the next one as the same question coming back.
+			if (answering && stillOpen > 0) deps.notify(`Docket: ${label} has ${stillOpen} more question${stillOpen === 1 ? "" : "s"} · f8 to answer the next`, "info");
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}
@@ -239,6 +243,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			const message = deliverable ? `Request revision for ${deliverable.ref} (version ${deliverable.version}):\n${text}` : changeSet ? `revise: ${text}` : text;
 			if ((await deps.workerCommands.tell(label, message, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "chat", text, changeSet, deliverable, deliverable ? text : undefined);
+			if (answering && stillOpen > 0) deps.notify(`Docket: ${label} has ${stillOpen} more question${stillOpen === 1 ? "" : "s"} · f8 to answer the next`, "info");
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}

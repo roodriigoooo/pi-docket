@@ -71,6 +71,25 @@ test("workerVerdictPayload uses status fields for questions and failures", () =>
 	assert.deepEqual(workerVerdictPayload(failed).lines, ["npm test exited 1"]);
 });
 
+test("a backlog marks the question this card answers and says the rest stay open", () => {
+	const blocked = worker({
+		state: "needs_input",
+		questions: [
+			{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" },
+			{ id: "q2", text: "No concrete choice came back.", createdAt: "2026-01-01T00:02:00.000Z" },
+		],
+	});
+	const payload = workerVerdictPayload(blocked);
+
+	assert.equal(payload.backlog, "answering 1 of 2 · the rest stay open");
+	assert.deepEqual(payload.lines, ["▸ 1. Required or optional?", "  2. No concrete choice came back."]);
+
+	// One question needs no marker and no count: there is nothing to mistake it for.
+	const single = workerVerdictPayload(worker({ state: "needs_input", questions: [{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" }] }));
+	assert.equal(single.backlog, undefined);
+	assert.deepEqual(single.lines, ["Required or optional?"]);
+});
+
 test("workerVerdictPayload summarizes deterministic change set metadata", () => {
 	const payload = workerVerdictPayload(worker({ state: "ready" }), changeSet);
 	assert.equal(payload.hasChangeSet, true);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendWorkerQuestionPatch, buildWorkerInitialPrompt, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerInputAcceptedPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStateRank, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
+import { appendWorkerQuestionPatch, buildWorkerInitialPrompt, buildWorkerTaskDocument, deriveWorkerState, formatWorkerDoneSummary, isPaneHarvestCandidate, namespaceWorkerArtifacts, normalizeWorkerTodos, openWorkerQuestion, workerActivityChip, workerDoneClarificationQuestion, workerHasOpenTodos, workerHeartbeatPatch, workerInputAcceptedPatch, workerLaunchDetail, workerLaunchSubject, workerMascotFrame, workerMascotLines, workerPaneTailArtifact, workerPulseGlyph, DOCK_PULSE_INTERVAL_MS, workerProtocolPatch, workerProtocolResultText, workerQuestions, workerShortLabel, workerStateRank, workerStatusArtifact, workerTaskLooksVague, workerTodoBoardLines, workerTodoProgress, workerTodoSummary, workerTodosPatch, type WorkerQuestion, type WorkerStatus } from "../extensions/background-work.js";
 import type { Artifact } from "../extensions/types.js";
 
 function worker(partial: Partial<WorkerStatus> = {}): WorkerStatus {
@@ -88,6 +88,37 @@ test("Background Work protocol patch clears questions for ready and failed state
 		reviewedAt: undefined,
 	});
 	assert.equal(workerProtocolResultText("failed"), "Docket failure recorded. Parent can review the failure.");
+});
+
+test("waiting tells the worker to end its turn, and what a second call just cost", () => {
+	const first = workerProtocolResultText("needs_input", 1);
+	assert.match(first, /End your turn now/);
+	assert.match(first, /do not look for the reply on disk/, "a blocked worker went hunting for an inbox it cannot read");
+
+	// A worker that calls this while already blocked has not stopped. Each restatement becomes
+	// another card the human answers separately, so the result names the cost rather than
+	// repeating the same cheerful acknowledgement.
+	const again = workerProtocolResultText("needs_input", 3);
+	assert.match(again, /already waiting on 2 questions/);
+	assert.match(again, /3 to answer separately/);
+	assert.match(again, /unblocked later/);
+	assert.match(again, /do not call this tool again/);
+
+	assert.match(workerProtocolResultText("needs_input", 2), /already waiting on 1 question;/, "singular reads as singular");
+});
+
+test("an unanswered reply binds to the question the worker asked first", () => {
+	const blocked = {
+		...worker(),
+		state: "needs_input" as const,
+		questions: [
+			{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" },
+			{ id: "q2", text: "No concrete choice came back.", createdAt: "2026-01-01T00:02:00.000Z" },
+		],
+	};
+
+	assert.equal(openWorkerQuestion(blocked)?.id, "q1");
+	assert.equal(openWorkerQuestion(worker())?.id, undefined, "nothing open, nothing to answer");
 });
 
 test("Background Work stores structured done outcomes", () => {
