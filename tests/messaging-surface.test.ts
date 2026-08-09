@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { BROADCAST_ADVISOR_TIMEOUT_MS, installDocketExtensionSurface, messageObservationFromEvent, type BroadcastAdvisorInput, type WorkerMessageObservation } from "../extensions/docket-extension-surface.js";
 import { createWorkerKindRegistry } from "../extensions/worker-kinds.js";
 import { applyBroadcastSuggestions, type BroadcastRecipient } from "../extensions/worker-broadcast.js";
+import { docketMessageChipIsFinal, type DocketMessageDetails } from "../extensions/docket.js";
+import type { WorkerMessage } from "../extensions/worker-mailbox.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 
 function surface() {
@@ -159,4 +161,34 @@ test("a suggestion cannot demote, deselect, or remove anything Docket proposed",
 
 test("no suggestions leaves the proposal exactly as Docket scored it", () => {
 	assert.equal(applyBroadcastSuggestions(recipients, []), recipients);
+});
+
+function sentChip(transport: "inbox" | "tmux" = "inbox"): DocketMessageDetails {
+	return { kind: "action", sentMessage: { workerId: "worker-1", workerLabel: "w1", messageId: "msg-1", transport } };
+}
+
+function message(delivery: WorkerMessage["delivery"]): WorkerMessage {
+	return { id: "msg-1", kind: "answer", from: "human", body: "hold the storage layer", deliverAs: "steer", createdAt: "2026-01-01T00:00:00.000Z", delivery };
+}
+
+test("a chip keeps looking while its message can still move", () => {
+	assert.equal(docketMessageChipIsFinal(sentChip(), undefined, false), false);
+	assert.equal(docketMessageChipIsFinal(sentChip(), message("queued"), false), false);
+	assert.equal(docketMessageChipIsFinal(sentChip(), message("delivered"), false), false);
+});
+
+test("a chip stops looking once nothing it reports can change", () => {
+	assert.equal(docketMessageChipIsFinal(sentChip(), message("read"), false), true);
+	// A departed worker cannot advance a message it already took; a queued one still can, after
+	// a respawn delivers it.
+	assert.equal(docketMessageChipIsFinal(sentChip(), message("delivered"), true), true);
+	assert.equal(docketMessageChipIsFinal(sentChip(), message("queued"), true), false);
+	// tmux keystrokes were never observable, so re-reading them could only invent a fact.
+	assert.equal(docketMessageChipIsFinal(sentChip("tmux"), undefined, false), true);
+});
+
+test("a chip with nothing live in it is painted once", () => {
+	assert.equal(docketMessageChipIsFinal({ kind: "notice" }, undefined, false), true);
+	assert.equal(docketMessageChipIsFinal({ kind: "action", workerId: "worker-1" }, undefined, false), false);
+	assert.equal(docketMessageChipIsFinal({ kind: "action", workerId: "worker-1" }, undefined, true), true);
 });

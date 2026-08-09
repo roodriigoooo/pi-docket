@@ -1319,12 +1319,20 @@ async function gradeWorkerOverlaps(input: { worker: WorkerStatus; patch?: string
 	}));
 }
 
-/** Peers and their evidence, read once for whichever overlap surface asked. */
-async function workerOverlapPeers(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<{ peers: WorkerStatus[]; peerArtifacts: Map<string, Artifact[]> }> {
-	const peers = await createWorkerStore().list({ projectRoot: projectKey(ctx.cwd) });
+/**
+ * Peers and their evidence, read once for whichever overlap surface asked.
+ *
+ * Every peer is projected the same way the dock projects it. Reading a peer's raw artifacts
+ * instead was the bug that made a card silent about an overlap the dock was already showing:
+ * a published worker's frozen change set names repo-relative paths, while its raw `edit` calls
+ * name absolute ones, so the two lists never intersected and the card decided there was nothing
+ * to say. There is one notion of "affected" in this codebase, and this is it.
+ */
+async function workerOverlapPeers(_ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<{ peers: WorkerStatus[]; peerArtifacts: Map<string, Artifact[]> }> {
+	const peers = await createWorkerStore().list({ projectRoot: workerProjectKey(worker) });
 	const peerArtifacts = new Map<string, Artifact[]>();
 	await Promise.all(peers.map(async (peer) => {
-		peerArtifacts.set(peer.id, peer.id === worker.id ? await readWorkerArtifactsForReview(peer) : await createWorkerStore().readArtifacts(peer.id).catch(() => []));
+		peerArtifacts.set(peer.id, await readWorkerArtifactsForReview(peer).catch(() => []));
 	}));
 	return { peers, peerArtifacts };
 }
@@ -2681,7 +2689,7 @@ type DocketMessageKind = "help" | "list" | "notice" | "action" | "success" | "wa
  */
 type DocketSentMessage = { workerId: string; workerLabel: string; messageId: string; transport: WorkerMessageTransport };
 
-type DocketMessageDetails = { kind: DocketMessageKind; heading?: string; subject?: string; workerId?: string; sentMessage?: DocketSentMessage; docket?: { kind: ArtifactKind; title: string; subtitle?: string } };
+export type DocketMessageDetails = { kind: DocketMessageKind; heading?: string; subject?: string; workerId?: string; sentMessage?: DocketSentMessage; docket?: { kind: ArtifactKind; title: string; subtitle?: string } };
 
 const KIND_GLYPH: Record<DocketMessageKind, string> = {
 	help: "?",
@@ -2729,14 +2737,46 @@ function announceAction(pi: ExtensionAPI, _ctx: ExtensionCommandContext, subject
 	);
 }
 
+/**
+ * How often a chip that is still moving may re-read what it reports. Delivery is observed on
+ * disk by the other side, so the only way the parent learns of it is by looking again — but a
+ * chip is painted on every frame, and a sync read per frame per chip is not a cost a calm tool
+ * should pay. Below these intervals the last reading stands.
+ *
+ * A sent message reads at roughly the dock's own pulse, because its states are the claim the
+ * chip makes. A spawn announcement reads far more slowly: its subject is a convenience restating
+ * what the dock says better, and a session accumulates one per worker.
+ */
+const MESSAGE_CHIP_REFRESH_MS = 400;
+const WORKER_CHIP_REFRESH_MS = 2000;
+
+/**
+ * Whether anything this chip says can still change. A `read` message and a departed worker are
+ * both final, so their chips are built once and never look at the disk again; a tmux send was
+ * never observable in the first place. Everything else keeps looking, because "queued" turning
+ * into "delivered" with nobody touching the keyboard is the whole claim the chip makes.
+ */
+export function docketMessageChipIsFinal(details: DocketMessageDetails, live: WorkerMessage | undefined, workerIsTerminal: boolean): boolean {
+	if (details.sentMessage) {
+		if (details.sentMessage.transport === "tmux") return true;
+		return live?.delivery === "read" || (workerIsTerminal && live?.delivery !== "queued");
+	}
+	if (details.workerId) return workerIsTerminal;
+	return true;
+}
+
 function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
-	return (message, options, theme) => {
+	// Built fresh on each paint rather than once when the line was printed. The chip's whole
+	// claim — queued, then delivered, then read, with nothing clicked — is only true if the
+	// surface re-reads the fact; a chip that advanced when the human toggled expand was
+	// reporting the past and calling it live.
+	type Rendered = Parameters<MessageRenderer<DocketMessageDetails>>;
+	const paint = (message: Rendered[0], expanded: boolean, theme: Rendered[2]): { box: Box; final: boolean } => {
 		const details = (message.details ?? { kind: "notice" }) as DocketMessageDetails;
 		const kind = details.kind ?? "notice";
 		let labelColor: ThemeColor = KIND_COLOR[kind] ?? "muted";
 		let glyph = KIND_GLYPH[kind] ?? "·";
 		let headingText = details.heading ?? `docket · ${kind}`;
-		const expanded = options?.expanded === true;
 		let subject = details.subject;
 		let content = typeof message.content === "string" ? message.content : "";
 		const liveWorker = details.workerId ? readWorkerStatusSync(details.workerId) : undefined;
@@ -2750,10 +2790,12 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 		const live = sent ? readWorkerMessageSync(createWorkerStore().root(), sent.workerId, sent.messageId) : undefined;
 		let timeline: string | undefined;
 		let stuck = false;
+		let workerIsTerminal = liveWorker ? workerIsGone(liveWorker) : false;
 		if (sent) {
 			// Liveness is re-read with the message: a worker that was running when the chip was
 			// printed may not be running now, and the chip is what the human is still looking at.
 			const gone = workerIsGone(readWorkerStatusSync(sent.workerId));
+			workerIsTerminal = gone;
 			stuck = sentWorkerMessageIsStuck(sent.transport, live, gone);
 			subject = sentWorkerMessageChipSubject(sent.workerLabel, sent.transport, live, gone);
 			if (!expanded) content = collapseWorkerMessageBody(content);
@@ -2804,7 +2846,28 @@ function docketMessageRenderer(): MessageRenderer<DocketMessageDetails> {
 			box.addChild(new Text("", 0, 0));
 			box.addChild(new Text(dim(timeline), 0, 0));
 		}
-		return box;
+		return { box, final: docketMessageChipIsFinal(details, live, workerIsTerminal) };
+	};
+
+	return (message, options, theme) => {
+		const expanded = options?.expanded === true;
+		const interval = message.details?.sentMessage ? MESSAGE_CHIP_REFRESH_MS : WORKER_CHIP_REFRESH_MS;
+		let current = paint(message, expanded, theme);
+		let readAt = Date.now();
+		return {
+			render(width: number): string[] {
+				const now = Date.now();
+				if (!current.final && now - readAt >= interval) {
+					readAt = now;
+					current = paint(message, expanded, theme);
+				}
+				return current.box.render(width);
+			},
+			invalidate(): void {
+				readAt = Date.now();
+				current = paint(message, expanded, theme);
+			},
+		};
 	};
 }
 
