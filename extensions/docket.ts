@@ -52,9 +52,10 @@ import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavi
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { DOCK_GUTTER, dockColumns, dockRowCells, dockRowsForRender, dockSettledLine, isSettledDockState, partitionDockRows, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockColumns, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
-import { freezeWorkerChangeSet, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { freezeWorkerChangeSet, patchStillAppliesAfter, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { gradeOverlapFiles, overlapConfirmationLines, overlapNeedsConfirmation, overlapSummaryLine, parsePatchRanges, strongestGrade, type WorkerOverlap } from "./worker-overlap.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
-import { conflictSummary, workerConflictMap } from "./worker-conflicts.js";
+import { workerConflictMap } from "./worker-conflicts.js";
 import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
 import { workerSummaryHeadline } from "./worker-review.js";
 import { workerResultHeadline, workerResultReport, workerResultText } from "./worker-result.js";
@@ -1262,6 +1263,43 @@ async function staleBaseForWorker(cwd: string, worker: WorkerStatus, artifacts: 
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Grade every worker that shares a path with the one being promoted.
+ *
+ * Path overlap is what the dock can afford to compute every render; this is the question a
+ * promotion actually turns on, so it is computed once, at the moment the human is deciding.
+ * Line ranges come from patches already frozen on disk. Where both sides have one and the ranges
+ * are close enough to matter, git is asked the observed form of the same question — does the
+ * other worker's change set still apply once this one lands — instead of it being inferred.
+ */
+async function gradeWorkerOverlaps(input: { worker: WorkerStatus; patch?: string; peers: WorkerStatus[]; peerArtifacts: Map<string, Artifact[]>; parentCwd: string }): Promise<WorkerOverlap[]> {
+	const conflicts = workerConflictMap(input.peers, input.peerArtifacts).get(input.worker.id) ?? [];
+	if (conflicts.length === 0) return [];
+	const store = createWorkerStore();
+	const mine = input.patch ? parsePatchRanges(input.patch) : undefined;
+	const byId = new Map(input.peers.map((peer) => [peer.id, peer]));
+	return Promise.all(conflicts.map(async (conflict): Promise<WorkerOverlap> => {
+		const peer = byId.get(conflict.workerId);
+		const deliverable = peer ? await store.readCurrentDeliverable(peer).catch(() => undefined) : undefined;
+		const theirPatch = deliverable?.changeSet?.patch;
+		const theirs = theirPatch ? parsePatchRanges(theirPatch) : undefined;
+		const files = gradeOverlapFiles(conflict.files, mine, theirs);
+		const grade = strongestGrade(files);
+		// Only worth a subprocess once the ranges say the two might actually meet.
+		const stillApplies = input.patch && theirPatch && grade !== "same-file"
+			? patchStillAppliesAfter(input.parentCwd, input.patch, theirPatch)
+			: undefined;
+		return {
+			workerId: conflict.workerId,
+			workerLabel: conflict.workerLabel,
+			taskLabel: peer ? workerDisplayName(peer, 40) : conflict.workerLabel,
+			files,
+			grade,
+			...(stillApplies === undefined ? {} : { stillApplies }),
+		};
+	}));
 }
 
 /** Files the approved plan a worker is executing named. Empty for workers without one. */
@@ -4239,16 +4277,26 @@ export default function docketExtension(pi: ExtensionAPI) {
 					await Promise.all(peers.map(async (peer) => {
 						peerArtifacts.set(peer.id, await readWorkerArtifactsForReview(peer));
 					}));
-					const overlap = conflictSummary(workerConflictMap(peers, peerArtifacts).get(worker.id) ?? [], 4);
-					if (overlap) {
+					const frozen = workerChangeSetFromArtifact(artifact);
+					const overlaps = await gradeWorkerOverlaps({
+						worker,
+						peers,
+						peerArtifacts,
+						parentCwd: ctx.cwd,
+						...(frozen?.patch ? { patch: frozen.patch } : {}),
+					});
+					// Silence has to be earned: a graded overlap whose edits provably do not meet
+					// asks nothing, and everything else — contested, adjacent, or ungradeable —
+					// still asks, because "we could not tell" is not "they are apart".
+					if (overlapNeedsConfirmation(overlaps)) {
+						const summary = overlapSummaryLine(overlaps) ?? "worker overlap";
 						if (!ctx.hasUI) {
-							notifyDocket(pi, ctx, `Docket promote blocked: ${overlap}`, "warning");
+							notifyDocket(pi, ctx, `Docket promote blocked: ${summary}`, "warning");
 							return false;
 						}
-						const ok = await ctx.ui.confirm("Promote despite worker overlap?", `${overlap}\n\n${artifact.title}`);
+						const ok = await ctx.ui.confirm("Promote despite worker overlap?", [...overlapConfirmationLines(overlaps), "", artifact.title].join("\n"));
 						if (!ok) return false;
 					}
-					const frozen = workerChangeSetFromArtifact(artifact);
 					let result = frozen
 						? promoteWorkerChangeSet(worker, ctx.cwd, { changeSet: frozen })
 						: promoteWorkerChangeSet(worker, ctx.cwd);

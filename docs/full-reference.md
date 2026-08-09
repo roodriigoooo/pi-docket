@@ -258,7 +258,35 @@ Kinds state intent and authority only. Read-only kinds share parent directory; w
 
 Context precedence is handoff forced-fresh / `--fresh`, then `--seed`, `worker.parentSeedPolicy`, legacy kind `parent_seed`, then fresh. `--fresh` wins if both flags appear. See [configuration](./configuration.md#per-spawn-execution) for full precedence and legacy migration.
 
-When two workers edit the same path, Docket surfaces an `overlap w<N>: <path>` hint in the dock/dashboard and asks for confirmation before promoting a conflicting change set. It does not lock files or auto-merge workers; the parent remains the mediator.
+When two workers edit the same path, Docket surfaces an `overlap w<N>: <file>` hint in the dock and dashboard. That hint is path-level and cheap on purpose: it is recomputed every render, so it answers "did they touch the same file" and nothing more.
+
+Promotion asks the expensive question instead, once, at the moment you are deciding. Both workers branched from the same base, so their frozen patches' **old-file** line ranges are directly comparable, and Docket grades what it finds:
+
+| grade | what it means |
+|---|---|
+| `same file` | both changed the file, and their line ranges do not meet |
+| `adjacent` | their ranges are within a few lines of each other |
+| `contested` | their ranges intersect, or both create the same file |
+
+Where both sides have a frozen change set and the ranges are close enough to matter, git is asked the observed form of the same question — whether the other worker's patch still applies once this one lands — rather than it being inferred.
+
+The confirmation is owed unless Docket **observed** that the edits do not meet. A `contested` or `adjacent` overlap asks. An overlap it could not grade — the other worker is still working and has frozen nothing — also asks, because "we could not tell" and "they are apart" are different facts. Only an overlap it graded and found separate promotes quietly.
+
+When it does ask, it says what promoting does, not just that something overlaps:
+
+```text
+Promote despite worker overlap?
+
+contested: src/api/limit.ts
+  this worker · lines 40-47
+  w2 · add a per-tenant rate limit · lines 44-46
+w2's change set no longer applies once this lands
+promoting this leaves w2 building on the old version
+```
+
+That last line is a prediction of something Docket already makes true: the promotion appends a journal entry, and w2 derives `base moved` from it without anyone deciding to tell it.
+
+Docket still does not lock files or auto-merge workers. It grades the collision and the parent remains the mediator.
 
 The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. `1 message queued · not taken yet` means you already replied and the worker has not picked it up. Docket does not auto-kill or auto-respawn for any of them. It tells you to peek, reply, reject, or stop.
 

@@ -294,6 +294,22 @@ function asFrozenChangeSet(value: WorkerChangeSet | WorkerDeliverableChangeSet |
 }
 
 /**
+ * Ask git whether `next` still applies once `first` has landed, by handing it both patches in
+ * order. `--check` writes nothing.
+ *
+ * Tri-state on purpose. If `first` does not apply on its own the base has already moved, and the
+ * question about `next` cannot be put honestly — that is `undefined`, not `false`. Docket says
+ * only what it observed, and "we could not tell" is one of the things there is to observe.
+ */
+export function patchStillAppliesAfter(parentCwd: string, first: string, next: string): boolean | undefined {
+	const parentRoot = repoRoot(parentCwd);
+	const terminated = (patch: string): string => patch.endsWith("\n") ? patch : `${patch}\n`;
+	const args = ["apply", "--check", "--whitespace=nowarn"];
+	if (gitStatus(parentRoot, args, terminated(first)).status !== 0) return undefined;
+	return gitStatus(parentRoot, args, `${terminated(first)}${terminated(next)}`).status === 0;
+}
+
+/**
  * Promotion always applies supplied frozen patch. Omit `changeSet` only for a
  * legacy worker that predates deliverables.
  */

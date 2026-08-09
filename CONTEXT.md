@@ -147,8 +147,12 @@ The small ordered checklist a Worker publishes with `docket_todos`. It is parent
 _Avoid_: task manager, acceptance gate.
 
 **Worker overlap**:
-A warning that two Workers edited the same path in their isolated workspaces. Docket surfaces overlap and asks before promotion; it does not lock files or auto-merge.
+Two Workers changed the same path in their isolated workspaces. Path-level, cheap, and recomputed on every dock render.
 _Avoid_: conflict resolver, merge queue.
+
+**Overlap grade**:
+What a Worker overlap is actually worth, derived once when the human opens a promotion: `same file` (their changed line ranges do not meet), `adjacent` (within a few lines), `contested` (ranges intersect, or both create the file). Read from patches already frozen on disk, in the pre-image coordinates both Workers branched from. Where both sides have a patch, git is asked whether the other's still applies once this one lands — that is observed, not graded. A confirmation is owed unless separation was observed: an overlap Docket could not grade still asks, because "we could not tell" is not "they are apart".
+_Avoid_: conflict severity, merge risk, auto-resolve.
 
 **Decision ledger**:
 The append-only record of every verdict you resolve, written to `decisions.ndjson`. Ready judgments include decision id and exact deliverable id/version/ref plus verb, review note or option, risk, and visible evidence refs. Read it with `/docket log decisions`.
@@ -216,7 +220,7 @@ _Avoid_: continue, resume, restore.
 - A **Broadcast** is proposed by Docket, confirmed by the human, and delivered without interrupting. It carries **Standing** and never answers a question a Worker is blocked on.
 - Every Message edge is Worker ↔ parent. A Worker may name intended recipients on a Notice; only the human sends it.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
-- **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator.
+- **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator. Its **Overlap grade** decides whether a confirmation is owed, and the confirmation states what promoting does to the other Worker — a **Stale base** the promotion is about to create.
 
 ## Example dialogue
 
