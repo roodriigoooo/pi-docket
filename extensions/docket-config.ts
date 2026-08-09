@@ -19,10 +19,23 @@ export type DocketWorkerConfig = {
 	parentSeedPolicy?: "full" | "none";
 };
 
+/**
+ * Worker → parent consultation (ADR-0008). Off by default: a consult is the only path that
+ * spends parent model context, and enabling it is the human authorizing a standing policy
+ * rather than each message.
+ */
+export type DocketMessagingConfig = {
+	/** Let the parent agent answer `docket_consult` questions. Off means every consult reaches the human. */
+	autoAnswer?: boolean;
+	/** How long a consult may wait for the parent agent before escalating to the human. */
+	consultWindowSeconds?: number;
+};
+
 export type DocketConfig = {
 	maxArtifacts: number;
 	maxBodyChars: number;
 	worker?: DocketWorkerConfig;
+	messaging?: DocketMessagingConfig;
 	/** One-shot migration notices discovered while reading legacy config. */
 	migrationWarnings?: string[];
 };
@@ -34,6 +47,10 @@ export const DEFAULT_CONFIG: DocketConfig = {
 		dockIdleHideMinutes: 30,
 		pruneAfterHours: 24,
 		maxActive: 8,
+	},
+	messaging: {
+		autoAnswer: false,
+		consultWindowSeconds: 90,
 	},
 };
 
@@ -87,6 +104,11 @@ export async function loadConfig(cwd: string): Promise<DocketConfig> {
 			...DEFAULT_CONFIG.worker,
 			...withoutRemovedTmuxKeys(globalConfig.worker),
 			...withoutRemovedTmuxKeys(projectConfig.worker),
+		},
+		messaging: {
+			...DEFAULT_CONFIG.messaging,
+			...(globalConfig.messaging && typeof globalConfig.messaging === "object" ? globalConfig.messaging : {}),
+			...(projectConfig.messaging && typeof projectConfig.messaging === "object" ? projectConfig.messaging : {}),
 		},
 		...(migrationWarnings.length ? { migrationWarnings } : {}),
 	};

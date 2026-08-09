@@ -45,8 +45,13 @@ export function isWorkerStatusArtifact(artifact: Artifact | undefined): boolean 
 	return artifact.meta?.workerStatus !== undefined || artifact.ref.startsWith("worker-status:") || artifact.displayId === "status" || artifact.id === "status";
 }
 
+/** A notice is something the worker shared in passing; it is never its answer. */
+export function isWorkerNoticeArtifact(artifact: Artifact): boolean {
+	return artifact.meta?.workerNotice === true;
+}
+
 export function workerAnswerArtifacts(artifacts: Artifact[]): Artifact[] {
-	return artifacts.filter((artifact) => !isWorkerStatusArtifact(artifact));
+	return artifacts.filter((artifact) => !isWorkerStatusArtifact(artifact) && !isWorkerNoticeArtifact(artifact));
 }
 
 export function extractWorkerRecommendations(text: string | undefined, max = 6): string[] {
@@ -118,7 +123,7 @@ export function projectWorkerReview(
 	const result = workerResultArtifactFromReview(worker, artifacts, deliverable);
 	const resultIsStatus = isWorkerStatusArtifact(result);
 	const summary = firstWorkerReviewLine(
-		state === "needs_input" ? questionText :
+		state === "needs_input" || state === "consulting" ? questionText :
 		state === "failed" ? worker.lastError ?? failure?.title ?? failure?.body :
 		deliverable?.summary ?? worker.summary ?? answer?.title ?? answer?.body ?? workerTodoSummary(worker) ?? workerDisplayName(worker),
 	) ?? workerDisplayName(worker);
@@ -154,7 +159,7 @@ function metaString(artifact: Artifact, key: string): string | undefined {
 
 export function artifactWorkerStatus(artifact: Artifact): WorkerDerivedState | undefined {
 	const status = artifactMeta(artifact).workerStatus;
-	if (status === "needs_input" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle" || status === "reviewed") return status;
+	if (status === "needs_input" || status === "consulting" || status === "ready" || status === "ready_open_todos" || status === "failed" || status === "stale" || status === "starting" || status === "thinking" || status === "empty" || status === "idle" || status === "reviewed") return status;
 	if (artifactMeta(artifact).workerDeliverable === true) return "ready";
 	return undefined;
 }
@@ -189,7 +194,7 @@ function bodyMessageSection(body: string | undefined): string | undefined {
 export function workerArtifactSummaryText(artifact: Artifact): string | undefined {
 	if (artifactMeta(artifact).workerDeliverable === true) return metaString(artifact, "summary") ?? firstWorkerReviewLine(artifact.body);
 	const status = artifactWorkerStatus(artifact);
-	if (status === "needs_input") return metaString(artifact, "question") ?? bodyMessageSection(artifact.body);
+	if (status === "needs_input" || status === "consulting") return metaString(artifact, "question") ?? bodyMessageSection(artifact.body);
 	if (status === "ready" || status === "ready_open_todos") return metaString(artifact, "summary") ?? bodyMessageSection(artifact.body);
 	if (status === "failed") return metaString(artifact, "lastError") ?? bodyMessageSection(artifact.body);
 	if (artifact.source) return bodyMessageSection(artifact.body) ?? stripWorkerStatePrefix(artifact.title, artifactWorkerRef(artifact));

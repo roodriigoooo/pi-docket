@@ -24,13 +24,15 @@ test("worker runtime registers protocol behavior without parent watch", async ()
 		registerGuardrailsAndProtocol: () => calls.push("guardrails-and-tools"),
 		startHeartbeat: () => calls.push("start-heartbeat"),
 		stopHeartbeat: () => { calls.push("stop-heartbeat"); },
+		startMailbox: () => calls.push("start-mailbox"),
+		stopMailbox: () => { calls.push("stop-mailbox"); },
 	});
 
 	runtime.register();
 	runtime.onSessionStart();
 	await runtime.onSessionShutdown();
 
-	assert.deepEqual(calls, ["guardrails-and-tools", "start-heartbeat", "stop-heartbeat"]);
+	assert.deepEqual(calls, ["guardrails-and-tools", "start-heartbeat", "start-mailbox", "stop-mailbox", "stop-heartbeat"]);
 });
 
 test("non-worker runtime registers no protocol tools or timers", async () => {
@@ -39,6 +41,8 @@ test("non-worker runtime registers no protocol tools or timers", async () => {
 		registerGuardrailsAndProtocol: () => calls.push("guardrails"),
 		startHeartbeat: () => calls.push("start"),
 		stopHeartbeat: () => { calls.push("stop"); },
+		startMailbox: () => calls.push("start-mailbox"),
+		stopMailbox: () => { calls.push("stop-mailbox"); },
 	});
 
 	runtime.register();

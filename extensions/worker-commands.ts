@@ -1,4 +1,4 @@
-import { workerLaunchDetail, workerLaunchSubject, workerQuestions, workerShortLabel, workerSummaryName, type WorkerStatus } from "./background-work.js";
+import { workerLaunchDetail, workerLaunchSubject, workerQuestions, workerShortLabel, workerSummaryName, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import { readGitSnapshot } from "./git-context.js";
 import type { LoadedArtifactContext } from "./loaded-artifact-context.js";
 import type { ArtifactKind } from "./types.js";
@@ -7,11 +7,24 @@ import { workerKindCompatibility } from "./worker-kinds.js";
 import { formatWorkerLaunchSummary, resolveWorkerSpawnPolicy, type WorkerExecutionModel, type WorkerThinking } from "./worker-spawn-policy.js";
 import { explicitExtensionArgs, workerProjectKey, type WorkerStore } from "./worker-store.js";
 import type { WorkerHandoffProvenance } from "./worker-deliverable.js";
+import type { WorkerMessageDeliverAs, WorkerMessageTransport } from "./worker-mailbox.js";
 
 export type WorkerCompletionCandidate = { value: string; label: string };
 
+export type WorkerTellOptions = {
+	/** Question id this reply resolves. Other open questions stay open. */
+	replyTo?: string;
+	/** Where the message lands in the worker's loop; defaults to steering the current turn. */
+	deliverAs?: WorkerMessageDeliverAs;
+};
+
 type NotifyLevel = "info" | "warning" | "error";
 type DocketMessageKind = "list" | "success" | "action";
+
+export type WorkerAnnounceMeta = {
+	workerId?: string;
+	sentMessage?: { workerId: string; workerLabel: string; messageId: string; transport: WorkerMessageTransport };
+};
 
 type WorkerCommandsDeps = {
 	store: WorkerStore;
@@ -28,10 +41,12 @@ type WorkerCommandsDeps = {
 	defaultKind?(): string | undefined;
 	/** Default parent-seed policy when neither spawn flags nor legacy kind metadata set one. */
 	parentSeedPolicy?(): "full" | "none" | undefined;
+	/** Absolute bulletin path, when this project has standing notes worth pointing a worker at. */
+	bulletinPath?(): string | undefined;
 	hasUI: boolean;
 	confirmSpawn(title: string, detail: string): Promise<boolean>;
 	notify(text: string, level: NotifyLevel): void;
-	announce(subject: string, detail?: string, kind?: DocketMessageKind, docket?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: { workerId: string }): void;
+	announce(subject: string, detail?: string, kind?: DocketMessageKind, docket?: { kind: ArtifactKind; title: string; subtitle?: string }, meta?: WorkerAnnounceMeta): void;
 	emitText(text: string, kind: "list", heading: string): void;
 };
 
@@ -51,7 +66,7 @@ export type WorkerCommandSpawnOptions = {
 
 export type WorkerCommands = {
 	spawn(task: string, options?: WorkerCommandSpawnOptions): Promise<WorkerStatus | undefined>;
-	tell(ref: string, text: string): Promise<boolean | void>;
+	tell(ref: string, text: string, options?: WorkerTellOptions): Promise<boolean | void>;
 	list(options?: { allProjects?: boolean }): Promise<void>;
 	listKinds(): Promise<void>;
 	delete(ref: string | undefined): Promise<void>;
@@ -84,11 +99,17 @@ export async function workerCompletionCandidates(store: WorkerStore, options: { 
 	}
 }
 
-function formatWorkerTell(worker: WorkerStatus, text: string): string {
+/**
+ * Which question this reply answers.
+ *
+ * An explicit id wins. With exactly one question open the binding is unambiguous, so it is
+ * inferred; with several it is not, and guessing would resolve a question nobody answered. An
+ * unbound reply is a redirection — the worker resumes and re-asks anything still blocking it.
+ */
+export function resolveAnsweredQuestion(worker: WorkerStatus, replyTo?: string): WorkerQuestion | undefined {
 	const questions = workerQuestions(worker);
-	if (questions.length === 0) return `Parent message: ${text}`;
-	const questionList = questions.map((question, index) => `${index + 1}) ${question.text}`).join(" ");
-	return `Parent message for ${questions.length} question${questions.length === 1 ? "" : "s"}: ${questionList} Message: ${text}`;
+	if (replyTo) return questions.find((question) => question.id === replyTo);
+	return questions.length === 1 ? questions[0] : undefined;
 }
 
 function formatWorkerList(workers: WorkerStatus[], options: { groupByProject?: boolean } = {}): string {
@@ -199,9 +220,11 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 
 				const kind = policy.kind;
 				const git = readGitSnapshot(deps.cwd);
+				const bulletinPath = deps.bulletinPath?.();
 				const worker = await deps.store.spawn({
 					task,
 					cwd: deps.cwd,
+					...(bulletinPath ? { bulletinPath } : {}),
 					...(policy.seedSource ? { parentSession: policy.seedSource } : {}),
 					worktree: policy.useWorktree,
 					...(policy.freshLaunch ? { fresh: true } : {}),
@@ -232,21 +255,35 @@ export function createWorkerCommands(deps: WorkerCommandsDeps): WorkerCommands {
 				return undefined;
 			}
 		},
-		async tell(ref: string, text: string): Promise<boolean> {
+		async tell(ref: string, text: string, options: WorkerTellOptions = {}): Promise<boolean> {
 			const worker = await deps.store.find(ref);
 			if (!worker) {
 				deps.notify("Docket worker not found", "error");
 				return false;
 			}
-			const sent = await deps.store.sendInput(worker.id, formatWorkerTell(worker, text));
-			if (sent) deps.announce(
-				`told ${workerShortLabel(worker.index)}`,
+			const label = workerShortLabel(worker.index);
+			const question = resolveAnsweredQuestion(worker, options.replyTo);
+			const result = await deps.store.sendMessage(worker.id, {
+				body: text,
+				...(question ? { replyTo: question.id, replyToText: question.text } : {}),
+				...(options.deliverAs ? { deliverAs: options.deliverAs } : {}),
+			});
+			if (!result.ok) {
+				deps.notify(result.reason === "empty"
+					? `Docket: nothing to send to ${label}`
+					: `Docket could not send message to ${label}`, "error");
+				return false;
+			}
+			// The subject is deliberately not "told": nothing has been observed yet. The chip
+			// re-reads the message and advances to delivered/read on its own.
+			deps.announce(
+				`tell ${label} · ${result.transport === "tmux" ? "sent to terminal · receipt unconfirmed" : "queued"}`,
 				text,
 				"success",
-				{ kind: "prompt", title: `tell ${workerShortLabel(worker.index)}`, subtitle: workerSummaryName(worker) },
+				{ kind: "prompt", title: `tell ${label}`, subtitle: workerSummaryName(worker) },
+				{ sentMessage: { workerId: worker.id, workerLabel: label, messageId: result.message.id, transport: result.transport } },
 			);
-			else deps.notify(`Docket could not send message to ${workerShortLabel(worker.index)}`, "error");
-			return sent;
+			return true;
 		},
 		async list(options: { allProjects?: boolean } = {}): Promise<void> {
 			const projectRoot = options.allProjects ? undefined : deps.projectRoot;

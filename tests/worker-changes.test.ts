@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { freezeWorkerChangeSet, promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
+import { freezeWorkerChangeSet, patchStillAppliesAfter, promoteWorkerChangeSet, workerChangeSetArtifact } from "../extensions/worker-changes.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
 import { createWorkerWorkspace } from "../extensions/worker-store.js";
 
@@ -76,6 +76,40 @@ test("freezing a deliverable fails instead of hiding workspace staging errors", 
 
 		assert.throws(() => freezeWorkerChangeSet(worker(repo.root, repo.workerPath, repo.head), 1), /git add -A failed/);
 		await rm(lock, { force: true });
+	} finally {
+		await repo.cleanup();
+	}
+});
+
+test("git is asked whether the other worker's patch survives this promotion", async () => {
+	const repo = await makeRepo();
+	try {
+		await writeFile(path.join(repo.root, "app.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
+		git(repo.root, ["commit", "-am", "grow"]);
+
+		const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const patchFor = async (body: string): Promise<string> => {
+			const scratch = await mkdtemp(path.join(os.tmpdir(), "docket-patch-"));
+			try {
+				await writeFile(path.join(scratch, "app.txt"), body, "utf8");
+				const result = spawnSync("git", ["diff", "--no-index", "--", path.join(repo.root, "app.txt"), path.join(scratch, "app.txt")], { encoding: "utf8" });
+				return result.stdout
+					.replace(new RegExp(escape(path.join(repo.root, "app.txt")), "g"), "a/app.txt")
+					.replace(new RegExp(escape(path.join(scratch, "app.txt")), "g"), "b/app.txt");
+			} finally {
+				await rm(scratch, { recursive: true, force: true });
+			}
+		};
+
+		const mine = await patchFor("ONE\ntwo\nthree\nfour\nfive\nsix\n");
+		const apart = await patchFor("one\ntwo\nthree\nfour\nfive\nSIX\n");
+		const same = await patchFor("1\ntwo\nthree\nfour\nfive\nsix\n");
+
+		assert.equal(patchStillAppliesAfter(repo.root, mine, apart), true, "edits in different regions both land");
+		assert.equal(patchStillAppliesAfter(repo.root, mine, same), false, "two rewrites of one line cannot both land");
+		// A first patch that does not apply means the base already moved, and the question about
+		// the second cannot be put honestly.
+		assert.equal(patchStillAppliesAfter(repo.root, same.replace("one", "nine"), apart), undefined);
 	} finally {
 		await repo.cleanup();
 	}

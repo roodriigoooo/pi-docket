@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dockEventSubLine, dockRowsForRender, NEEDS_INPUT_AGING_WARN_MS, pickModelBadge, shortModelLabel, workerActivityRows, WORKER_SILENCE_WARN_MS } from "../extensions/worker-activity.js";
+import { DOCK_GUTTER, dockColumns, dockEventSubLine, dockRowCells, dockRowsForRender, dockSettledLine, NEEDS_INPUT_AGING_WARN_MS, partitionDockRows, pickModelBadge, shortModelLabel, workerActivityRows, WORKER_SILENCE_WARN_MS } from "../extensions/worker-activity.js";
 import type { WorkerStatus } from "../extensions/background-work.js";
+import type { Artifact } from "../extensions/types.js";
 import type { WorkerEvent } from "../extensions/worker-events.js";
 
 function makeWorker(partial: Partial<WorkerStatus> & { id: string; index: number; state?: WorkerStatus["state"] }): WorkerStatus {
@@ -87,6 +88,21 @@ test("dockEventSubLine returns undefined for non-thinking states", () => {
 	assert.equal(dockEventSubLine(events, "failed"), undefined);
 });
 
+test("a moved base outranks state hints and yields to an untaken message", () => {
+	const now = Date.parse("2026-05-01T00:10:00.000Z");
+	const stale = "base moved · 1 file it works on landed since it started";
+	const queued = { id: "msg-1", kind: "directive" as const, from: "human" as const, body: "x", deliverAs: "steer" as const, createdAt: "2026-05-01T00:09:00.000Z", delivery: "queued" as const };
+
+	// Above the state hints: those describe what a worker is doing, this describes whether what
+	// it is doing still holds.
+	assert.equal(dockEventSubLine([], "consulting", { now, staleLine: stale }), stale);
+	assert.equal(dockEventSubLine([], "thinking", { now, staleLine: stale }), stale);
+	// Below an untaken message: there the human already acted and nothing has happened yet.
+	assert.equal(dockEventSubLine([], "thinking", { now, staleLine: stale, messages: [queued] }), "1 message queued · not taken yet");
+	// And silent when nothing landed.
+	assert.equal(dockEventSubLine([], "consulting", { now }), "asking the parent agent · escalates to you if unanswered");
+});
+
 test("dockEventSubLine warns on silent active workers", () => {
 	const now = Date.parse("2026-05-01T00:10:00.000Z");
 	const oldTool: WorkerEvent = { ts: now - WORKER_SILENCE_WARN_MS - 60_000, kind: "tool", payload: { tool: "read", target: "src/auth.ts" } };
@@ -133,6 +149,120 @@ test("dockRowsForRender keeps loaded ready workers reviewable", () => {
 	assert.equal(dock[0]!.attention, true);
 	assert.equal(dock[0]!.loaded, true);
 	assert.equal(dock[0]!.chip, "f8 verdict");
+});
+
+function editArtifact(id: string, path: string): Artifact {
+	return { id, displayId: id, ref: `file:${id}`, kind: "file", title: `edit ${path}`, subtitle: "", body: "", timestamp: 0, meta: { tool: "edit", args: { path } } };
+}
+
+test("a settled worker leaves the dock and the fold stands for it", () => {
+	const reviewed = makeWorker({ id: "a", index: 1, state: "ended", updatedAt: "2026-05-01T00:00:00.000Z" });
+	reviewed.reviewedAt = "2026-05-01T00:01:00.000Z";
+	reviewed.artifactCount = 3;
+	const stopped = makeWorker({ id: "b", index: 2, state: "ended" });
+	stopped.artifactCount = 2;
+	const ready = makeWorker({ id: "c", index: 3, state: "ready" });
+
+	const dock = dockRowsForRender(workerActivityRows([reviewed, stopped, ready]));
+	const { visible, settled } = partitionDockRows(dock);
+
+	assert.deepEqual(visible.map((row) => row.label), ["w3"], "only the row with a decision left on it stays");
+	assert.deepEqual(settled.map((row) => row.label).sort(), ["w1", "w2"]);
+	assert.equal(dockSettledLine(settled.length), "2 settled · f8");
+	assert.equal(dockSettledLine(0), undefined, "nothing folded says nothing");
+});
+
+test("a message the worker never took un-settles its row", () => {
+	const now = Date.parse("2026-05-01T00:10:00.000Z");
+	const reviewed = makeWorker({ id: "a", index: 1, state: "ended" });
+	reviewed.reviewedAt = "2026-05-01T00:01:00.000Z";
+	reviewed.artifactCount = 3;
+	const queued = { id: "msg-1", kind: "directive" as const, from: "human" as const, body: "x", deliverAs: "steer" as const, createdAt: "2026-05-01T00:09:00.000Z", delivery: "queued" as const };
+
+	const rows = workerActivityRows([reviewed], new Map(), { now });
+	const quiet = dockRowsForRender(rows, { now });
+	const holding = dockRowsForRender(rows, { now, messagesByWorker: new Map([[reviewed.id, [queued]]]) });
+
+	assert.equal(quiet[0]!.settled, true);
+	assert.equal(holding[0]!.settled, false, "the human acted and nothing happened: that is not settled");
+});
+
+test("a recorded verdict outranks an overlap warning and a moved base", () => {
+	const now = Date.parse("2026-05-01T00:10:00.000Z");
+	const reviewed = makeWorker({ id: "a", index: 1, state: "ended" });
+	reviewed.reviewedAt = "2026-05-01T00:01:00.000Z";
+	reviewed.artifactCount = 3;
+	const peer = makeWorker({ id: "b", index: 2, state: "ready" });
+	const artifacts = new Map<string, Artifact[]>([
+		[reviewed.id, [editArtifact("a1", "src/api/limit.ts")]],
+		[peer.id, [editArtifact("b1", "src/api/limit.ts")]],
+	]);
+
+	const rows = workerActivityRows([reviewed, peer], artifacts, { now });
+	const stale = "base moved · 1 file it works on landed since it started";
+	const dock = dockRowsForRender(rows, { now, staleLineByWorker: new Map([[reviewed.id, stale], [peer.id, stale]]) });
+	const byLabel = new Map(dock.map((row) => [row.label, row]));
+
+	assert.equal(byLabel.get("w1")!.progressLabel, "reviewed", "nothing left to warn about once the verdict is recorded");
+	assert.match(byLabel.get("w2")!.progressLabel, /^overlap w1/, "the undecided peer still gets the warning");
+	assert.equal(byLabel.get("w1")!.eventLine, undefined, "a moved base cannot change a decision already made");
+	assert.equal(byLabel.get("w2")!.eventLine, stale);
+});
+
+test("dockColumns sizes every column to its widest cell", () => {
+	const short = makeWorker({ id: "a", index: 1, state: "ready", kind: "scout" });
+	const long = makeWorker({ id: "b", index: 2, state: "ready", kind: "implementer" });
+	const dock = dockRowsForRender(workerActivityRows([short, long]));
+	const columns = dockColumns(dock, 110);
+
+	assert.equal(columns.label, "w2·implementer".length);
+	assert.equal(columns.state, "ready".length);
+	assert.equal(columns.chip, "f8 verdict".length);
+	assert.equal(columns.task > 0, true);
+	const spent = 2 + [columns.label, columns.state, columns.meta, columns.age, columns.chip].reduce((acc, c) => c > 0 ? acc + c + DOCK_GUTTER : acc, 0);
+	assert.equal(spent + columns.task, 110, "columns and separators account for the full width");
+});
+
+test("dockColumns gives back the secondary columns first and the task last", () => {
+	const worker = makeWorker({ id: "a", index: 1, state: "ready", kind: "implementer" });
+	worker.todos = [{ id: "a", text: "read", state: "completed" }, { id: "b", text: "patch", state: "pending" }];
+	const dock = dockRowsForRender(workerActivityRows([worker]));
+
+	const wide = dockColumns(dock, 110);
+	assert.equal(wide.meta > 0 && wide.state > 0 && wide.chip > 0, true, "everything fits with room to spare");
+	assert.equal(dockColumns(dock, 60).meta, 0, "meta goes first");
+	assert.equal(dockColumns(dock, 44).state, 0, "then the state word");
+	assert.equal(dockColumns(dock, 36).chip, 0, "then the chip");
+	// Below that only the label gives ground, and the task text never disappears: a bare `w1` is
+	// never allowed to be the only handle on a row.
+	const cramped = dockColumns(dock, 24);
+	assert.equal(cramped.label, 5);
+	assert.equal(cramped.task > 0, true);
+});
+
+test("dockRowCells keeps liveness and lifecycle in one cell each", () => {
+	const gone = makeWorker({ id: "a", index: 1, state: "ready" });
+	gone.paneCapturedAt = "2026-05-01T00:05:00.000Z";
+	const dock = dockRowsForRender(workerActivityRows([gone]));
+
+	assert.equal(dockRowCells(dock[0]!).state, "ready · gone");
+});
+
+test("a worker with a backlog says how many questions, not just that it needs a reply", () => {
+	const one = makeWorker({ id: "a", index: 1, state: "needs_input" });
+	one.questions = [{ id: "q1", text: "Required or optional?", createdAt: "2026-05-01T00:01:00.000Z" }];
+	const several = makeWorker({ id: "b", index: 2, state: "needs_input" });
+	several.questions = [
+		{ id: "q1", text: "Required or optional?", createdAt: "2026-05-01T00:01:00.000Z" },
+		{ id: "q2", text: "Confirm the signature.", createdAt: "2026-05-01T00:02:00.000Z" },
+		{ id: "q3", text: "Which option?", createdAt: "2026-05-01T00:03:00.000Z" },
+	];
+
+	const dock = dockRowsForRender(workerActivityRows([one, several]));
+	const byLabel = new Map(dock.map((row) => [row.label, row]));
+
+	assert.equal(byLabel.get("w1")!.progressLabel, "needs reply");
+	assert.equal(byLabel.get("w2")!.progressLabel, "3 questions", "one decision and three read differently to a human budgeting time");
 });
 
 test("dockRowsForRender exposes kindLabel for non-default kinds", () => {

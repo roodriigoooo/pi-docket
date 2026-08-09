@@ -12,18 +12,33 @@ function metaArgs(artifact: Artifact): Record<string, unknown> {
 	return args && typeof args === "object" ? args as Record<string, unknown> : {};
 }
 
-function normalizeFilePath(value: string | undefined): string | undefined {
+/**
+ * Where a worker's absolute paths are rooted, so they can be compared with everybody else's.
+ *
+ * Tools record a path however the worker happened to write it: a frozen change set is always
+ * repo-relative, but a live `edit` call is often the absolute path inside the worker's own
+ * workspace. Left as-is those two never intersect, so a worker that is still running silently
+ * overlaps with nobody — which is exactly the case the human most needs to see.
+ */
+export function workerFileRoot(worker: Pick<WorkerStatus, "cwd" | "worktree">): string | undefined {
+	const root = worker.worktree?.path ?? worker.cwd;
+	return root ? root.replace(/\\/g, "/").replace(/\/+$/, "") : undefined;
+}
+
+function normalizeFilePath(value: string | undefined, root?: string): string | undefined {
 	const trimmed = value?.trim();
 	if (!trimmed) return undefined;
-	return trimmed.replace(/\\/g, "/").replace(/^\.\//, "");
+	const slashed = trimmed.replace(/\\/g, "/").replace(/^\.\//, "");
+	if (root && slashed.startsWith(`${root}/`)) return slashed.slice(root.length + 1);
+	return slashed;
 }
 
-function filePathFromTitle(title: string): string | undefined {
+function filePathFromTitle(title: string, root?: string): string | undefined {
 	const match = title.match(/^(?:edit|write)\s+(.+)$/);
-	return normalizeFilePath(match?.[1]);
+	return normalizeFilePath(match?.[1], root);
 }
 
-function editedFileFromArtifact(artifact: Artifact): string | undefined {
+function editedFileFromArtifact(artifact: Artifact, root?: string): string | undefined {
 	if (artifact.kind !== "file") return undefined;
 	const tool = artifact.meta?.tool;
 	if (tool !== "edit" && tool !== "write") return undefined;
@@ -33,37 +48,37 @@ function editedFileFromArtifact(artifact: Artifact): string | undefined {
 		: typeof args.file === "string"
 			? args.file
 			: undefined;
-	return normalizeFilePath(raw) ?? filePathFromTitle(artifact.title);
+	return normalizeFilePath(raw, root) ?? filePathFromTitle(artifact.title, root);
 }
 
-function changedFilesFromArtifact(artifact: Artifact): string[] {
+function changedFilesFromArtifact(artifact: Artifact, root?: string): string[] {
 	const changed = artifact.meta?.changedFiles;
 	if (!Array.isArray(changed)) return [];
 	return changed
-		.map((entry) => entry && typeof entry === "object" && typeof (entry as { path?: unknown }).path === "string" ? normalizeFilePath((entry as { path: string }).path) : undefined)
+		.map((entry) => entry && typeof entry === "object" && typeof (entry as { path?: unknown }).path === "string" ? normalizeFilePath((entry as { path: string }).path, root) : undefined)
 		.filter((file): file is string => file !== undefined);
 }
 
 /** Files from an immutable deliverable patch, if present. */
-export function workerFrozenChangedFiles(artifacts: Artifact[]): string[] {
+export function workerFrozenChangedFiles(artifacts: Artifact[], root?: string): string[] {
 	const files = new Set<string>();
 	for (const artifact of artifacts) {
 		const frozen = artifact.meta?.workerChangeSet === true
 			&& (typeof artifact.meta?.deliverableRef === "string" || typeof artifact.meta?.deliverableVersion === "number");
 		if (!frozen) continue;
-		for (const changed of changedFilesFromArtifact(artifact)) files.add(changed);
+		for (const changed of changedFilesFromArtifact(artifact, root)) files.add(changed);
 	}
 	return [...files].sort();
 }
 
-export function workerEditedFiles(artifacts: Artifact[]): string[] {
-	const frozen = workerFrozenChangedFiles(artifacts);
+export function workerEditedFiles(artifacts: Artifact[], root?: string): string[] {
+	const frozen = workerFrozenChangedFiles(artifacts, root);
 	if (frozen.length > 0) return frozen;
 	const files = new Set<string>();
 	for (const artifact of artifacts) {
-		const edited = editedFileFromArtifact(artifact);
+		const edited = editedFileFromArtifact(artifact, root);
 		if (edited) files.add(edited);
-		for (const changed of changedFilesFromArtifact(artifact)) files.add(changed);
+		for (const changed of changedFilesFromArtifact(artifact, root)) files.add(changed);
 	}
 	return [...files].sort();
 }
@@ -72,7 +87,7 @@ export function workerConflictMap(workers: WorkerStatus[], artifactsByWorker: Ma
 	const filesByWorker = new Map<string, Set<string>>();
 	const workersByFile = new Map<string, WorkerStatus[]>();
 	for (const worker of workers) {
-		const files = new Set(workerEditedFiles(artifactsByWorker.get(worker.id) ?? []));
+		const files = new Set(workerEditedFiles(artifactsByWorker.get(worker.id) ?? [], workerFileRoot(worker)));
 		filesByWorker.set(worker.id, files);
 		for (const file of files) workersByFile.set(file, [...(workersByFile.get(file) ?? []), worker]);
 	}
@@ -97,10 +112,15 @@ export function workerConflictMap(workers: WorkerStatus[], artifactsByWorker: Ma
 	return out;
 }
 
-export function conflictSummary(conflicts: WorkerFileConflict[], maxFiles = 2): string | undefined {
+/**
+ * `shortPaths` is for glance surfaces: the dock says which worker and roughly what, and the card
+ * it points at says exactly. A path cut mid-directory to fit a column tells the human neither.
+ */
+export function conflictSummary(conflicts: WorkerFileConflict[], maxFiles = 2, options: { shortPaths?: boolean } = {}): string | undefined {
 	if (conflicts.length === 0) return undefined;
 	const first = conflicts[0]!;
-	const files = first.files.slice(0, maxFiles).join(", ");
+	const shown = options.shortPaths ? first.files.map((file) => file.slice(file.lastIndexOf("/") + 1)) : first.files;
+	const files = shown.slice(0, maxFiles).join(", ");
 	const moreFiles = first.files.length > maxFiles ? ` +${first.files.length - maxFiles}` : "";
 	const moreWorkers = conflicts.length > 1 ? ` +${conflicts.length - 1} worker${conflicts.length === 2 ? "" : "s"}` : "";
 	return `overlap ${first.workerLabel}${files ? `: ${files}${moreFiles}` : ""}${moreWorkers}`;

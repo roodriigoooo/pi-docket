@@ -24,6 +24,14 @@ function sameWorkerDeliverablePointer(a: WorkerDeliverablePointer | undefined, b
 export const WORKER_STALE_AFTER_MS = 90_000;
 
 /**
+ * How long a worker that is not `starting`/`active`/`idle` may go without a heartbeat before the
+ * parent stops calling it running. Deliberately looser than staleness: `stale` is a warning about
+ * a worker that should be working, while this is a statement about a process, and stating that
+ * wrongly is worse than stating it late.
+ */
+export const WORKER_GONE_AFTER_MS = WORKER_STALE_AFTER_MS * 2;
+
+/**
  * Liveness, not progress. `updatedAt` only moves when something about the worker changed, so a
  * healthy worker reasoning through one long turn looks frozen by that measure; its heartbeat is
  * what proves the process is still there. Statuses written before heartbeats existed fall back
@@ -37,12 +45,63 @@ function lastSignalAt(worker: WorkerStatus): number {
 	return Math.max(updated, heartbeat);
 }
 
+/**
+ * A consult is not a persisted state: it is a `needs_input` question whose audience is the
+ * parent agent (ADR-0008). Keeping it out of `WorkerState` means every store-level transition,
+ * transport, and reply path carries it unchanged, and escalation is a field flip rather than a
+ * lifecycle move — which is why turning the feature off can never strand a blocked worker.
+ */
+function hasPendingConsult(worker: WorkerStatus): boolean {
+	return (worker.questions ?? []).some((question) => question.audience === "parent-agent" && !question.escalatedAt);
+}
+
+/**
+ * Did the worker hand something in? `docket_done` is the only writer of these fields, so this is
+ * the difference between a worker that finished and one whose process merely stopped existing.
+ * Artifact count cannot stand in for it: artifacts accumulate from the first file a worker reads.
+ */
+export function workerReportedDone(worker: WorkerStatus): boolean {
+	return Boolean(worker.deliverable || worker.outcome || worker.summary);
+}
+
+/**
+ * Whether a process is still there to act on anything, as distinct from what the work amounts to.
+ * Docket kept only the second fact, so a finished worker whose pi was quit went on presenting as
+ * live: the dock offered to tell it things, the card offered to steer it, and neither could work.
+ *
+ * `unknown` is not `live`. Statuses written before heartbeats existed have no proof either way,
+ * and a surface that treats absence of proof as presence is exactly the claim ADR-0008 removed
+ * from the transport.
+ */
+export type WorkerLiveness = "live" | "gone" | "unknown";
+
+export function workerLiveness(worker: WorkerStatus, now = Date.now()): WorkerLiveness {
+	if (worker.exitedAt) return "gone";
+	if (worker.state === "ended" || worker.state === "error" || worker.state === "failed") return "gone";
+	if (worker.paneCapturedAt) return "gone";
+	if (!worker.heartbeatAt) return "unknown";
+	const beat = Date.parse(worker.heartbeatAt);
+	if (!Number.isFinite(beat)) return "unknown";
+	return now - beat > WORKER_GONE_AFTER_MS ? "gone" : "live";
+}
+
+/** True only when the parent has observed the worker leave. Never inferred from silence alone. */
+export function workerIsGone(worker: WorkerStatus | undefined, now = Date.now()): boolean {
+	return worker ? workerLiveness(worker, now) === "gone" : false;
+}
+
 export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
-	if (worker.state === "needs_input") return "needs_input";
+	if (worker.state === "needs_input") return hasPendingConsult(worker) ? "consulting" : "needs_input";
 	if (worker.reviewedAt && TERMINAL_STATES.has(worker.state)) return "reviewed";
 	if (worker.state === "failed" || worker.state === "error") return "failed";
 	if (worker.state === "ready") return "ready";
-	if (worker.state === "ended") return (worker.artifactCount ?? 0) === 0 ? "empty" : "ready";
+	// A process that exited is not a worker that finished. Only `docket_done` earns `ready`;
+	// everything else that stopped is `stopped`, which is a fact about the process and says
+	// nothing about work nobody handed in.
+	if (worker.state === "ended") {
+		if (workerReportedDone(worker)) return "ready";
+		return (worker.artifactCount ?? 0) === 0 ? "empty" : "stopped";
+	}
 	const ageMs = now - lastSignalAt(worker);
 	if (Number.isFinite(ageMs) && ageMs > WORKER_STALE_AFTER_MS) return "stale";
 	if (worker.state === "active") return "thinking";
@@ -52,7 +111,16 @@ export function deriveWorkerLifecycleState(worker: WorkerStatus, now = Date.now(
 
 export function isReviewableWorker(worker: WorkerStatus, now = Date.now()): boolean {
 	const state = deriveWorkerLifecycleState(worker, now);
-	return state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos";
+	return state === "needs_input" || state === "consulting" || state === "failed" || state === "ready" || state === "ready_open_todos" || state === "stopped";
+}
+
+/**
+ * Reviewable and worth interrupting for are different questions. A worker the human stopped is
+ * still openable — its evidence and its diff must not become unreachable — but it is not news,
+ * so it never colours the dock or earns a chip.
+ */
+export function isAttentionWorker(worker: WorkerStatus, now = Date.now()): boolean {
+	return isReviewableWorker(worker, now) && deriveWorkerLifecycleState(worker, now) !== "stopped";
 }
 
 export function isRespawnEligible(worker: WorkerStatus): boolean {
@@ -86,6 +154,8 @@ export function heartbeatTransition(input: { pid: number; sessionFile?: string; 
 			sessionFile: input.sessionFile,
 			artifactCount: input.artifactCount,
 			heartbeatAt: input.at ?? new Date().toISOString(),
+			// A beat is proof of life, so it retires any earlier observation that the worker left.
+			...(current.exitedAt ? { exitedAt: undefined } : {}),
 			...(input.model ? { model: input.model } : {}),
 			...(input.thinking ? { thinking: input.thinking } : {}),
 		};
@@ -139,6 +209,61 @@ export function protocolTransition(state: Exclude<WorkerProtocolState, "needs_in
 	};
 }
 
+/**
+ * Hand a consult back to the human. The question stays exactly where it was — same id, same
+ * text, same place in the backlog — so a reply still binds to it and the worker never learns a
+ * new protocol. Only the audience changes.
+ */
+export function consultEscalatedTransition(input: { questionId: string; reason?: string; at?: string }): WorkerTransition {
+	return (current) => {
+		const questions = current.questions ?? [];
+		const target = questions.find((question) => question.id === input.questionId);
+		if (!target || target.escalatedAt) return undefined;
+		const at = input.at ?? new Date().toISOString();
+		return {
+			questions: questions.map((question) => question.id === input.questionId
+				? { ...question, audience: "human" as const, escalatedAt: at, ...(input.reason ? { escalatedReason: input.reason } : {}) }
+				: question),
+		};
+	};
+}
+
+/**
+ * Applied when the worker's runtime has actually taken a message off its inbox — never when a
+ * transport merely accepted it (ADR-0008).
+ *
+ * A bound answer resolves the one question it names and leaves the rest open, so a worker with
+ * two questions and one answer stays blocked on the second instead of being recorded as fully
+ * answered. An unbound message is a redirection: the worker is being told what to do next, so
+ * its outstanding questions are cleared and it resumes.
+ *
+ * A terminal worker is left entirely alone. Its process may still be alive and willing to chat,
+ * but its published deliverable and pending verdict must survive the conversation. A
+ * non-redirecting message leaves every worker alone the same way.
+ */
+export function messageDeliveredTransition(input: { replyTo?: string; redirects?: boolean } = {}): WorkerTransition {
+	return (current) => {
+		if (TERMINAL_STATES.has(current.state)) return undefined;
+		// A broadcast is information, not direction: it must not resume a worker or clear the
+		// question it is still blocked on.
+		if (input.redirects === false) return undefined;
+		const resume: Partial<WorkerStatus> = { state: "active", question: undefined, questions: [], reviewedAt: undefined };
+		if (!input.replyTo) return resume;
+		const open = current.questions ?? [];
+		const remaining = open.filter((question) => question.id !== input.replyTo);
+		// Unknown id: the question is already gone, so treat it as a plain redirection rather
+		// than leaving the worker blocked on something nothing can answer.
+		if (remaining.length === open.length || remaining.length === 0) return resume;
+		return {
+			state: "needs_input",
+			question: remaining.length === 1 ? remaining[0]!.text : `${remaining.length} questions`,
+			questions: remaining,
+			reviewedAt: undefined,
+		};
+	};
+}
+
+/** Legacy tmux transport only: receipt is unobservable there, so the state moves on send. */
 export function parentReplyAcceptedTransition(before: Pick<WorkerStatus, "state" | "question" | "questions">): WorkerTransition {
 	return (current) => {
 		if (current.state !== before.state && TERMINAL_STATES.has(current.state)) return undefined;
@@ -155,7 +280,7 @@ export function verdictResolvedTransition(at: string, deliverable?: WorkerDelive
 }
 
 export function respawnStartedTransition(input: { tmuxSession: string; runToken: string; tmuxWindowId?: string; tmuxPaneId?: string }): WorkerTransition {
-	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, reviewedAt: undefined, deliverable: undefined, tmuxWindowId: input.tmuxWindowId, tmuxPaneId: input.tmuxPaneId });
+	return () => ({ state: "starting", tmuxSession: input.tmuxSession, runToken: input.runToken, paneCapturedAt: undefined, exitedAt: undefined, reviewedAt: undefined, deliverable: undefined, tmuxWindowId: input.tmuxWindowId, tmuxPaneId: input.tmuxPaneId });
 }
 
 export function respawnFailedTransition(message: string): WorkerTransition {

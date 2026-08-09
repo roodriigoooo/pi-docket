@@ -162,16 +162,18 @@ export function createScrollingKeymap(): DocketKeymap<ScrollKeyAction> {
 	]);
 }
 
-export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "next" | "help" | "progress" | "peek" | "open" | "load" | "tell" | "attach" | "stop";
+export type DashboardKeyAction = "close" | "down" | "up" | "top" | "bottom" | "settled" | "help" | "progress" | "peek" | "open" | "load" | "tell" | "attach" | "stop";
 
-export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | "details"; canLoad?: boolean } = {}): DocketKeymap<DashboardKeyAction> {
+export function createWorkerDashboardKeymap(options: { enterLabel?: "verdict" | "details"; canLoad?: boolean; hasSettled?: boolean } = {}): DocketKeymap<DashboardKeyAction> {
 	const bindings: KeyBinding<DashboardKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "down", slots: ["footer"] },
 		{ keys: ["k", "up"], action: "up", label: "up", slots: ["footer"] },
 		{ keys: "g", action: "top", label: "top" },
 		{ keys: "G", action: "bottom", label: "bottom" },
-		{ keys: "tab", action: "next", label: "next worker", slots: ["help"] },
+		// Same key, same meaning as the broadcast picker's hidden band: one press reveals what was
+		// folded. Offered only when something is folded, so the footer stays quiet otherwise.
+		...(options.hasSettled ? [{ keys: "tab", action: "settled", label: "settled", slots: ["footer"] } satisfies KeyBinding<DashboardKeyAction>] : []),
 		{ keys: "?", action: "help", label: "more", slots: ["footer"] },
 		{ keys: "t", action: "progress", label: "progress details", slots: ["help"] },
 		{ keys: "p", action: "peek", label: "peek", slots: ["footer"] },
@@ -226,9 +228,9 @@ export function createEvidenceBundleKeymap(): DocketKeymap<EvidenceBundleKeyActi
 	]);
 }
 
-export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
+export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "overlap" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
 
-export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean }): DocketKeymap<VerdictKeyAction> {
+export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean; hasOverlap?: boolean }): DocketKeymap<VerdictKeyAction> {
 	const bindings: KeyBinding<VerdictKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -245,6 +247,9 @@ export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCoun
 	if (options.hasChangeSet) {
 		bindings.push({ keys: "d", action: "diff", label: "full diff", slots: ["footer"] });
 		bindings.push({ keys: "h", action: "hunk", label: "Hunk review", slots: ["footer"] });
+		// Offered only when another worker is actually contesting these lines, the same way `d`
+		// and `h` appear only when there is a change set to open.
+		if (options.hasOverlap) bindings.push({ keys: "o", action: "overlap", label: "both diffs", slots: ["footer"] });
 	}
 	for (let index = 1; index <= Math.min(9, options.optionCount); index++) {
 		bindings.push({ keys: String(index), action: `option${index}` as VerdictKeyAction, label: "pick", slots: ["footer"] });

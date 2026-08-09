@@ -5,7 +5,7 @@ import { deriveWorkerLifecycleState, isPaneHarvestEligible } from "./worker-life
 import type { WorkerThinking } from "./worker-spawn-policy.js";
 
 export type WorkerState = "starting" | "active" | "idle" | "needs_input" | "ready" | "failed" | "error" | "ended";
-export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "ready_open_todos" | "ready" | "empty" | "failed" | "idle" | "reviewed";
+export type WorkerDerivedState = "starting" | "thinking" | "stale" | "needs_input" | "consulting" | "ready_open_todos" | "ready" | "stopped" | "empty" | "failed" | "idle" | "reviewed";
 export type WorkerProtocolState = "needs_input" | "ready" | "failed";
 export type WorkerTodoState = "pending" | "in_progress" | "completed";
 
@@ -45,6 +45,13 @@ export type WorkerQuestion = {
 	options?: string[];
 	/** Which option the worker recommends (matches one of `options`); pre-selected on the card. */
 	recommend?: string;
+	/** Who this question is for. `parent-agent` is the opt-in consult lane; absent means the human. */
+	audience?: "human" | "parent-agent";
+	/** Extra grounding the worker supplied with a consult. */
+	context?: string;
+	/** Set when a consult was handed back to the human; from then on it is an ordinary question. */
+	escalatedAt?: string;
+	escalatedReason?: string;
 };
 
 export type WorkerTaskDocumentInput = {
@@ -58,6 +65,9 @@ export type WorkerTaskDocumentInput = {
 	/** Human approved this exact plan and started this worker to execute it, so the gate
 	 * is discharged at launch instead of re-asked. Only meaningful with `sourceHandoff`. */
 	planAuthorized?: boolean;
+	/** Absolute path to the project journal, when one exists. Absolute because a worker in an
+	 * isolated worktree would otherwise read a stale copy of the file it most needs current. */
+	bulletinPath?: string;
 };
 
 export type WorkerWorkspaceKind = "git" | "copy";
@@ -95,6 +105,12 @@ export type WorkerStatus = {
 	/** Last proof-of-life from the worker process. Separate from `updatedAt`, which only moves
 	 * when something about the worker actually changed. */
 	heartbeatAt?: string;
+	/** When the worker's process was observed to leave. Written by the side that saw it go, and
+	 * kept apart from `state` so a reported outcome survives the session that produced it. */
+	exitedAt?: string;
+	/** Set by the worker once its inbox reader is live. Absent on builds that predate the
+	 * mailbox, which is how the parent knows to fall back to the tmux transport (ADR-0008). */
+	mailboxAt?: string;
 	state: WorkerState;
 	/** Unique launch generation; prevents an old process-exit hook from changing a respawned worker. */
 	runToken?: string;
@@ -179,12 +195,13 @@ export function workerMascotFrame(worker: WorkerStatus | undefined, options: { n
 		const frameTime = Number.isFinite(options.now) ? options.now! : Date.now();
 		return frames[Math.floor(frameTime / FRAME_INTERVAL_MS) % frames.length]!;
 	}
+	if (state === "consulting") return "(?_o)";
 	if (state === "needs_input") return "(?_?)";
 	if (state === "ready_open_todos") return "(^_?)";
 	if (state === "ready") return "(^_^)";
 	if (state === "failed") return "(x_x)";
 	if (state === "stale") return "(-_-)";
-	if (state === "empty") return "(-.-)";
+	if (state === "stopped" || state === "empty") return "(-.-)";
 	return "(._.)";
 }
 
@@ -206,12 +223,14 @@ export function workerActivityChip(worker: WorkerStatus, options: { verbose?: bo
 	const face = state === "starting" || state === "thinking" ? "" : workerMascotFrame(worker, options);
 	let chip = `${label}${kindTag}${face}`;
 	if (!options.verbose) return chip;
+	if (state === "consulting") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "consulting"))}`;
 	if (state === "needs_input") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "needs input"))}`;
 	if (state === "failed") return `${chip} ${truncateWorkerStatus(workerStatusText(worker, "failed"))}`;
 	if (state === "ready_open_todos") return `${chip} ready · progress ${workerTodoSummary(worker) ?? ""}`.trim();
 	if (state === "ready") return `${chip} ${truncateWorkerStatus(worker.summary ?? workerTodoSummary(worker) ?? workerStatusText(worker, "ready"))}`;
 	if (state === "reviewed") return `${chip} reviewed`;
 	if (state === "stale") return `${chip} stale`;
+	if (state === "stopped") return `${chip} stopped · did not report`;
 	if (state === "empty") return `${chip} done`;
 	return `${chip} ${truncateWorkerStatus(workerTodoSummary(worker) ?? workerDisplayName(worker, 28))}`;
 }
@@ -305,6 +324,7 @@ export function buildWorkerTaskDocument(input: WorkerTaskDocumentInput): string 
 		`- Kind: ${kind}`,
 		`- Workspace: ${input.worktree === false ? "parent working directory" : "isolated worker workspace"}`,
 		"- Parent reviews your output through `/docket verdict`; keep evidence concrete.",
+		input.bulletinPath ? `- Project journal: ${input.bulletinPath}. Read it before your first edit and whenever a plan gate opens; it carries decisions made and changes landed after you started, and your isolated workspace does not contain them.` : undefined,
 		input.sourceHandoff ? "" : undefined,
 		input.sourceHandoff ? (planDischarged ? "## Approved plan" : "## Reviewed source deliverable") : undefined,
 		planDischarged ? "- Read the sidecar before your first move; it is the specification for this task." : undefined,
@@ -469,21 +489,37 @@ export function workerQuestions(worker: WorkerStatus): WorkerQuestion[] {
 	return [];
 }
 
+/**
+ * The question a reply answers when the human does not name one: the **oldest** still open.
+ *
+ * A worker asks in the order it got stuck. Anything it asked afterwards is usually downstream of
+ * the first answer it never got — a restatement, or a question that only exists because the first
+ * one is unanswered. Answering newest-first therefore resolves the derivative and leaves the real
+ * question for last, which is what makes a drained backlog read as the same question coming back
+ * rephrased.
+ */
+export function openWorkerQuestion(worker: WorkerStatus): WorkerQuestion | undefined {
+	return workerQuestions(worker)[0];
+}
+
 export function deriveWorkerState(worker: WorkerStatus, now = Date.now()): WorkerDerivedState {
 	return deriveWorkerLifecycleState(worker, now);
 }
 
 export function workerStateRank(worker: WorkerStatus, now = Date.now()): number {
 	const state = deriveWorkerState(worker, now);
+	// A consult ranks just under a question: the human is not the blocker on it yet.
 	if (state === "needs_input") return 0;
-	if (state === "failed") return 1;
-	if (state === "ready_open_todos") return 2;
-	if (state === "ready") return 3;
-	if (state === "thinking") return 4;
-	if (state === "starting") return 5;
-	if (state === "stale") return 6;
-	if (state === "reviewed") return 8;
-	return 7;
+	if (state === "consulting") return 1;
+	if (state === "failed") return 2;
+	if (state === "ready_open_todos") return 3;
+	if (state === "ready") return 4;
+	if (state === "thinking") return 5;
+	if (state === "starting") return 6;
+	if (state === "stale") return 7;
+	if (state === "stopped") return 7;
+	if (state === "reviewed") return 9;
+	return 8;
 }
 
 export function isPromptDockWorker(worker: WorkerStatus, now = Date.now()): boolean {
@@ -557,8 +593,16 @@ export function workerProtocolPatch(worker: WorkerStatus, state: WorkerProtocolS
 	return patch;
 }
 
-export function workerProtocolResultText(state: WorkerProtocolState): string {
-	if (state === "needs_input") return "Docket wait recorded. Stop now and wait for parent reply.";
+export function workerProtocolResultText(state: WorkerProtocolState, openQuestions = 0): string {
+	if (state === "needs_input") {
+		// A worker that calls this while already blocked has not stopped, and is usually restating
+		// the question it is still waiting on. Every restatement becomes another card the human
+		// has to answer separately, so the result says exactly what the extra call cost.
+		if (openQuestions > 1) {
+			return `Docket wait recorded, but you were already waiting on ${openQuestions - 1} question${openQuestions === 2 ? "" : "s"}; this one was added, so the parent now has ${openQuestions} to answer separately and you will be unblocked later than if you had asked once. End your turn now — do not call this tool again, do not look for an inbox on disk, and do not keep working speculatively. The answer arrives as a message in this session and names the question it answers.`;
+		}
+		return "Docket wait recorded. End your turn now — stop generating, do not call this tool again, and do not look for the reply on disk. The parent's answer arrives as a message in this session.";
+	}
 	if (state === "ready") return "Docket done recorded. Parent can review the worker output.";
 	return "Docket failure recorded. Parent can review the failure.";
 }
@@ -582,18 +626,20 @@ export function workerProtocolMessage(state: WorkerProtocolState, text?: string)
 
 export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Artifact | undefined {
 	const state = deriveWorkerState(worker, now);
-	if (state !== "needs_input" && state !== "ready_open_todos" && state !== "ready" && state !== "failed") return undefined;
+	if (state !== "needs_input" && state !== "consulting" && state !== "ready_open_todos" && state !== "ready" && state !== "failed") return undefined;
 	const label = workerSourceLabel(worker);
 	const questions = workerQuestions(worker);
 	const questionText = questions.length ? questions.map((question, index) => `${index + 1}. ${question.text}`).join("\n") : undefined;
 	const ready = state === "ready" || state === "ready_open_todos";
-	const text = state === "needs_input" ? questionText : ready ? worker.summary : worker.lastError;
+	const blocked = state === "needs_input" || state === "consulting";
+	const text = blocked ? questionText : ready ? worker.summary : worker.lastError;
 	const todoLines = workerTodoBoardLines(worker, { includeHeader: true });
 	const progress = workerTodoProgress(worker);
 	const openTodos = Math.max(0, progress.total - progress.completed);
 	const git = gitSnapshotLabel(worker.git);
-	const title = state === "needs_input"
-		? questions.length > 1 ? `${label} needs input: ${questions.length} questions` : `${label} needs input${questions[0]?.text ? `: ${questions[0].text}` : ""}`
+	const blockedLabel = state === "consulting" ? "consulting" : "needs input";
+	const title = blocked
+		? questions.length > 1 ? `${label} ${blockedLabel}: ${questions.length} questions` : `${label} ${blockedLabel}${questions[0]?.text ? `: ${questions[0].text}` : ""}`
 		: ready
 			? `${label} ${state === "ready_open_todos" ? `ready · progress ${progress.completed}/${progress.total}` : "ready"}${text ? `: ${text}` : ""}`
 			: `${label} failed${text ? `: ${text}` : ""}`;
@@ -607,6 +653,33 @@ export function workerStatusArtifact(worker: WorkerStatus, now = Date.now()): Ar
 		body: [`worker: ${label}`, `state: ${state}`, worker.deliverable ? `deliverable: ${worker.deliverable.ref} (v${worker.deliverable.version})` : undefined, git ? `git: ${git}` : undefined, `task: ${worker.task}`, todoLines.length ? `progress:\n${todoLines.join("\n")}` : undefined, text ? `message:\n${text}` : undefined].filter((line): line is string => line !== undefined).join("\n"),
 		timestamp: Date.parse(worker.updatedAt),
 		meta: { workerId: worker.id, workerLabel: label, workerStatus: state, question: text, summary: worker.summary, outcome: worker.outcome, evidence: worker.evidence, recommended: worker.recommended, scopeConfidence: worker.scopeConfidence, lastError: worker.lastError, questionCount: questions.length, todoCount: worker.todos?.length ?? 0, todoOpenCount: openTodos, ...(worker.deliverable ? { deliverableId: worker.deliverable.id, deliverableVersion: worker.deliverable.version, deliverableRef: worker.deliverable.ref } : {}), git: worker.git },
+	};
+}
+
+/**
+ * A worker notice as a review item.
+ *
+ * Notices deliberately do not travel as parent session messages: a custom message participates
+ * in model context, and a notice is worker-authored content the human never asked for. As an
+ * artifact it costs nothing until the human opens or chips it, which is the same bargain every
+ * other piece of worker evidence makes (ADR-0008).
+ */
+export function workerNoticeArtifact(worker: WorkerStatus, notice: { id: string; body: string; createdAt: string; to?: string[] }): Artifact | undefined {
+	const body = notice.body.trim();
+	if (!body) return undefined;
+	const label = workerSourceLabel(worker);
+	const headline = body.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? body;
+	const addressed = notice.to?.length ? `suggested for ${notice.to.join(", ")}` : undefined;
+	return {
+		id: `notice.${notice.id}`,
+		displayId: `notice.${notice.id}`,
+		ref: `worker-notice:${worker.id}:${notice.id}`,
+		kind: "response",
+		title: `${label} shared: ${truncatePlain(headline, 80)}`,
+		subtitle: addressed ?? workerDisplayName(worker),
+		body: [`worker: ${label}`, `task: ${worker.task}`, addressed ? `addressed: ${notice.to!.join(", ")}` : undefined, "", body].filter((line): line is string => line !== undefined).join("\n"),
+		timestamp: Date.parse(notice.createdAt) || Date.parse(worker.updatedAt),
+		meta: { workerId: worker.id, workerLabel: label, workerNotice: true, noticeId: notice.id, ...(notice.to?.length ? { noticeTo: notice.to } : {}) },
 	};
 }
 

@@ -110,6 +110,39 @@ test("Docket worker dashboard stays useful across compact widths", () => {
 	}
 });
 
+test("Docket worker dashboard folds settled workers behind one keypress", () => {
+	const states: WorkerStatus[] = [
+		worker({ id: "ready", index: 1, state: "ready", task: "fix auth flake", summary: "done" }),
+		worker({ id: "reviewed", index: 2, state: "ended", task: "map session store call sites", reviewedAt: "2026-01-01T00:05:00.000Z", artifactCount: 3 }),
+		worker({ id: "stopped", index: 3, state: "ended", task: "draft the deploy runbook", artifactCount: 2 }),
+	];
+	const view = new DocketParallelWorkView(tui as never, theme, states, new Map(), () => {}, false, new Set());
+
+	const folded = view.render(120).join("\n");
+	assert.match(folded, /fix auth flake/, "the open decision is always on screen");
+	assert.doesNotMatch(folded, /map session store call sites/);
+	assert.doesNotMatch(folded, /draft the deploy runbook/);
+	assert.match(folded, /\+2 settled\s+tab to show/);
+	assert.match(folded, /Tab settled/, "the key is offered in the footer only while something is folded");
+
+	view.handleInput("\t");
+	const shown = view.render(120).join("\n");
+	assert.match(shown, /map session store call sites/);
+	assert.match(shown, /draft the deploy runbook/);
+	assert.match(shown, /settled \(2\)\s+tab to hide/);
+	// The group announces itself once, and does so below every row that still needs something.
+	assert.equal(shown.indexOf("fix auth flake") < shown.indexOf("settled (2)"), true);
+	assert.equal(shown.indexOf("settled (2)") < shown.indexOf("map session store call sites"), true);
+});
+
+test("Docket worker dashboard says nothing about a fold that is not there", () => {
+	const view = new DocketParallelWorkView(tui as never, theme, [worker({ state: "ready", summary: "done" })], new Map(), () => {}, false, new Set());
+	const rendered = view.render(120).join("\n");
+
+	assert.doesNotMatch(rendered, /settled/);
+	assert.doesNotMatch(rendered, /Tab/);
+});
+
 test("Docket worker progress lens routes Enter to verdict for decision rows", () => {
 	const w = worker({ state: "ready", summary: "done" });
 	let action: unknown;

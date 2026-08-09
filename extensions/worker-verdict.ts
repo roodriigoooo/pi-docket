@@ -1,4 +1,4 @@
-import { deriveWorkerState, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, type WorkerStatus } from "./background-work.js";
+import { deriveWorkerState, openWorkerQuestion, workerQuestions, workerShortLabel, workerSourceLabel, workerStatusArtifact, type WorkerStatus } from "./background-work.js";
 import type { DecisionRecord, DecisionVerb } from "./decision-log.js";
 import { sameWorkerDeliverablePointer, workerDeliverableArtifact, workerDeliverablePointer, type WorkerDeliverable } from "./worker-deliverable.js";
 import type { Artifact } from "./types.js";
@@ -10,7 +10,7 @@ import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./
 import { isReviewableWorker, verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use" | "save";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "overlap" | "send" | "report" | "use" | "save";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
 	deliverable?: WorkerDeliverable;
@@ -38,6 +38,8 @@ export type WorkerVerdictDeps = {
 	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
+	/** Read both workers' hunks for the paths they contest, then decide who yields. Never merges. */
+	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<void>;
 	markArtifactDone(artifact: Artifact): void;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	refreshWorkerDockWidget(): Promise<void>;
@@ -60,6 +62,7 @@ export function verdictCandidateRank(worker: WorkerStatus): number {
 	if (!isReviewableWorker(worker)) return 100;
 	const state = deriveWorkerState(worker);
 	if (state === "needs_input") return 0;
+	if (state === "consulting") return 1;
 	if (state === "failed") return 1;
 	if (state === "ready" || state === "ready_open_todos") return 2;
 	return 100;
@@ -100,7 +103,8 @@ const STATE_BOUND_VERBS = new Set<DocketVerdictAction["verb"]>(["accept", "rejec
  * answer to an already-finished worker and demote it out of `ready`.
  */
 function verdictFamily(worker: WorkerStatus): "answer" | "judgment" {
-	return deriveWorkerState(worker) === "needs_input" ? "answer" : "judgment";
+	const state = deriveWorkerState(worker);
+	return state === "needs_input" || state === "consulting" ? "answer" : "judgment";
 }
 
 function visibleDecisionContext(worker: WorkerStatus, changeSet: Artifact | undefined, deliverable?: WorkerDeliverable): { risk?: string; evidenceRefs: string[] } {
@@ -169,10 +173,21 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		}
 		const label = workerSourceLabel(latest);
 		const state = deriveWorkerState(latest);
+		// The card presents the oldest open question, so a reply from it answers that one and
+		// leaves any later question open instead of clearing the whole backlog.
+		const answering = state === "needs_input" || state === "consulting" ? openWorkerQuestion(latest) : undefined;
+		const stillOpen = Math.max(0, workerQuestions(latest).length - 1);
+		const replyOptions = answering ? { replyTo: answering.id } : {};
 		const changeSet = result.changeSet ?? workerHasChangeSet(latest, deliverable);
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
 			if (changeSet) await deps.reviewWorkerChangeSet(latest, changeSet, { preferred: "builtin", ...(deliverable ? { deliverable } : {}) });
+			continue;
+		}
+		if (result.verb === "overlap") {
+			// Reading, then a decision about who yields. It records nothing itself: whatever it
+			// sends goes through `tell`, and whatever it does not leaves the card exactly as it was.
+			if (changeSet) await deps.showWorkerOverlap?.(latest, changeSet);
 			continue;
 		}
 		if (result.verb === "report") {
@@ -205,8 +220,11 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			continue;
 		}
 		if (result.verb === "send") {
-			if (!result.text || (await deps.workerCommands.tell(label, result.text)) === false) continue;
+			if (!result.text || (await deps.workerCommands.tell(label, result.text, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "send", result.text, changeSet, deliverable);
+			// A backlog drains one question per answer, and a human who was not told there was a
+			// backlog reads the next one as the same question coming back.
+			if (answering && stillOpen > 0) deps.notify(`Docket: ${label} has ${stillOpen} more question${stillOpen === 1 ? "" : "s"} · f8 to answer the next`, "info");
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}
@@ -223,14 +241,15 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			const text = (await (deps.reviewNote?.(title, prefill) ?? deps.input(title, prefill)))?.trim();
 			if (!text) continue;
 			const message = deliverable ? `Request revision for ${deliverable.ref} (version ${deliverable.version}):\n${text}` : changeSet ? `revise: ${text}` : text;
-			if ((await deps.workerCommands.tell(label, message)) === false) continue;
+			if ((await deps.workerCommands.tell(label, message, replyOptions)) === false) continue;
 			await recordDecision(deps, latest, "chat", text, changeSet, deliverable, deliverable ? text : undefined);
+			if (answering && stillOpen > 0) deps.notify(`Docket: ${label} has ${stillOpen} more question${stillOpen === 1 ? "" : "s"} · f8 to answer the next`, "info");
 			await deps.refreshWorkerDockWidget();
 			return "advance";
 		}
 		if (result.verb === "accept") {
-			if (state === "needs_input") {
-				if ((await deps.workerCommands.tell(label, "Approved. Proceed.")) === false) continue;
+			if (state === "needs_input" || state === "consulting") {
+				if ((await deps.workerCommands.tell(label, "Approved. Proceed.", replyOptions)) === false) continue;
 			} else if (state === "failed") await deps.workerCommands.respawn(label);
 			else if (changeSet) {
 				if (await deps.promoteWorkerChangeSet(changeSet)) {
@@ -259,7 +278,7 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			return "advance";
 		}
 		if (result.verb === "reject") {
-			if (state === "needs_input") {
+			if (state === "needs_input" || state === "consulting") {
 				const text = (await deps.input(`Reject ${label}`, "what should the worker do instead?"))?.trim();
 				if (!text) continue;
 				if ((await deps.workerCommands.tell(label, text)) === false) continue;

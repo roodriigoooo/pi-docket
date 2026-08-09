@@ -21,7 +21,9 @@ export type WorkerChangeSet = {
 };
 
 export type PromoteWorkerChangeSetResult =
-	| { ok: true; fileCount: number; message: string }
+	// `paths` is what makes a promotion propagate (P4): every other worker whose evidence names
+	// one of them is provably working from a base that just moved.
+	| { ok: true; fileCount: number; paths: string[]; ref?: string; message: string }
 	| { ok: false; needsConfirmation?: boolean; message: string };
 
 function gitOutput(cwd: string, args: string[], input?: string): string | undefined {
@@ -292,6 +294,22 @@ function asFrozenChangeSet(value: WorkerChangeSet | WorkerDeliverableChangeSet |
 }
 
 /**
+ * Ask git whether `next` still applies once `first` has landed, by handing it both patches in
+ * order. `--check` writes nothing.
+ *
+ * Tri-state on purpose. If `first` does not apply on its own the base has already moved, and the
+ * question about `next` cannot be put honestly — that is `undefined`, not `false`. Docket says
+ * only what it observed, and "we could not tell" is one of the things there is to observe.
+ */
+export function patchStillAppliesAfter(parentCwd: string, first: string, next: string): boolean | undefined {
+	const parentRoot = repoRoot(parentCwd);
+	const terminated = (patch: string): string => patch.endsWith("\n") ? patch : `${patch}\n`;
+	const args = ["apply", "--check", "--whitespace=nowarn"];
+	if (gitStatus(parentRoot, args, terminated(first)).status !== 0) return undefined;
+	return gitStatus(parentRoot, args, `${terminated(first)}${terminated(next)}`).status === 0;
+}
+
+/**
  * Promotion always applies supplied frozen patch. Omit `changeSet` only for a
  * legacy worker that predates deliverables.
  */
@@ -311,5 +329,11 @@ export function promoteWorkerChangeSet(
 	const applied = gitStatus(parentRoot, ["apply", "--whitespace=nowarn"], changeSet.patch);
 	if (applied.status !== 0) return { ok: false, message: applied.stderr || "Worker change set apply failed." };
 	markWorkspacePromoted(worker, changeSet.patch);
-	return { ok: true, fileCount: changeSet.files.length, message: `Promoted ${changeSet.files.length} file${changeSet.files.length === 1 ? "" : "s"} from ${workerSourceLabel(worker)}.` };
+	return {
+		ok: true,
+		fileCount: changeSet.files.length,
+		paths: changeSet.files.map((file) => file.path).filter(Boolean),
+		...(changeSet.deliverableRef ? { ref: changeSet.deliverableRef } : {}),
+		message: `Promoted ${changeSet.files.length} file${changeSet.files.length === 1 ? "" : "s"} from ${workerSourceLabel(worker)}.`,
+	};
 }

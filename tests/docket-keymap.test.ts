@@ -104,3 +104,16 @@ test("verdict hints contain only contextually active review actions", () => {
 	assert.equal(readyReport.resolve("r"), "report");
 	assert.match(formatKeyHints(readyReport, "footer"), /r Report/);
 });
+
+test("the overlap key appears only when another worker is contesting these lines", () => {
+	const alone = createVerdictKeymap({ hasChangeSet: true, optionCount: 0 });
+	const contested = createVerdictKeymap({ hasChangeSet: true, optionCount: 0, hasOverlap: true });
+	// A worker with no diff cannot contest lines, so the key stays away even if something claims otherwise.
+	const noChangeSet = createVerdictKeymap({ hasChangeSet: false, optionCount: 0, hasOverlap: true });
+
+	assert.equal(alone.resolve("o"), undefined);
+	assert.doesNotMatch(formatKeyHints(alone, "footer"), /both diffs/);
+	assert.equal(contested.resolve("o"), "overlap");
+	assert.match(formatKeyHints(contested, "footer"), /o both diffs/);
+	assert.equal(noChangeSet.resolve("o"), undefined);
+});

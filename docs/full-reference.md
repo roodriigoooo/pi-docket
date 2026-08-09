@@ -115,7 +115,8 @@ Primary commands:
 | `/docket` | Open decision docket. |
 | `f8` | Open worker progress lens. |
 | `/docket spawn [--model <provider/model>] [--thinking <level>] [--seed\|--fresh] [--as <kind>] [--worktree] [--] <task>` | Start explicit worker. Model/thinking inherit parent; context defaults fresh; workspace derives from kind intent. |
-| `/docket tell w<N> [text]` | Reply to worker. Multiline text is pasted intact. |
+| `/docket broadcast [--from <notice>] <text>` | Tell the workers a change affects. Docket proposes who, from path/plan/identifier overlap; you confirm. Falls back to the bulletin when nothing is clearly affected. |
+| `/docket tell w<N> [--after] [--q <id>] [text]` | Reply to worker. `--after` waits for the worker to finish its current turn instead of steering it; `--q` binds the reply to one open question and leaves the others open. Multiline text is pasted intact. |
 | `/docket save [--from <artifact-ref\|w<N>>]` | Save an approved worker generation or author a deliverable interactively. |
 | `/docket load [ref\|last\|w<N>]` | Mount a deliverable or worker artifacts at zero model-context cost. |
 
@@ -257,13 +258,220 @@ Kinds state intent and authority only. Read-only kinds share parent directory; w
 
 Context precedence is handoff forced-fresh / `--fresh`, then `--seed`, `worker.parentSeedPolicy`, legacy kind `parent_seed`, then fresh. `--fresh` wins if both flags appear. See [configuration](./configuration.md#per-spawn-execution) for full precedence and legacy migration.
 
-When two workers edit the same path, Docket surfaces an `overlap w<N>: <path>` hint in the dock/dashboard and asks for confirmation before promoting a conflicting change set. It does not lock files or auto-merge workers; the parent remains the mediator.
+When two workers edit the same path, Docket surfaces an `overlap w<N>: <file>` hint in the dock and dashboard. That hint is path-level and cheap on purpose: it is recomputed every render, so it answers "did they touch the same file" and nothing more.
 
-The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. Docket does not auto-kill or auto-respawn for either warning. It tells you to peek, reply, reject, or stop.
+Promotion asks the expensive question instead, once, at the moment you are deciding. Both workers branched from the same base, so their frozen patches' **old-file** line ranges are directly comparable, and Docket grades what it finds:
 
-### Reviewed workers go dim
+| grade | what it means |
+|---|---|
+| `same file` | both changed the file, and their line ranges do not meet |
+| `adjacent` | their ranges are within a few lines of each other |
+| `contested` | their ranges intersect, or both create the same file |
 
-When you accept or dismiss a ready/failed worker on the verdict card, Docket stamps `reviewedAt` on the worker. The dock row turns dim with a `✓` chip and the worker stops counting toward `waiting`/`failed`/`ready` in the dock summary — an acknowledged worker no longer keeps asking for review. Reviewed workers stay listed (dim) so you can still re-open them with `/docket verdict w<N>`; after `worker.dockIdleHideMinutes` they hide from the dock and after `worker.pruneAfterHours` they are pruned.
+Where both sides have a frozen change set and the ranges are close enough to matter, git is asked the observed form of the same question — whether the other worker's patch still applies once this one lands — rather than it being inferred.
+
+The confirmation is owed unless Docket **observed** that the edits do not meet. A `contested` or `adjacent` overlap asks. An overlap it could not grade — the other worker is still working and has frozen nothing — also asks, because "we could not tell" and "they are apart" are different facts. Only an overlap it graded and found separate promotes quietly.
+
+When it does ask, it says what promoting does, not just that something overlaps:
+
+```text
+Promote despite worker overlap?
+
+contested: src/api/limit.ts
+  this worker · lines 40-47
+  w2 · add a per-tenant rate limit · lines 44-46
+w2's change set no longer applies once this lands
+promoting this leaves w2 building on the old version
+```
+
+That last line is a prediction of something Docket already makes true: the promotion appends a journal entry, and w2 derives `base moved` from it without anyone deciding to tell it.
+
+### Seeing both diffs
+
+A graded overlap puts one line on the verdict card, in warning colour beside the stale-base line:
+
+```text
+  contested w2: limit.ts · o to see both diffs
+```
+
+Press `o` — offered only when another worker is actually contesting these lines, the same way `d` and `h` appear only when there is a change set — and Docket opens the contested paths **only**, with each worker's hunks under a header naming the worker *and its task*:
+
+```text
+# w6 · Implement approved plan worker-diff review integration
+diff --git a/src/api/limit.ts b/src/api/limit.ts
+@@ -40,8 +40,9 @@
+...
+
+# w2 · add a per-tenant rate limit
+diff --git a/src/api/limit.ts b/src/api/limit.ts
+@@ -44,3 +44,5 @@
+...
+```
+
+This is a reading surface, not a patch anyone applies — two sections for one path is exactly the situation you are looking at. The same view is one keypress from the promote confirmation, so you no longer have to cancel, find the other worker, open its card, and come back.
+
+Closing it asks one question, and the safe answer is the default:
+
+```text
+src/api/limit.ts · who yields?
+  Send nothing
+  Ask w2 · add a per-tenant rate limit to yield
+```
+
+Picking a worker opens the revision editor and sends through the ordinary `tell` channel. It records no verdict and merges nothing: Docket surfaces the collision, you decide who yields, and the workers still do the work.
+
+Docket still does not lock files or auto-merge. It grades the collision and the parent remains the mediator.
+
+The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. `1 message queued · not taken yet` means you already replied and the worker has not picked it up. Docket does not auto-kill or auto-respawn for any of them. It tells you to peek, reply, reject, or stop.
+
+### Replying to a worker
+
+`/docket tell w<N> <text>` writes one durable Message into `workers/<id>/inbox/`. The worker's own runtime claims it, records that it took it, and hands the body to its session through pi's delivery timing — so a reply lands after the worker's current tool calls and before its next model call instead of racing whatever it was typing.
+
+Nothing claims more than it observed. The chip reads `queued` when the message is written, and updates itself to `delivered` once the worker takes it and `read` once a worker turn actually holds it. Press ctrl+o on the chip for the full message and its delivery timeline.
+
+```text
+/docket tell w1 focus only on src/auth        # steers the current turn
+/docket tell w1 --after run the full suite    # waits for the worker to finish first
+/docket tell w1 --q q2 yes, update them       # answers one specific question
+```
+
+A reply bound to a question resolves that question and leaves any other open — a worker with two questions and one answer stays blocked on the second. With exactly one question open the binding is inferred. An unbound reply is a redirection: the worker resumes and re-asks anything still blocking it.
+
+The card answers the **oldest** open question. A worker asks in the order it got stuck, and anything it asked afterwards is usually downstream of the first answer it never got. Answering newest-first resolves the derivative and saves the real question for last, which is what makes a drained backlog read as one question coming back rephrased.
+
+When more than one question is open, every surface says so rather than letting you discover it one card at a time:
+
+```text
+  Question
+    answering 1 of 3 · the rest stay open
+    ▸ 1. Required context arg, or optional with a default?
+      2. No concrete choice came back. Please confirm the signature.
+      3. I am blocked by the plan gate because no option was selected.
+```
+
+The dock row reads `3 questions` instead of `needs reply`, and answering one announces how many remain.
+
+A message addressed to a worker that has died stays in its inbox and is delivered when you `/docket respawn` it. The dock shows `undeliverable` while no runtime can take it.
+
+Workers started by a Docket build older than the mailbox still receive replies as terminal keystrokes. That path cannot confirm receipt, so it reports `sent to terminal · receipt unconfirmed` rather than borrowing the language of a delivered message.
+
+### When a worker asks you something
+
+`docket_wait` is the question that always reaches you. It blocks the worker, opens a verdict card, and is where anything about permission, scope, risk, or an irreversible step belongs.
+
+**Blocking ends the worker's turn.** Both wait tools abort the worker's current agent operation once the call is recorded, rather than asking the model to stop and hoping it does. A model that keeps generating restates the same blocker, and every restatement becomes another question you answer on another card — which is how one decision turns into four. Two `docket_wait` calls in a single assistant message are two questions the worker genuinely holds and both still land; a second call after another model round-trip loses its turn. The tool call and its result stay in the worker's transcript either way, so the worker reads them when a reply resumes it.
+
+`docket_consult` is for the other kind of question — which file the project settled on, what a sibling worker concluded, whether a convention was already decided. It blocks the worker the same way, but its audience is the parent session rather than you. The dock shows it as `consulting` in accent rather than `needs input` in warning, because the two states mean different things: one of them says you are the blocker and the other does not.
+
+**It is off by default.** With `messaging.autoAnswer` unset, a consult presents exactly like an ordinary question and you answer it from the same card with the same verbs. Turning it on is you authorizing a standing policy, and it is the only setting in Docket that lets worker text reach your model context — the parent agent has to read the question to answer it.
+
+With it on, the parent agent answers or declines, and the exchange appears in your transcript as one tool call:
+
+```text
+  ✉ w1 consulted · answered by parent agent                         ctrl+o
+```
+
+Expanding shows the question, the answer, and that no human reviewed it. The worker receives it framed `[docket · from parent agent]`, never `[docket · from you]` — a worker that mistakes a model's guess for your decision will build on it with authority the decision never had.
+
+The agent can always decline. `docket_escalate` hands the consult back to you as a normal question, and so does the `messaging.consultWindowSeconds` window expiring. Either way the card tells you it was escalated and why, so a question that reached you late does not read like one that was always yours. Every auto-answer is written to `decisions.ndjson` with `actor: "parent-agent"`, so `/docket log decisions` never conflates it with something you decided.
+
+### When a worker shares something
+
+`docket_note` lets a worker tell you something without stopping: an interface changed, a task assumption was wrong, a constraint turned up. It never blocks the worker and never enters your model context — the notice becomes a review item you can open, chip, or ignore, and the dock adds one word to its summary line (`2 shared`) rather than a row.
+
+A worker may name the workers it thinks should hear a notice. That is a suggestion recorded alongside it; nothing is sent anywhere without you. Workers cannot address each other directly, and the parent remains the only router.
+
+### Telling several workers at once
+
+```text
+/docket broadcast auth middleware now takes a context arg
+```
+
+Docket does not ask who should receive it. It scores every running worker against evidence it already holds — paths the message names, paths each worker has touched, files an approved plan declared, identifiers, task-word overlap — and opens one card:
+
+```text
+  📣 broadcast
+
+     auth middleware now takes a context arg
+
+  affected
+   ▸ ▪ w1   patcher      fix the failing auth test        touches src/auth/middleware.ts
+     ▪ w4   implementer  add rate limiting                plan names src/auth/middleware.ts
+
+  maybe
+     · w3   scout        map session call sites           mentions authcontext
+
+     +2 unrelated                                    tab to show
+
+  ⏎ send to selected · space toggle · a all · b bulletin · esc keep local
+```
+
+Enter sends to what Docket proposed. Every row carries the worker's task, never its index alone. Nothing leaves the card without a keypress.
+
+A broadcast **does not interrupt**. It enters each worker's context without triggering a turn, so a worker mid-edit keeps working and a worker blocked on a question stays blocked on it — a broadcast is information, never direction, and it never answers something a worker is waiting on. Several pending broadcasts arrive as one block.
+
+From a notice in the docket, Enter opens the same card with the notice as the message. Workers the notice addressed are preselected and tagged `addressed by w2` — the worker expresses intent, you keep the decision.
+
+Claims from a worker carry their standing automatically, because "code is ready" means different things depending on where the code is:
+
+```text
+w2 · deliverable:… (v2) approved · promoted     safe to build on
+w2 · in worktree, not promoted                  a constraint, not code you can call
+w2 · notice, unreviewed                         nobody has checked it
+```
+
+### The project journal
+
+When nothing scores as affected, Docket does not hand you a grid of checkboxes and call that a choice — it offers the journal instead:
+
+```text
+  no clear recipients · post to bulletin instead?
+  every worker reads it at its next gate           ⏎ post · esc discard
+```
+
+The journal holds two things: standing decisions and constraints, and the changes that have actually landed. Workers are told to read it before their first edit and whenever a plan gate opens, and a newer entry supersedes an older one it contradicts. It lives at `~/.pi/agent/docket/bulletins/<project>.md` rather than in the repo, so workers in isolated worktrees all read the same current file instead of a snapshot taken when they started. `b` posts there from the broadcast card at any time.
+
+The markdown is generated from `bulletins/<project>.ndjson` in full on every append. Editing it changes nothing.
+
+### A promotion tells the workers it invalidates
+
+Promoting a worker's change set appends a `promoted` entry naming the files that landed. Nothing else is required of you — a promotion is the one worker output that already carries your approval, so forwarding it needs neither a confirmation nor any model tokens.
+
+Any worker that read, edited, or has an approved plan naming one of those files now shows a dock sub-line:
+
+```text
+  ● w3·scout  map every session store call site           2m · f8 verdict
+      base moved · 1 file it works on landed since it started
+```
+
+It is muted, not amber: nobody is blocked, and nothing was interrupted. The worker keeps working and finds out at the next gate it was already going to stop at — where the journal tells it plainly that its isolated workspace still holds the version from *before* the change landed, and that it should say so in its outcome rather than rebuilding on a stale copy.
+
+If the worker had already finished, the fact follows its deliverable onto the verdict card instead, in warning colour, because that is the moment it bears on:
+
+```text
+  ○  w3 · map every session store call site    ready · not running · 4m
+     v1 · d7
+     produced before src/auth/middleware.ts landed · re-check before promoting
+```
+
+Staleness only ever comes from the evidence a broadcast is scored against — a named path, a touched path, an approved plan's files. Task-text overlap is enough to *propose* a recipient to you; it is not enough to tell a worker its ground has shifted.
+
+### Settled workers fold away
+
+Each surface answers one question. The dock answers **is anything waiting on me** — so it carries only rows something is still owed on. `f8` answers **what is the whole fleet doing**, `/docket` answers **what needs a decision**, and `/docket verdict` resolves them one at a time.
+
+A worker is **settled** when its decision is behind it: you accepted or dismissed it on the verdict card (`reviewedAt` is stamped, the state derives as `reviewed`), or its process ended without ever making a claim (`stopped`). Settled rows leave the dock and are replaced by a single line standing for all of them:
+
+```text
+    4 settled · f8
+```
+
+Press `f8` and they are one keypress away — the dashboard shows `+4 settled · tab to show`, and `tab` opens the band as its own group beneath every row that still needs something. Nothing is hidden by time here; `worker.dockIdleHideMinutes` still governs when an ended worker leaves `f8` too, and `worker.pruneAfterHours` when its directory is pruned.
+
+One message the worker never took un-settles its row and brings it back to the dock: there you already acted and nothing has happened yet, which is exactly what the dock exists to show. A recorded verdict also outranks the row's warnings — a settled row reads `reviewed` rather than an overlap warning, and never carries `base moved`, because neither can change a decision already made. If the worker produces another generation the staleness returns on the verdict card, which is where it acts.
+
+Dock rows are laid out in fixed columns — worker, state, task, detail, age, chip — so separators line up down the screen instead of landing wherever the previous cell ended. Under width pressure the detail column gives ground first, then the state word and the chip; the task text and the worker's kind give ground last, because those are what identify the row.
 
 Reviewed state clears automatically on new activity: telling the worker, respawning it, or any new protocol transition (`docket_wait`/`docket_done`/`docket_fail`) re-surfaces it. Replying to a `needs_input` question, retrying a failed worker, or sending a chat-back-for-revision does not mark a worker reviewed — only terminal verdicts (`accept`/`reject` on ready, `reject` on failed) do.
 
@@ -338,10 +546,11 @@ tmux attach -t docket-workers
 ### How Docket uses tmux
 
 - **Spawn**: the first worker creates `docket-workers` with `new-session -d -s`; later workers use `new-window -d`. Windows are named `w<N>`, and Docket records tmux's stable `#{window_id}` (`@7`, `@8`, etc.) so renamed windows still resolve.
-- **Reply**: one-line `/docket tell` uses `send-keys -l` plus a final `Enter`, so text is literal input and does not trigger tmux keybindings. Multiline replies use `load-buffer -` and `paste-buffer -p -d`, then `Enter`, so line breaks arrive as one pasted block. Shared-session payloads start with `[docket]` so worker input is recognizable.
+- **Reply**: tmux is no longer the reply path. `/docket tell` writes a Message to the worker's inbox and the worker's own runtime delivers it (see [Replying to a worker](#replying-to-a-worker)). Keystrokes are kept only for workers whose runtime predates the mailbox: one-line sends use `send-keys -l` plus `Enter`, multiline sends use `load-buffer -` and `paste-buffer -p -d`, and shared-session payloads start with `[docket]` so worker input stays recognizable.
 - **Peek**: `/docket workers` uses `capture-pane -p` to render a bounded selected-worker pane snapshot inside the dashboard. It does not attach, focus the pane, or add anything to model context.
 - **Post-mortem capture**: worker windows run with `remain-on-exit on`. If the worker process exits, Docket probes the recorded worker pane, captures its bounded tail, writes `pane-tail.txt`, then kills the stale window. A companion may add panes, but it cannot redirect Docket's tell, peek, or harvest target.
 - **Adapter seam**: a companion may register one `globalThis.__docket.registerTmuxAdapter(adapter)` callback. Docket invokes it after spawn or respawn IDs are persisted with the worker/window/pane metadata; adapter failures are warned and isolated from the worker lifecycle.
+- **Messaging seam**: `globalThis.__docket.onMessage(handler)` observes messages moving between the parent and its workers — metadata only, no bodies. `globalThis.__docket.registerBroadcastAdvisor(advisor)` lets a companion propose a broadcast recipient Docket's own evidence missed; a suggestion can only reach `maybe`, never the preselected `affected` band, and cannot demote, remove, or invent a recipient. Advisors get 250 ms and are dropped on throw, hang, or malformed output. Sending, attribution, the permission line, and the human confirmation are not extension points. See [architecture.md](./architecture.md#extension-surface).
 - **Legacy layouts**: old `layout` declarations are recognized only to emit a migration diagnostic and are ignored. Core Docket does not create split panes, pipe terminal output, or write tmux status content.
 
 Silence warnings do not poll `capture-pane`. Docket reads the worker's `events.ndjson`; if nothing useful appears for a few minutes, the dock shows `silent Nm`. Use peek when you want scrollback. Use attach when you need full terminal control.

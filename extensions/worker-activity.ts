@@ -1,9 +1,11 @@
+import { visibleWidth } from "@mariozechner/pi-tui";
 import { deriveWorkerState, workerActivityChip, workerDisplayName, workerQuestions, workerSourceLabel, workerStateRank, workerTodoBoardLines, workerTodoProgress, type WorkerDerivedState, type WorkerQuestion, type WorkerStatus } from "./background-work.js";
 import type { Artifact } from "./types.js";
 import type { WorkerEvent } from "./worker-events.js";
 import { countWorkerRecommendations, firstWorkerReviewLine, isWorkerStatusArtifact, projectWorkerReview } from "./worker-review.js";
 import { conflictSummary, workerConflictMap, type WorkerFileConflict } from "./worker-conflicts.js";
-import { isReviewableWorker } from "./worker-lifecycle.js";
+import { pendingWorkerMessageLine, type WorkerMessage } from "./worker-mailbox.js";
+import { isAttentionWorker, isReviewableWorker, workerIsGone } from "./worker-lifecycle.js";
 import { workerDeliverableFromArtifact, type WorkerDeliverable } from "./worker-deliverable.js";
 
 export type WorkerEvidence = {
@@ -37,6 +39,8 @@ export type WorkerActivityRow = {
 	conflicts: WorkerFileConflict[];
 	summary?: string;
 	updatedAt: number;
+	/** Observed: no process remains to act on anything this row offers. */
+	gone: boolean;
 };
 
 export type WorkerActivityStackLine = {
@@ -93,6 +97,7 @@ function buildOutputLabel(state: WorkerDerivedState, answer: Artifact | undefine
 	const conflict = conflictSummary(conflicts, 1);
 	let label: string;
 	if (conflict) label = conflict;
+	else if (state === "consulting") label = "asking parent";
 	else if (state === "needs_input") label = "needs reply";
 	else if (state === "starting" || state === "thinking") label = "working";
 	else if (state === "failed") label = "error";
@@ -179,10 +184,36 @@ export type DockRow = {
 	ageLabel: string;
 	attention: boolean;
 	loaded: boolean;
+	/** Observed: the worker's process is gone, whatever its work amounts to. */
+	gone: boolean;
+	/** The decision is behind this row: it leaves the dock and lives in `f8`. */
+	settled: boolean;
+	/** Untruncated task text. The dock has a task column now, so the column decides the cut. */
+	taskFull: string;
 	chip?: string;
 	kindLabel?: string;
 	modelBadge?: string;
 	eventLine?: string;
+};
+
+/** Plain text of one dock row's cells, before any colour, so widths can be measured. */
+export type DockRowCells = {
+	label: string;
+	state: string;
+	task: string;
+	meta: string;
+	age: string;
+	chip: string;
+};
+
+/** Fixed column widths for one dock render. A zero width means the column is dropped. */
+export type DockColumns = {
+	label: number;
+	state: number;
+	task: number;
+	meta: number;
+	age: number;
+	chip: number;
 };
 
 export type WorkerActivityPreviewOptions = {
@@ -231,8 +262,22 @@ function latestQuestionTs(worker: WorkerStatus | undefined): number | undefined 
 	return latest ? Date.parse(latest.createdAt) : Date.parse(worker.updatedAt);
 }
 
-export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus } = {}): string | undefined {
+export function dockEventSubLine(events: WorkerEvent[] | undefined, state: WorkerDerivedState, options: { now?: number; worker?: WorkerStatus; messages?: WorkerMessage[]; staleLine?: string } = {}): string | undefined {
 	const now = options.now ?? Date.now();
+	// A message the worker has not taken outranks every other hint: it is the one case where
+	// the human already acted and nothing has happened yet.
+	const pending = options.messages ? pendingWorkerMessageLine(options.messages, workerIsGone(options.worker, now)) : undefined;
+	if (pending) return pending;
+	// Next: the worker is building on something that is no longer true. It outranks the state
+	// hints below because those describe what the worker is doing, and this describes whether
+	// what it is doing still holds. Not once a verdict is recorded, though: there is no decision
+	// left for it to change, and if the worker produces another generation the fact returns on
+	// the verdict card, which is where it acts.
+	if (options.staleLine && state !== "reviewed") return options.staleLine;
+	if (state === "consulting") {
+		// Nobody is blocked on the human yet, so this is a status line, not a warning.
+		return "asking the parent agent · escalates to you if unanswered";
+	}
 	if (state === "needs_input") {
 		const questionTs = latestQuestionTs(options.worker);
 		const ageMs = questionTs === undefined ? 0 : now - questionTs;
@@ -276,32 +321,138 @@ function relativeAgeLabel(updatedAtMs: number, now: number): string {
 }
 
 function dockProgressLabel(row: WorkerActivityRow): string {
-	const conflict = conflictSummary(row.conflicts, 1);
-	if (conflict) return conflict;
+	// Overlap warns about a decision still to come. Once the verdict is recorded there is nothing
+	// left to warn about, so the settled state wins the cell.
 	if (row.state === "reviewed") return "reviewed";
+	const conflict = conflictSummary(row.conflicts, 1, { shortPaths: true });
+	if (conflict) return conflict;
 	if (row.progress.total > 0) return workerProgressCompact(row.progress) ?? `${row.progress.completed}/${row.progress.total} progress`;
 	if (row.state === "ready" || row.state === "ready_open_todos") {
 		if (row.recommendations > 0) return `${row.recommendations} ${row.recommendations === 1 ? "rec" : "recs"}`;
 		if (row.filesChanged > 0) return `${row.filesChanged} ${row.filesChanged === 1 ? "file" : "files"} changed`;
 	}
-	if (row.state === "needs_input") return "needs reply";
+	if (row.state === "consulting") return "asking parent";
+	// A backlog is the difference between one decision and several, and the human budgets for it
+	// differently. Saying "needs reply" for three questions is what makes the second one read as
+	// the first one coming back.
+	if (row.state === "needs_input") return row.questions.length > 1 ? `${row.questions.length} questions` : "needs reply";
 	if (row.state === "failed") return "error";
+	if (row.state === "stopped") return "no report";
 	return "";
 }
 
 function dockChip(state: WorkerDerivedState): string | undefined {
-	if (state === "needs_input" || state === "failed" || state === "ready" || state === "ready_open_todos") return "f8 verdict";
+	if (state === "needs_input" || state === "consulting" || state === "failed" || state === "ready" || state === "ready_open_todos") return "f8 verdict";
 	if (state === "reviewed") return "✓";
 	return undefined;
 }
 
 function isAttentionState(worker: WorkerStatus, now: number): boolean {
-	return isReviewableWorker(worker, now);
+	return isAttentionWorker(worker, now);
+}
+
+/**
+ * A settled worker has its decision behind it: the human recorded a verdict, or the process
+ * ended without ever making a claim. Nothing on such a row is waiting on anyone, so it leaves
+ * the dock — the dock answers "is anything waiting on me", and `f8` answers "what is the whole
+ * fleet doing".
+ *
+ * A message the worker never took un-settles it. There the human already acted and nothing has
+ * happened yet, which is precisely the case the dock exists to show.
+ */
+export function isSettledDockState(state: WorkerDerivedState): boolean {
+	return state === "reviewed" || state === "stopped";
+}
+
+/** Splits a rendered dock into the rows that stay and the rows the heading now stands for. */
+export function partitionDockRows(rows: DockRow[]): { visible: DockRow[]; settled: DockRow[] } {
+	const visible: DockRow[] = [];
+	const settled: DockRow[] = [];
+	for (const row of rows) (row.settled ? settled : visible).push(row);
+	return { visible, settled };
+}
+
+/** The one line that stands for every folded row. Absent when nothing is folded. */
+export function dockSettledLine(count: number): string | undefined {
+	return count > 0 ? `${count} settled · f8` : undefined;
+}
+
+export function dockRowCells(row: DockRow): DockRowCells {
+	const kindCell = row.kindLabel ? `·${row.kindLabel}` : "";
+	const modelCell = row.modelBadge ? `[${row.modelBadge}]` : "";
+	const state = row.state === "thinking" || row.state === "starting"
+		? ""
+		: row.state === "ready_open_todos"
+			? "ready/progress"
+			: row.gone && row.state === "ready"
+				? "ready · gone"
+				: row.state.replace(/_/g, " ");
+	return {
+		label: `${row.label}${kindCell}${modelCell}`,
+		state,
+		task: row.taskFull || row.taskLabel,
+		meta: [row.progressLabel, row.loaded ? "loaded" : undefined].filter(Boolean).join(" · "),
+		age: row.ageLabel,
+		chip: row.chip ?? "",
+	};
+}
+
+/** Two spaces, not one: with the columns doing the separating, the air is what makes them read. */
+export const DOCK_GUTTER = 2;
+const DOCK_LABEL_MIN = 5;
+const DOCK_LABEL_MAX = 24;
+const DOCK_STATE_MAX = 14;
+const DOCK_META_MIN = 20;
+const DOCK_META_MAX = 34;
+const DOCK_TASK_PREFERRED = 30;
+const DOCK_CHIP_MAX = 12;
+const DOCK_AGE_MAX = 4;
+const DOCK_TASK_MIN = 18;
+
+/**
+ * One set of column widths for the whole dock, so the separators between rows line up instead of
+ * landing wherever the previous cell happened to end. Same discipline the `f8` table already
+ * uses; a dock that grows with the fleet has to be scannable down a column, not across a line.
+ *
+ * Under pressure the secondary columns go first — meta, then state, then the chip — because the
+ * task text is the handle a human actually navigates by.
+ */
+export function dockColumns(rows: DockRow[], width: number): DockColumns {
+	const cells = rows.map(dockRowCells);
+	const widest = (pick: (cell: DockRowCells) => string, max: number): number =>
+		Math.min(max, cells.reduce((acc, cell) => Math.max(acc, visibleWidth(pick(cell))), 0));
+	const columns: DockColumns = {
+		label: widest((cell) => cell.label, DOCK_LABEL_MAX),
+		state: widest((cell) => cell.state, DOCK_STATE_MAX),
+		task: 0,
+		meta: widest((cell) => cell.meta, DOCK_META_MAX),
+		age: widest((cell) => cell.age, DOCK_AGE_MAX),
+		chip: widest((cell) => cell.chip, DOCK_CHIP_MAX),
+	};
+	// The marker and its single space, then one gutter for every other column the task shares the
+	// line with.
+	const spent = (): number => 2 + [columns.label, columns.state, columns.meta, columns.age, columns.chip]
+		.reduce((acc, column) => column > 0 ? acc + column + DOCK_GUTTER : acc, 0);
+	// The ladder below encodes what a row is for. Task text and kind identify the worker, so they
+	// give ground last (P6: `w3` alone is never the only handle). Everything else is detail the
+	// card behind `f8` carries in full.
+	const short = (target: number): number => target - (width - spent());
+	// 1. A wide meta cell hands back what it can.
+	if (short(DOCK_TASK_PREFERRED) > 0) columns.meta = Math.max(Math.min(columns.meta, DOCK_META_MIN), columns.meta - short(DOCK_TASK_PREFERRED));
+	// 2. Then meta, the state word, and the chip leave entirely rather than starve the task.
+	for (const column of ["meta", "state", "chip"] as const) {
+		if (short(column === "meta" ? DOCK_TASK_PREFERRED : DOCK_TASK_MIN) <= 0) break;
+		columns[column] = 0;
+	}
+	// 3. Only then does the label give back its kind and model badge.
+	if (short(DOCK_TASK_MIN) > 0) columns.label = Math.max(DOCK_LABEL_MIN, columns.label - short(DOCK_TASK_MIN));
+	columns.task = Math.max(0, width - spent());
+	return columns;
 }
 
 export function dockRowsForRender(
 	rows: WorkerActivityRow[],
-	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]> } = {},
+	options: { parentModelId?: string; now?: number; eventsByWorker?: Map<string, WorkerEvent[]>; messagesByWorker?: ReadonlyMap<string, WorkerMessage[]>; staleLineByWorker?: ReadonlyMap<string, string> } = {},
 ): DockRow[] {
 	const now = options.now ?? Date.now();
 	const workers = rows.map((row) => row.worker);
@@ -309,7 +460,10 @@ export function dockRowsForRender(
 		const modelBadge = pickModelBadge(row.worker, workers, options.parentModelId);
 		const chip = dockChip(row.state);
 		const events = options.eventsByWorker?.get(row.worker.id);
-		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker });
+		const messages = options.messagesByWorker?.get(row.worker.id);
+		const staleLine = options.staleLineByWorker?.get(row.worker.id);
+		const eventLine = dockEventSubLine(events, row.state, { now, worker: row.worker, ...(messages ? { messages } : {}), ...(staleLine ? { staleLine } : {}) });
+		const untaken = messages ? pendingWorkerMessageLine(messages, workerIsGone(row.worker, now)) : undefined;
 		const kindLabel = workerKindLabel(row.worker);
 		return {
 			worker: row.worker,
@@ -320,6 +474,9 @@ export function dockRowsForRender(
 			ageLabel: relativeAgeLabel(row.updatedAt || Date.parse(row.worker.updatedAt) || now, now),
 			attention: isAttentionState(row.worker, now),
 			loaded: row.loaded,
+			gone: row.gone,
+			settled: isSettledDockState(row.state) && !untaken,
+			taskFull: workerDisplayName(row.worker, Number.POSITIVE_INFINITY),
 			...(chip ? { chip } : {}),
 			...(kindLabel ? { kindLabel } : {}),
 			...(modelBadge ? { modelBadge } : {}),
@@ -329,6 +486,7 @@ export function dockRowsForRender(
 }
 
 export function workerActivityStateLabel(state: WorkerDerivedState): string {
+	if (state === "consulting") return "consulting";
 	if (state === "needs_input") return "needs input";
 	if (state === "ready_open_todos") return "ready/progress";
 	if (state === "ready") return "ready";
@@ -337,6 +495,7 @@ export function workerActivityStateLabel(state: WorkerDerivedState): string {
 	if (state === "thinking") return "active";
 	if (state === "starting") return "starting";
 	if (state === "stale") return "stale";
+	if (state === "stopped") return "stopped";
 	if (state === "empty") return "done/empty";
 	return "idle";
 }
@@ -352,17 +511,19 @@ export type WorkerActivityActionProjection = {
 	enter: "verdict" | "details";
 	load: boolean;
 	peek: "peek";
-	tell: "tell";
-	stop: "stop";
+	/** `queue` when nothing is running to take it: the key still works, the promise does not. */
+	tell: "tell" | "queue";
+	stop: "stop" | "dismiss";
 };
 
 export function workerActivityActionProjection(row: WorkerActivityRow, now = Date.now()): WorkerActivityActionProjection {
+	const gone = row.gone;
 	return {
 		enter: isReviewableWorker(row.worker, now) || deriveWorkerState(row.worker, now) === "reviewed" ? "verdict" : "details",
 		load: !row.loaded,
 		peek: "peek",
-		tell: "tell",
-		stop: "stop",
+		tell: gone ? "queue" : "tell",
+		stop: gone ? "dismiss" : "stop",
 	};
 }
 
@@ -379,7 +540,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 		const answerLine = answer && !review.resultIsStatus ? firstWorkerReviewLine(answer.title) ?? firstWorkerReviewLine(answer.body) : undefined;
 		const questions = review.questions;
 		const questionText = questions.map((question, index) => `${index + 1}. ${question.text}`).join(" ");
-		const message = state === "needs_input" && questionText ? questionText : review.summary || workerDisplayName(worker);
+		const message = (state === "needs_input" || state === "consulting") && questionText ? questionText : review.summary || workerDisplayName(worker);
 		const summary = review.summarySource;
 		const recommendations = review.recommendations.length || countWorkerRecommendations(summary);
 		const computedEvidence = computeEvidence(artifacts);
@@ -410,6 +571,7 @@ export function workerActivityRows(workers: WorkerStatus[], artifactsByWorker: M
 			conflicts,
 			...(summary ? { summary } : {}),
 			updatedAt: Date.parse(worker.updatedAt) || 0,
+			gone: workerIsGone(worker, now),
 		};
 	}).sort((a, b) => workerStateRank(a.worker, now) - workerStateRank(b.worker, now) || b.updatedAt - a.updatedAt);
 }
@@ -442,9 +604,10 @@ export function workerActivityStackLines(rows: WorkerActivityRow[]): WorkerActiv
 }
 
 function previewOutcomeBody(row: WorkerActivityRow): string {
-	if (row.state === "needs_input" && row.questions.length) return row.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n");
+	if ((row.state === "needs_input" || row.state === "consulting") && row.questions.length) return row.questions.map((q, i) => `${i + 1}. ${q.text}`).join("\n");
 	if (row.state === "failed") return row.worker.lastError || row.message || "Failure recorded without detail.";
 	if (row.state === "starting" || row.state === "thinking") return `${row.taskLabel} — working`;
+	if (row.state === "stopped") return "Stopped before reporting. The evidence below is how far it had got.";
 	return row.message || row.answerLine || row.taskLabel;
 }
 

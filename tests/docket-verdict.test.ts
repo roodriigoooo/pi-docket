@@ -71,6 +71,25 @@ test("workerVerdictPayload uses status fields for questions and failures", () =>
 	assert.deepEqual(workerVerdictPayload(failed).lines, ["npm test exited 1"]);
 });
 
+test("a backlog marks the question this card answers and says the rest stay open", () => {
+	const blocked = worker({
+		state: "needs_input",
+		questions: [
+			{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" },
+			{ id: "q2", text: "No concrete choice came back.", createdAt: "2026-01-01T00:02:00.000Z" },
+		],
+	});
+	const payload = workerVerdictPayload(blocked);
+
+	assert.equal(payload.backlog, "answering 1 of 2 · the rest stay open");
+	assert.deepEqual(payload.lines, ["▸ 1. Required or optional?", "  2. No concrete choice came back."]);
+
+	// One question needs no marker and no count: there is nothing to mistake it for.
+	const single = workerVerdictPayload(worker({ state: "needs_input", questions: [{ id: "q1", text: "Required or optional?", createdAt: "2026-01-01T00:01:00.000Z" }] }));
+	assert.equal(single.backlog, undefined);
+	assert.deepEqual(single.lines, ["Required or optional?"]);
+});
+
 test("workerVerdictPayload summarizes deterministic change set metadata", () => {
 	const payload = workerVerdictPayload(worker({ state: "ready" }), changeSet);
 	assert.equal(payload.hasChangeSet, true);
@@ -117,6 +136,53 @@ test("DocketVerdictView exposes Hunk review for worker change sets", () => {
 	view.handleInput("h");
 
 	assert.deepEqual(action, { verb: "hunk", worker: worker({ state: "ready" }), changeSet });
+});
+
+test("DocketVerdictView carries a contested overlap onto the card and offers both diffs", () => {
+	let action: unknown;
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const ready = worker({ state: "ready" });
+	const overlaps = [{
+		workerId: "worker-2",
+		workerLabel: "w2",
+		taskLabel: "add a per-tenant rate limit",
+		files: [{ path: "src/api/limit.ts", grade: "contested" as const, ranges: { mine: [{ start: 40, count: 8 }], theirs: [{ start: 44, count: 3 }] } }],
+		grade: "contested" as const,
+	}];
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, ready, changeSet, (result) => { action = result; }, 0, undefined, [], undefined, false, undefined, undefined, overlaps);
+	const rendered = view.render(100).join("\n");
+
+	assert.match(rendered, /contested w2: limit\.ts · o to see both diffs/);
+	assert.match(rendered, /o both diffs/);
+
+	view.handleInput("o");
+	assert.deepEqual(action, { verb: "overlap", worker: ready, changeSet });
+});
+
+test("DocketVerdictView says nothing about an overlap that graded apart", () => {
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	let action: unknown = "untouched";
+	const apart = [{
+		workerId: "worker-2",
+		workerLabel: "w2",
+		taskLabel: "add a per-tenant rate limit",
+		files: [{ path: "src/api/limit.ts", grade: "same-file" as const, ranges: { mine: [{ start: 1, count: 2 }], theirs: [{ start: 90, count: 2 }] } }],
+		grade: "same-file" as const,
+	}];
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, worker({ state: "ready" }), changeSet, (result) => { action = result; }, 0, undefined, [], undefined, false, undefined, undefined, apart);
+	const rendered = view.render(100).join("\n");
+
+	assert.doesNotMatch(rendered, /both diffs/);
+	view.handleInput("o");
+	assert.equal(action, "untouched", "the key does nothing when there is nothing to look at");
 });
 
 test("DocketVerdictView binds r to Report even without a change set", () => {

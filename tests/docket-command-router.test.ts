@@ -133,6 +133,7 @@ function harness(overrides: Partial<DocketCommandRouterDeps> = {}) {
 		promoteWorkerChangeSet: async (item) => { calls.push(`promote:${item.ref}`); return true; },
 		reviewWorkerChangeSet: async () => ({ kind: "returned" }),
 		applyWorkerState: async () => { calls.push("applyWorkerState"); },
+		broadcast: async () => { calls.push("broadcast"); return true; },
 		catalog: async () => fakeCatalog(),
 		readWorkersWithArtifacts: async () => ({ workers: [worker], artifactsByWorker: new Map([[worker.id, [artifact]]]) }),
 		showParallelWorkDashboard: async () => null,

@@ -117,6 +117,14 @@ test("Docket grammar rejects malformed spawn flags before task delimiter", () =>
 test("Docket grammar parses worker tell, verdict, and protocol fallbacks", () => {
 	assert.deepEqual(parseDocketCommand("tell w1 please include prompt chips"), { ok: true, intent: { kind: "tell", worker: "w1", text: "please include prompt chips" } });
 	assert.deepEqual(parseDocketCommand("tell w1"), { ok: true, intent: { kind: "tell", worker: "w1", text: undefined } });
+	assert.deepEqual(parseDocketCommand("tell --after w1 wrap up first"), { ok: true, intent: { kind: "tell", worker: "w1", text: "wrap up first", deliverAs: "followUp" } });
+	assert.deepEqual(parseDocketCommand("tell w1 --q q2 yes"), { ok: true, intent: { kind: "tell", worker: "w1", text: "yes", replyTo: "q2" } });
+	// Flags stop being flags once the human's message has started.
+	assert.deepEqual(parseDocketCommand("tell w1 rename --after to --later"), { ok: true, intent: { kind: "tell", worker: "w1", text: "rename --after to --later" } });
+	assert.equal(parseDocketCommand("tell w1 --q").ok, false);
+	assert.deepEqual(parseDocketCommand("broadcast auth middleware takes a context arg"), { ok: true, intent: { kind: "broadcast", text: "auth middleware takes a context arg" } });
+	assert.deepEqual(parseDocketCommand("broadcast --from n1"), { ok: true, intent: { kind: "broadcast", noticeRef: "n1" } });
+	assert.equal(parseDocketCommand("broadcast").ok, false);
 	assert.equal(parseDocketCommand("ask w1 nope").ok, false);
 	assert.deepEqual(parseDocketCommand("verdict"), { ok: true, intent: { kind: "verdict" } });
 	assert.deepEqual(parseDocketCommand("verdict w1"), { ok: true, intent: { kind: "verdict", worker: "w1" } });

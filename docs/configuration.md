@@ -56,6 +56,27 @@ Each record carries a `schemaVersion`. Older versions are upgraded when read; a 
 
 `worker.defaultKind` preserves that kind's declared rights; Docket does not add an implicit plan gate. `worker.implementKind` names the kind Use → Implement launches; an approved plan discharges that kind's plan gate at launch, so point it at a kind whose declared rights you accept for plan-scoped edits. An unregistered value warns and falls back to the builtin default. `worker.guardrailsPath` replaces packaged `extensions/worker-guardrails.md` for every worker.
 
+## Worker consultation
+
+| key | default | meaning |
+|---|---|---|
+| `messaging.autoAnswer` | `false` | let the parent agent answer `docket_consult` questions. Off means every consult reaches you. |
+| `messaging.consultWindowSeconds` | 90 | how long a consult may wait for the parent agent before escalating to you. Floored at 5. |
+
+`docket_consult` is the one path in Docket that spends parent model context: the parent agent has to read the worker's question to answer it. That is why it is off by default, and why turning it on is you authorizing a standing policy rather than each message.
+
+With it **off**, a consult presents exactly like a `docket_wait` question — same card, same verbs, same reply binding. Nothing is lost and nothing is stranded.
+
+With it **on**, Docket registers two tools in your session (`docket_answer`, `docket_escalate`) and hands the parent agent one consult at a time as a follow-up, so it never pre-empts your own turn. The agent answers or escalates; anything it does not resolve inside `consultWindowSeconds` escalates on its own. Every auto-answer reaches the worker labelled `[docket · from parent agent]` and is recorded in `decisions.ndjson` with `actor: "parent-agent"`, so `/docket log decisions` distinguishes it from anything you decided.
+
+```json
+{
+  "messaging": { "autoAnswer": true, "consultWindowSeconds": 60 }
+}
+```
+
+`docket_note` needs no configuration. It never blocks a worker, never enters your model context, and surfaces as a review item you can open or ignore.
+
 ### Per-spawn execution
 
 ```text
