@@ -286,7 +286,41 @@ promoting this leaves w2 building on the old version
 
 That last line is a prediction of something Docket already makes true: the promotion appends a journal entry, and w2 derives `base moved` from it without anyone deciding to tell it.
 
-Docket still does not lock files or auto-merge workers. It grades the collision and the parent remains the mediator.
+### Seeing both diffs
+
+A graded overlap puts one line on the verdict card, in warning colour beside the stale-base line:
+
+```text
+  contested w2: limit.ts · o to see both diffs
+```
+
+Press `o` — offered only when another worker is actually contesting these lines, the same way `d` and `h` appear only when there is a change set — and Docket opens the contested paths **only**, with each worker's hunks under a header naming the worker *and its task*:
+
+```text
+# w6 · Implement approved plan worker-diff review integration
+diff --git a/src/api/limit.ts b/src/api/limit.ts
+@@ -40,8 +40,9 @@
+...
+
+# w2 · add a per-tenant rate limit
+diff --git a/src/api/limit.ts b/src/api/limit.ts
+@@ -44,3 +44,5 @@
+...
+```
+
+This is a reading surface, not a patch anyone applies — two sections for one path is exactly the situation you are looking at. The same view is one keypress from the promote confirmation, so you no longer have to cancel, find the other worker, open its card, and come back.
+
+Closing it asks one question, and the safe answer is the default:
+
+```text
+src/api/limit.ts · who yields?
+  Send nothing
+  Ask w2 · add a per-tenant rate limit to yield
+```
+
+Picking a worker opens the revision editor and sends through the ordinary `tell` channel. It records no verdict and merges nothing: Docket surfaces the collision, you decide who yields, and the workers still do the work.
+
+Docket still does not lock files or auto-merge. It grades the collision and the parent remains the mediator.
 
 The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. `1 message queued · not taken yet` means you already replied and the worker has not picked it up. Docket does not auto-kill or auto-respawn for any of them. It tells you to peek, reply, reject, or stop.
 

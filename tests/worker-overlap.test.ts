@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+	composeOverlapPatch,
+	contestedPaths,
 	gradeOverlapFiles,
 	gradeRanges,
+	overlapCardLine,
 	overlapConfirmationLines,
 	overlapNeedsConfirmation,
 	overlapSummaryLine,
 	parsePatchRanges,
+	splitPatchByPath,
 	strongestGrade,
 	type WorkerOverlap,
 } from "../extensions/worker-overlap.js";
@@ -147,6 +151,53 @@ test("an ungradeable peer says why rather than implying separation", () => {
 
 	assert.match(text, /line ranges unknown · that worker has not frozen a change set yet/);
 	assert.doesNotMatch(text, /still applies/);
+});
+
+test("splitPatchByPath keeps each file's bytes as git wrote them", () => {
+	const two = [patch("src/api/limit.ts", [hunk(40, 8)]), patch("src/auth/middleware.ts", [hunk(10, 2)])].join("\n");
+	const sections = splitPatchByPath(two);
+
+	assert.deepEqual([...sections.keys()].sort(), ["src/api/limit.ts", "src/auth/middleware.ts"]);
+	assert.match(sections.get("src/api/limit.ts")!, /^diff --git a\/src\/api\/limit\.ts/);
+	assert.match(sections.get("src/api/limit.ts")!, /@@ -40,8/);
+	assert.doesNotMatch(sections.get("src/api/limit.ts")!, /middleware/);
+});
+
+test("composeOverlapPatch shows the contested path only, attributed by worker and task", () => {
+	const mine = { label: "w6", taskLabel: "give authenticate() a context argument", patch: [patch("src/api/limit.ts", [hunk(40, 8)]), patch("docs/untouched.md", [hunk(1, 1)])].join("\n") };
+	const theirs = { label: "w2", taskLabel: "add a per-tenant rate limit", patch: patch("src/api/limit.ts", [hunk(44, 3)]) };
+
+	const composed = composeOverlapPatch(["src/api/limit.ts"], mine, [theirs]);
+
+	assert.match(composed, /# w6 · give authenticate\(\) a context argument/);
+	assert.match(composed, /# w2 · add a per-tenant rate limit/, "every section names a worker and its task, never an index alone");
+	assert.doesNotMatch(composed, /untouched/, "only the paths they contest");
+	assert.equal(composed.indexOf("# w6") < composed.indexOf("# w2"), true, "the worker being reviewed goes first");
+	assert.equal((composed.match(/diff --git/g) ?? []).length, 2, "one section per worker for the one path");
+});
+
+test("composeOverlapPatch is empty when only one side has bytes", () => {
+	const mine = { label: "w6", taskLabel: "t", patch: patch("src/api/limit.ts", [hunk(40, 8)]) };
+	assert.equal(composeOverlapPatch(["src/other.ts"], mine, []), "");
+});
+
+test("contestedPaths is what is worth putting in front of a human", () => {
+	const graded = overlap({
+		files: [
+			{ path: "quiet.ts", grade: "same-file", ranges: { mine: [{ start: 1, count: 1 }], theirs: [{ start: 90, count: 1 }] } },
+			{ path: "close.ts", grade: "adjacent", ranges: { mine: [{ start: 1, count: 1 }], theirs: [{ start: 6, count: 1 }] } },
+			{ path: "unknown.ts", grade: "same-file" },
+		],
+	});
+
+	assert.deepEqual(contestedPaths([graded]), ["close.ts", "unknown.ts"], "observed separation drops out; ungraded stays");
+});
+
+test("overlapCardLine says nothing when there is nothing to look at", () => {
+	assert.equal(overlapCardLine([]), undefined);
+	const apart = overlap({ grade: "same-file", files: [{ path: "a.ts", grade: "same-file", ranges: { mine: [{ start: 1, count: 1 }], theirs: [{ start: 90, count: 1 }] } }] });
+	assert.equal(overlapCardLine([apart]), undefined);
+	assert.equal(overlapCardLine([overlap()]), "contested w2: limit.ts · o to see both diffs");
 });
 
 test("overlapSummaryLine leads with the worst grade and names the file, not the path", () => {

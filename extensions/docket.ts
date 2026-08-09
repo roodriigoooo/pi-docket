@@ -53,7 +53,7 @@ import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { DOCK_GUTTER, dockColumns, dockRowCells, dockRowsForRender, dockSettledLine, isSettledDockState, partitionDockRows, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockColumns, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
 import { freezeWorkerChangeSet, patchStillAppliesAfter, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
-import { gradeOverlapFiles, overlapConfirmationLines, overlapNeedsConfirmation, overlapSummaryLine, parsePatchRanges, strongestGrade, type WorkerOverlap } from "./worker-overlap.js";
+import { composeOverlapPatch, contestedPaths, gradeOverlapFiles, overlapCardLine, overlapConfirmationLines, overlapNeedsConfirmation, overlapSummaryLine, parsePatchRanges, strongestGrade, type OverlapSide, type WorkerOverlap } from "./worker-overlap.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { workerConflictMap } from "./worker-conflicts.js";
 import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
@@ -970,6 +970,7 @@ export class DocketVerdictView implements Component {
 		private canUse = false,
 		private planCoverage?: PlanCoverage,
 		private staleBase?: StaleBase,
+		private overlaps: WorkerOverlap[] = [],
 	) {
 		this.changeSet = changeSet;
 		this.artifacts = artifacts;
@@ -997,7 +998,7 @@ export class DocketVerdictView implements Component {
 		const verbs = verdictVerbs(state, this.changeSet !== undefined, this.options, this.canUse, Boolean(this.deliverable));
 		const max = Math.max(0, verbs.length - 1);
 		const ready = state === "ready" || state === "ready_open_todos" || state === "reviewed";
-		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready, canUse: this.canUse, canSave: this.canUse });
+		const keymap = createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount: this.options.length, canReport: ready, canUse: this.canUse, canSave: this.canUse, hasOverlap: overlapCardLine(this.overlaps) !== undefined });
 		const action = keymap.resolve(data);
 		if (action === "close") {
 			this.finish(null);
@@ -1030,6 +1031,10 @@ export class DocketVerdictView implements Component {
 		}
 		else if (action === "hunk" && this.changeSet) {
 			this.finish({ verb: "hunk", worker: this.worker, changeSet: this.changeSet, ...(this.deliverable ? { deliverable: this.deliverable } : {}) });
+			return;
+		}
+		else if (action === "overlap" && this.changeSet) {
+			this.finish({ verb: "overlap", worker: this.worker, changeSet: this.changeSet, ...(this.deliverable ? { deliverable: this.deliverable } : {}) });
 			return;
 		}
 		else if (action === "select") {
@@ -1094,6 +1099,12 @@ export class DocketVerdictView implements Component {
 		// human is about to apply a diff, and applying it is what the fact bears on.
 		if (this.staleBase) {
 			this.container.addChild(new Text(truncateToWidth(`  ${warning(staleBaseVerdictLine(this.staleBase))}`, listWidth - 2), 1, 0));
+		}
+		// Same reasoning, one step earlier: another worker is holding these lines right now, and
+		// this is the screen where promoting one of them happens.
+		const overlapLine = overlapCardLine(this.overlaps);
+		if (overlapLine) {
+			this.container.addChild(new Text(truncateToWidth(`  ${warning(overlapLine)}`, listWidth - 2), 1, 0));
 		}
 		this.container.addChild(new Spacer(1));
 
@@ -1202,7 +1213,7 @@ export class DocketVerdictView implements Component {
 		}
 		this.container.addChild(new DynamicBorder(divider));
 		const exitHint = this.remaining > 0 ? `Esc stop · ${this.remaining} more` : "Esc close";
-		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse, canSave: this.canUse }), "footer");
+		const hints = formatKeyHints(createVerdictKeymap({ hasChangeSet: this.changeSet !== undefined, optionCount, canReport: ready, canUse: this.canUse, canSave: this.canUse, hasOverlap: overlapLine !== undefined }), "footer");
 		const footer = new Text(dim(`${hints} · ${exitHint}`), 1, 0);
 		this.container.addChild(footer);
 		this.container.addChild(new Text(fitBorder("", "", innerWidth, border, BOTTOM_CORNERS), 0, 0));
@@ -1302,6 +1313,71 @@ async function gradeWorkerOverlaps(input: { worker: WorkerStatus; patch?: string
 	}));
 }
 
+/** Peers and their evidence, read once for whichever overlap surface asked. */
+async function workerOverlapPeers(ctx: ExtensionCommandContext, worker: WorkerStatus): Promise<{ peers: WorkerStatus[]; peerArtifacts: Map<string, Artifact[]> }> {
+	const peers = await createWorkerStore().list({ projectRoot: projectKey(ctx.cwd) });
+	const peerArtifacts = new Map<string, Artifact[]>();
+	await Promise.all(peers.map(async (peer) => {
+		peerArtifacts.set(peer.id, peer.id === worker.id ? await readWorkerArtifactsForReview(peer) : await createWorkerStore().readArtifacts(peer.id).catch(() => []));
+	}));
+	return { peers, peerArtifacts };
+}
+
+async function workerOverlapsForCard(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact): Promise<WorkerOverlap[]> {
+	try {
+		const { peers, peerArtifacts } = await workerOverlapPeers(ctx, worker);
+		const patch = workerChangeSetFromArtifact(changeSet)?.patch;
+		return await gradeWorkerOverlaps({ worker, peers, peerArtifacts, parentCwd: ctx.cwd, ...(patch ? { patch } : {}) });
+	} catch {
+		// A card that cannot grade its overlap still opens; it simply says nothing about one.
+		return [];
+	}
+}
+
+/**
+ * Both workers' hunks for the paths they contest, then one question: who yields.
+ *
+ * The exit is a revision request to one worker, never a merge. Docket surfaces the collision and
+ * the workers still do the work — the default action is to send nothing, which costs one keypress.
+ */
+async function showWorkerOverlapDiff(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact, deps: { tell(worker: WorkerStatus, text: string): Promise<boolean>; notify(text: string, level: "info" | "warning" | "error"): void }): Promise<void> {
+	if (!ctx.hasUI) return;
+	const overlaps = await workerOverlapsForCard(ctx, worker, changeSet);
+	const paths = contestedPaths(overlaps);
+	const patch = workerChangeSetFromArtifact(changeSet)?.patch;
+	if (paths.length === 0 || !patch) {
+		deps.notify("Docket found no contested lines to compare.", "info");
+		return;
+	}
+	const store = createWorkerStore();
+	const sides = await Promise.all(overlaps.map(async (overlap) => {
+		const peer = await store.find(overlap.workerId);
+		const deliverable = peer ? await store.readCurrentDeliverable(peer).catch(() => undefined) : undefined;
+		const peerPatch = deliverable?.changeSet?.patch;
+		return peer && peerPatch ? { peer, side: { label: overlap.workerLabel, taskLabel: overlap.taskLabel, patch: peerPatch } } : undefined;
+	}));
+	const known = sides.filter((entry): entry is { peer: WorkerStatus; side: OverlapSide } => entry !== undefined);
+	const mine: OverlapSide = { label: workerSourceLabel(worker), taskLabel: workerDisplayName(worker, 40), patch };
+	const composed = composeOverlapPatch(paths, mine, known.map((entry) => entry.side));
+	if (!composed) {
+		deps.notify("Docket has only one side of this overlap; the other worker has frozen nothing.", "warning");
+		return;
+	}
+	await showTextViewer(ctx, `overlap · ${paths.join(", ")}`, composed, "diff");
+	if (known.length === 0) return;
+	// The safe action is the default and costs one keypress; asking a worker to yield is the
+	// explicit one.
+	const stay = "Send nothing";
+	const choices = [stay, ...known.map((entry) => `Ask ${entry.side.label} · ${entry.side.taskLabel} to yield`)];
+	const picked = await ctx.ui.select(`${paths[0]} · who yields?`, choices);
+	if (!picked || picked === stay) return;
+	const target = known[choices.indexOf(picked) - 1];
+	if (!target) return;
+	const note = (await ctx.ui.editor(`Ask ${target.side.label} to yield · ${paths.join(", ")}`, ""))?.trim();
+	if (!note) return;
+	await deps.tell(target.peer, `Another worker is changing ${paths.join(", ")} too, and its version is the one being reviewed.\n\n${note}`);
+}
+
 /** Files the approved plan a worker is executing named. Empty for workers without one. */
 async function plannedPathsForWorker(worker: WorkerStatus): Promise<string[]> {
 	const sidecar = worker.sourceHandoff?.sidecarPath;
@@ -1350,7 +1426,9 @@ async function showWorkerVerdict(ctx: ExtensionCommandContext, worker: WorkerSta
 	// The cheapest place this fact changes a decision. Approving a diff against a base that has
 	// since moved is the mistake, and the card is where the approval happens.
 	const stale = await staleBaseForWorker(ctx.cwd, worker, artifacts);
-	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse, coverage, stale), {
+	// Only a worker with a diff can contest lines, so a card with no change set pays nothing.
+	const overlaps = changeSet ? await workerOverlapsForCard(ctx, worker, changeSet) : [];
+	return ctx.ui.custom<DocketVerdictAction | null>((tui, theme, _kb, done) => new DocketVerdictView(tui, theme, worker, changeSet, done, remaining, paneTail, artifacts, deliverable, canUse, coverage, stale, overlaps), {
 		overlay: true,
 		overlayOptions: { anchor: "bottom-center", width: "72%", minWidth: 64, maxHeight: "70%", margin: 1, offsetY: -1 },
 	});
@@ -4232,6 +4310,12 @@ export default function docketExtension(pi: ExtensionAPI) {
 					...(options.authorizeLaunch ? { authorizeLaunch: options.authorizeLaunch } : {}),
 				});
 			};
+			// Everything the overlap surface is allowed to do: read the peer's side, and ask one
+			// worker to yield through the same `tell` channel every other message uses.
+			const overlapDeps = {
+				tell: (peer: WorkerStatus, text: string) => workerCommands.tell(workerSourceLabel(peer), text).then((sent) => sent !== false),
+				notify: (text: string, level: "info" | "warning" | "error") => notifyDocket(pi, ctx, text, level),
+			};
 			const checkpointCommands = createCheckpointCommands({
 				store: checkpointStore,
 				notify: (text, level) => notifyDocket(pi, ctx, text, level),
@@ -4272,11 +4356,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 						notifyDocket(pi, ctx, "Docket worker not found for change set", "error");
 						return false;
 					}
-					const peers = await workerStore.list({ projectRoot: sessionProjectKey ?? projectKey(ctx.cwd) });
-					const peerArtifacts = new Map<string, Artifact[]>();
-					await Promise.all(peers.map(async (peer) => {
-						peerArtifacts.set(peer.id, await readWorkerArtifactsForReview(peer));
-					}));
+					const { peers, peerArtifacts } = await workerOverlapPeers(ctx, worker);
 					const frozen = workerChangeSetFromArtifact(artifact);
 					const overlaps = await gradeWorkerOverlaps({
 						worker,
@@ -4294,7 +4374,27 @@ export default function docketExtension(pi: ExtensionAPI) {
 							notifyDocket(pi, ctx, `Docket promote blocked: ${summary}`, "warning");
 							return false;
 						}
-						const ok = await ctx.ui.confirm("Promote despite worker overlap?", [...overlapConfirmationLines(overlaps), "", artifact.title].join("\n"));
+						const body = [...overlapConfirmationLines(overlaps), "", artifact.title].join("\n");
+						// Looking is offered here rather than only on the card, because the modal is
+						// where the human is when the question arrives. Cancelling to go and find
+						// the other worker was the friction; now it is one keypress and returns.
+						const canLook = contestedPaths(overlaps).length > 0;
+						let ok = false;
+						while (true) {
+							if (!canLook) {
+								ok = await ctx.ui.confirm("Promote despite worker overlap?", body);
+								break;
+							}
+							const look = "See both diffs";
+							const promote = "Promote anyway";
+							const picked = await ctx.ui.select(`${summary} · promote anyway?`, [look, promote, "Cancel"]);
+							if (picked === look) {
+								await showWorkerOverlapDiff(ctx, worker, artifact, overlapDeps);
+								continue;
+							}
+							ok = picked === promote;
+							break;
+						}
 						if (!ok) return false;
 					}
 					let result = frozen
@@ -4323,6 +4423,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 					}
 					return result.ok;
 				},
+				showWorkerOverlap: (worker, changeSet) => showWorkerOverlapDiff(ctx, worker, changeSet, overlapDeps),
 				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({
 					showBuiltinDiff: (reviewWorker, reviewChangeSet) => {
 						const patch = typeof reviewChangeSet.meta?.patch === "string" ? reviewChangeSet.meta.patch : undefined;

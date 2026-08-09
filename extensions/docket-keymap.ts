@@ -228,9 +228,9 @@ export function createEvidenceBundleKeymap(): DocketKeymap<EvidenceBundleKeyActi
 	]);
 }
 
-export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
+export type VerdictKeyAction = "close" | "down" | "up" | "top" | "bottom" | "select" | "diff" | "hunk" | "overlap" | "report" | "use" | "save" | "option1" | "option2" | "option3" | "option4" | "option5" | "option6" | "option7" | "option8" | "option9";
 
-export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean }): DocketKeymap<VerdictKeyAction> {
+export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCount: number; canReport?: boolean; canUse?: boolean; canSave?: boolean; hasOverlap?: boolean }): DocketKeymap<VerdictKeyAction> {
 	const bindings: KeyBinding<VerdictKeyAction>[] = [
 		{ keys: ["escape", "q", "ctrl+c"], action: "close", label: "close", slots: ["footer"] },
 		{ keys: ["j", "down"], action: "down", label: "move", slots: ["footer"] },
@@ -247,6 +247,9 @@ export function createVerdictKeymap(options: { hasChangeSet: boolean; optionCoun
 	if (options.hasChangeSet) {
 		bindings.push({ keys: "d", action: "diff", label: "full diff", slots: ["footer"] });
 		bindings.push({ keys: "h", action: "hunk", label: "Hunk review", slots: ["footer"] });
+		// Offered only when another worker is actually contesting these lines, the same way `d`
+		// and `h` appear only when there is a change set to open.
+		if (options.hasOverlap) bindings.push({ keys: "o", action: "overlap", label: "both diffs", slots: ["footer"] });
 	}
 	for (let index = 1; index <= Math.min(9, options.optionCount); index++) {
 		bindings.push({ keys: String(index), action: `option${index}` as VerdictKeyAction, label: "pick", slots: ["footer"] });

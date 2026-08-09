@@ -10,7 +10,7 @@ import type { WorkerChangeReviewOutcome, WorkerChangeReviewPreference } from "./
 import { isReviewableWorker, verdictResolvedTransition } from "./worker-lifecycle.js";
 
 export type DocketVerdictAction = {
-	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "send" | "report" | "use" | "save";
+	verb: "accept" | "reject" | "rejectStop" | "chat" | "diff" | "hunk" | "overlap" | "send" | "report" | "use" | "save";
 	worker: WorkerStatus;
 	changeSet?: Artifact;
 	deliverable?: WorkerDeliverable;
@@ -38,6 +38,8 @@ export type WorkerVerdictDeps = {
 	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
+	/** Read both workers' hunks for the paths they contest, then decide who yields. Never merges. */
+	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<void>;
 	markArtifactDone(artifact: Artifact): void;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	refreshWorkerDockWidget(): Promise<void>;
@@ -179,6 +181,12 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 		const statusArtifact = workerStatusArtifact(latest);
 		if (result.verb === "diff") {
 			if (changeSet) await deps.reviewWorkerChangeSet(latest, changeSet, { preferred: "builtin", ...(deliverable ? { deliverable } : {}) });
+			continue;
+		}
+		if (result.verb === "overlap") {
+			// Reading, then a decision about who yields. It records nothing itself: whatever it
+			// sends goes through `tell`, and whatever it does not leaves the card exactly as it was.
+			if (changeSet) await deps.showWorkerOverlap?.(latest, changeSet);
 			continue;
 		}
 		if (result.verb === "report") {

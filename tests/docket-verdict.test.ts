@@ -119,6 +119,53 @@ test("DocketVerdictView exposes Hunk review for worker change sets", () => {
 	assert.deepEqual(action, { verb: "hunk", worker: worker({ state: "ready" }), changeSet });
 });
 
+test("DocketVerdictView carries a contested overlap onto the card and offers both diffs", () => {
+	let action: unknown;
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	const ready = worker({ state: "ready" });
+	const overlaps = [{
+		workerId: "worker-2",
+		workerLabel: "w2",
+		taskLabel: "add a per-tenant rate limit",
+		files: [{ path: "src/api/limit.ts", grade: "contested" as const, ranges: { mine: [{ start: 40, count: 8 }], theirs: [{ start: 44, count: 3 }] } }],
+		grade: "contested" as const,
+	}];
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, ready, changeSet, (result) => { action = result; }, 0, undefined, [], undefined, false, undefined, undefined, overlaps);
+	const rendered = view.render(100).join("\n");
+
+	assert.match(rendered, /contested w2: limit\.ts · o to see both diffs/);
+	assert.match(rendered, /o both diffs/);
+
+	view.handleInput("o");
+	assert.deepEqual(action, { verb: "overlap", worker: ready, changeSet });
+});
+
+test("DocketVerdictView says nothing about an overlap that graded apart", () => {
+	const theme = {
+		fg: (_token: string, s: string) => s,
+		bg: (_token: string, s: string) => s,
+		bold: (s: string) => s,
+	};
+	let action: unknown = "untouched";
+	const apart = [{
+		workerId: "worker-2",
+		workerLabel: "w2",
+		taskLabel: "add a per-tenant rate limit",
+		files: [{ path: "src/api/limit.ts", grade: "same-file" as const, ranges: { mine: [{ start: 1, count: 2 }], theirs: [{ start: 90, count: 2 }] } }],
+		grade: "same-file" as const,
+	}];
+	const view = new DocketVerdictView({ requestRender() {} } as never, theme, worker({ state: "ready" }), changeSet, (result) => { action = result; }, 0, undefined, [], undefined, false, undefined, undefined, apart);
+	const rendered = view.render(100).join("\n");
+
+	assert.doesNotMatch(rendered, /both diffs/);
+	view.handleInput("o");
+	assert.equal(action, "untouched", "the key does nothing when there is nothing to look at");
+});
+
 test("DocketVerdictView binds r to Report even without a change set", () => {
 	let action: unknown;
 	const theme = {

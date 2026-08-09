@@ -194,6 +194,80 @@ export function overlapConfirmationLines(overlaps: readonly WorkerOverlap[]): st
 	return lines.filter((line, index, all) => line !== "" || index !== all.length - 1);
 }
 
+/**
+ * Split a patch into its per-path sections, keeping each section's bytes exactly as git wrote
+ * them. Used to show only the paths two workers contest rather than two whole change sets.
+ */
+export function splitPatchByPath(patch: string): Map<string, string> {
+	const out = new Map<string, string>();
+	let path: string | undefined;
+	let section: string[] = [];
+	const flush = (): void => {
+		if (path && section.length > 0) out.set(path, `${[...(out.get(path) ? [out.get(path)!.trimEnd()] : []), section.join("\n").trimEnd()].join("\n")}\n`);
+		section = [];
+		path = undefined;
+	};
+	for (const line of patch.split(/\r?\n/)) {
+		if (line.startsWith("diff --git ")) {
+			flush();
+			section = [line];
+			continue;
+		}
+		if (section.length === 0) continue;
+		section.push(line);
+		const next = NEW_FILE.exec(line);
+		if (next?.[1] && next[1] !== "/dev/null") path = normalizePath(next[1]);
+		// A deletion has no b-side path; fall back to the a-side so the section is still findable.
+		const old = OLD_FILE.exec(line);
+		if (!path && old?.[1] && old[1] !== "/dev/null") path = normalizePath(old[1]);
+	}
+	flush();
+	return out;
+}
+
+export type OverlapSide = { label: string; taskLabel: string; patch: string };
+
+/**
+ * Both workers' hunks for the contested paths only, each section headed by whose it is.
+ *
+ * This is a reading surface, not something anyone applies: two sections for one path would be
+ * applied twice by git, which is exactly why the human is looking at it. The header comments are
+ * ordinary leading text in a unified diff, so the built-in viewer and Hunk both render it.
+ *
+ * Every section names a worker *and its task*, never an index alone.
+ */
+export function composeOverlapPatch(paths: readonly string[], mine: OverlapSide, theirs: readonly OverlapSide[]): string {
+	const sides = [mine, ...theirs];
+	const sections = sides.map((side) => ({ side, byPath: splitPatchByPath(side.patch) }));
+	const blocks: string[] = [];
+	for (const path of paths) {
+		for (const { side, byPath } of sections) {
+			const body = byPath.get(path);
+			if (!body) continue;
+			blocks.push(`# ${side.label} · ${side.taskLabel}\n${body.trimEnd()}`);
+		}
+	}
+	return blocks.length > 0 ? `${blocks.join("\n\n")}\n` : "";
+}
+
+/** The paths worth putting in front of a human: everything that graded above `same file`. */
+export function contestedPaths(overlaps: readonly WorkerOverlap[]): string[] {
+	const paths = new Set<string>();
+	for (const overlap of overlaps) {
+		for (const file of overlap.files) {
+			if (file.grade !== "same-file" || !file.ranges) paths.add(file.path);
+		}
+	}
+	return [...paths].sort();
+}
+
+/** The verdict card's one line about this, or nothing when there is nothing to say. */
+export function overlapCardLine(overlaps: readonly WorkerOverlap[]): string | undefined {
+	const summary = overlapSummaryLine(overlaps);
+	if (!summary || contestedPaths(overlaps).length === 0) return undefined;
+	return `${summary} · o to see both diffs`;
+}
+
 /** One line for a surface that has room for one: the strongest thing observed, and who with. */
 export function overlapSummaryLine(overlaps: readonly WorkerOverlap[]): string | undefined {
 	if (overlaps.length === 0) return undefined;

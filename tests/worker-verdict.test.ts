@@ -110,6 +110,35 @@ test("runWorkerVerdict diff verb opens full diff in diff mode", async () => {
 	assert.deepEqual(seen, ["worker-changes:worker-1:0:builtin"]);
 });
 
+test("runWorkerVerdict overlap verb reads both sides and records nothing by itself", async () => {
+	const w = worker({ state: "ready" });
+	const cs = changeSet();
+	const seen: string[] = [];
+	const { deps, calls, decisions } = depsFor(w, {
+		showWorkerOverlap: async (_worker, changeSetSeen) => { seen.push(changeSetSeen.ref); },
+	});
+	let first = true;
+	deps.showVerdict = async () => first ? (first = false, { verb: "overlap", worker: w, changeSet: cs }) : { verb: "accept", worker: w };
+
+	await runWorkerVerdict(deps, w);
+
+	assert.deepEqual(seen, ["worker-changes:worker-1:0"], "the overlap surface saw this worker's change set");
+	// Looking is not a verdict: the only decision recorded is the accept that followed it.
+	assert.deepEqual(decisions.map((decision) => decision.verb), ["accept"]);
+	assert.equal(calls.includes("promote"), false);
+});
+
+test("runWorkerVerdict overlap verb is inert when nothing implements it", async () => {
+	const w = worker({ state: "ready" });
+	const cs = changeSet();
+	const { deps, decisions } = depsFor(w);
+	let first = true;
+	deps.showVerdict = async () => first ? (first = false, { verb: "overlap", worker: w, changeSet: cs }) : { verb: "accept", worker: w };
+
+	await assert.doesNotReject(() => runWorkerVerdict(deps, w));
+	assert.deepEqual(decisions.map((decision) => decision.verb), ["accept"]);
+});
+
 test("runWorkerVerdict records chat only after review comments are sent", async () => {
 	const w = worker({ state: "ready" });
 	const cs = changeSet();

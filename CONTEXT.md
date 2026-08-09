@@ -154,6 +154,10 @@ _Avoid_: conflict resolver, merge queue.
 What a Worker overlap is actually worth, derived once when the human opens a promotion: `same file` (their changed line ranges do not meet), `adjacent` (within a few lines), `contested` (ranges intersect, or both create the file). Read from patches already frozen on disk, in the pre-image coordinates both Workers branched from. Where both sides have a patch, git is asked whether the other's still applies once this one lands — that is observed, not graded. A confirmation is owed unless separation was observed: an overlap Docket could not grade still asks, because "we could not tell" is not "they are apart".
 _Avoid_: conflict severity, merge risk, auto-resolve.
 
+**Overlap view**:
+Both Workers' hunks for the paths they contest, each section headed by the Worker and its task. Reading only — two sections for one path is the situation, not a patch anyone applies. Reachable with `o` from the verdict card and from the promote confirmation. Its exit is one question about who yields, answered by sending nothing or by a revision request to one named Worker through the ordinary `tell` channel. It records no verdict and merges nothing.
+_Avoid_: three-way merge, resolve, conflict editor.
+
 **Decision ledger**:
 The append-only record of every verdict you resolve, written to `decisions.ndjson`. Ready judgments include decision id and exact deliverable id/version/ref plus verb, review note or option, risk, and visible evidence refs. Read it with `/docket log decisions`.
 _Avoid_: history, audit log, transcript.
