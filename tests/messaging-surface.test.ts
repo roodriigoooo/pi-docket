@@ -106,6 +106,18 @@ test("a throwing, hanging, or nonsense advisor yields nothing and blocks nobody"
 	assert.ok(Date.now() - started < BROADCAST_ADVISOR_TIMEOUT_MS + 500);
 });
 
+test("the window closes even when every advisor hangs and nothing else is running", async () => {
+	// The case above always had a fast advisor alongside the hung one, so the race could settle
+	// without the timeout ever being the thing that fired. Here nothing else can resolve it, which
+	// is the only configuration that actually tests the isolation guarantee: if the timer cannot
+	// fire, this await never settles and every later test in the file dies as `cancelledByParent`.
+	const api = surface();
+	api.registerBroadcastAdvisor(() => new Promise(() => {}));
+	api.registerBroadcastAdvisor(() => new Promise(() => {}));
+
+	assert.deepEqual(await api.collectBroadcastSuggestions(advisorInput, 20), []);
+});
+
 function worker(index: number, task: string): WorkerStatus {
 	return {
 		id: `worker-${index}`,

@@ -60,6 +60,32 @@ export type BroadcastAdvisor = (input: BroadcastAdvisorInput) => BroadcastSugges
 /** A companion is advisory, so it gets a short window and is dropped if it misses it. */
 export const BROADCAST_ADVISOR_TIMEOUT_MS = 250;
 
+/**
+ * Settle `work` within the window, or give up on it and take `fallback`.
+ *
+ * The timer is deliberately **not** unref'd. It is the whole isolation guarantee — an advisor that
+ * never resolves is exactly what this exists to survive — and an unref'd timer cannot fire when
+ * the hung promise is the only thing left, so the process drains and the caller's await never
+ * settles. Inside pi that never showed, because a live session always has other handles; under
+ * `node --test` the file is the only thing running and every later test in it dies with
+ * "Promise resolution is still pending but the event loop has already resolved".
+ *
+ * Holding the loop open is bounded by `timeoutMs` and the timer is always cleared, so a
+ * well-behaved advisor costs nothing. The abandoned promise stays pending forever — a promise
+ * cannot be cancelled — but nothing awaits it, so it holds nothing open.
+ */
+async function settleWithin<T>(work: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			work,
+			new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), timeoutMs); }),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 export type TmuxWorkerWindowReady = {
 	reason: "spawn" | "respawn" | string;
 	workerId: string;
@@ -153,13 +179,7 @@ export function installDocketExtensionSurface(registry: WorkerKindRegistry): Doc
 			const known = new Set(input.candidates.map((candidate) => candidate.workerId));
 			const results = await Promise.all([...broadcastAdvisors].map(async (advisor) => {
 				try {
-					const suggestions = await Promise.race([
-						Promise.resolve(advisor(input)),
-						new Promise<BroadcastSuggestion[]>((resolve) => {
-							const timer = setTimeout(() => resolve([]), timeoutMs);
-							timer.unref?.();
-						}),
-					]);
+					const suggestions = await settleWithin<BroadcastSuggestion[]>(Promise.resolve(advisor(input)), timeoutMs, []);
 					return Array.isArray(suggestions) ? suggestions : [];
 				} catch {
 					// A companion that throws is simply a companion with no opinion.
