@@ -27,7 +27,7 @@ If a beat cannot be read in four seconds, it is not in the clip.
 |---|---|---|
 | 1 | the verdict card, `contested w2: limit.ts · o to see both diffs` | the collision is graded and openable, not a label |
 | 2 | `o` → both hunks → the settle picker with `Combine with w2 · …` | the question is what the file should be, not which worker wins |
-| 3 | the editor, markers reading `<<<<<<< w2 · add a per-tenant rate limit` | git does the mechanical part; you write the residue, in your own editor |
+| 3 | the editor, markers reading `<<<<<<< w3 · give authenticate() in src/auth/middlew…` | git does the mechanical part; you write the residue, in your own editor |
 | 4 | the reconciled diff → confirm → the dock, two rows settled, no `base moved` | both workers' work landed, and neither was told to start again |
 
 ---
@@ -62,22 +62,28 @@ Open `pi` and start three workers **in this order** — the take names them by l
 /docket spawn --as patcher give authenticate() in src/auth/middleware.ts a context argument, and update the top of limitFor in src/api/limit.ts to pass it
 ```
 
-Then get them into position. **Take A and take B want w2 in different states**, so record A
-first, restart the fixture, and record B.
+Then get them into position. Record A, **restart the fixture**, then record B — take A promotes
+w3, which settles its row and moves the base out from under the merge take B is about to show.
+Teardown and set-up again; the workers are cheap relative to a re-shoot.
 
 For **take A**:
 
 - **w1** (scout) — let it finish. It exists so the last frame can show a worker that says
   *nothing*: it never touched the promoted file.
-- **w2** (rate limit) — **leave it running.** Beat 1 needs a worker genuinely mid-turn, because
-  that is the one whose message visibly advances to `read`, and beat 4 needs a live worker whose
-  evidence names the promoted file.
+- **w2** (rate limit) — **let it report ready, then leave it running.** Both halves are
+  load-bearing and easy to get wrong. Beat 1 needs a worker genuinely mid-turn, because that is
+  the one whose message visibly advances to `read` — and the `tell` in beat 1 is what puts it back
+  mid-turn. But beats 2 and 4 need it to have *published* first: without a frozen change set on
+  disk there is nothing to grade its side against, the card reads `same file` rather than
+  `contested`, and `o` has only one set of hunks to show. So: let it finish, then wake it with
+  beat 1 and keep rolling.
 - **w3** (context argument) — let it finish and report ready. It is the card you open and the
   change you promote.
 
-For **take B**, let **both** w2 and w3 finish and report ready. A reconciliation needs both sides
-frozen: a worker still mid-task has no change set to merge, and Docket will correctly offer only
-the older exits. w1 can be left out entirely.
+For **take B**, spawn only w2 and w3 and let **both** report ready. Nothing is promoted and nothing
+is told anything, so neither needs waking. Both sides must be frozen — a worker still mid-task has
+no change set to merge, and Docket will correctly offer only the older exits. w1 has no part in
+this one.
 
 **Check your framing.** Around 110 columns, so the dock keeps its detail column. Narrower and the
 overlap cell drops out of the row on purpose — correct behaviour, wasted frame.
@@ -125,27 +131,28 @@ it; `Send nothing` is already selected, so `Enter` returns you to the card witho
 
 ### 4 · Promote, and watch it propagate (0:15–0:22)
 
-Select **Promote**. Because w2 is still running it has frozen nothing, so there is no side to merge
-with and the picker is the older two-way one:
+Select **Promote**. The picker is the frame:
 
 ```text
 contested w2: limit.ts · how should this settle?
   See both diffs
+  Combine with w2 · add a per-tenant rate limit to · 1 conflict to resolve in 1 file
   Promote this one only · leaves the others on the old version
   Cancel
 ```
 
-The body behind it is the frame:
+Pass over the Combine row without dwelling on it — take B is what it opens — and take **Promote
+this one only**. The body behind it is what this beat is for:
 
 ```text
 contested: src/api/limit.ts
   this worker · lines 1-6
-  w2 · add a per-tenant rate limit · lines 1-6
+  w2 · add a per-tenant rate limit to · lines 1-6
 promoting this leaves w2 building on the old version
 ```
 
-Hold long enough to read the last line, take **Promote this one only**, then `Esc` back to the
-prompt and land on the dock:
+Hold long enough to read the last line, confirm, then `Esc` back to the prompt and land on the
+dock:
 
 ```text
 docket · main ±1 · 2 running
@@ -169,7 +176,62 @@ Cut here.
 
 ## Take B
 
-Restart the fixture and let **both** w2 and w3 finish. Open `f8`, move to **w3**, press `Enter`.
+Fresh fixture, w2 and w3 both ready. Open `f8`, move to **w3**, press `Enter`.
+
+Open **w3**, not w2. The worker whose card you open is `ours` in the merge, so opening w3 puts its
+signature change on the top side of every conflict — which is the side the resolution keeps, and
+the side that reads correctly top to bottom on camera.
+
+### The file this take turns on
+
+These are the bytes from a real run of the fixture. Let the workers write their own on yours; if a
+model produces something different the beats all still hold and only the exact lines change.
+
+`setup.sh` writes `src/api/limit.ts` as:
+
+```ts
+import { authenticate } from "../auth/middleware.js";
+
+export function limitFor(token: string): number {
+	const context = authenticate(token);
+	return context.scopes.includes("write") ? 1000 : 100;
+}
+```
+
+**w2** adds the tenant table and reads it inside `limitFor`:
+
+```ts
+import { authenticate } from "../auth/middleware.js";
+
+const tenantRates: Record<string, number> = {
+	demo: 100,
+};
+
+export function limitFor(token: string): number {
+	const context = authenticate(token);
+	const tenantRate = tenantRates[context.tenantId];
+	if (tenantRate !== undefined) return tenantRate;
+	return context.scopes.includes("write") ? 1000 : 100;
+}
+```
+
+**w3** changes the signature and the call, and edits `src/auth/middleware.ts` too:
+
+```ts
+import { authenticate, type AuthContext } from "../auth/middleware.js";
+
+export function limitFor(token: string, context: AuthContext): number {
+	const authenticatedContext = authenticate(token, context);
+	return authenticatedContext.scopes.includes("write") ? 1000 : 100;
+}
+```
+
+This is a genuinely two-sided collision, and that is why it is the take: w2 rewrote the body, w3
+rewrote the signature that body sits under, and neither could have produced the answer alone.
+
+If nothing conflicts on your run, the row reads `merges clean` and beat 3 has nothing to show —
+which is a true and good outcome, just not this clip. Re-spawn w2 with the task wording above; it
+puts the edit inside `limitFor` on purpose, which is what makes the two meet.
 
 ### 1 · The collision, graded (0:00–0:04)
 
@@ -191,40 +253,75 @@ it is the beat:
 ```text
 src/api/limit.ts · how should this settle?
 ▸ Send nothing
-  Combine with w2 · add a per-tenant rate limit · 1 conflict to resolve in 1 file
-  Ask w2 · add a per-tenant rate limit to yield
-  Hand w2 · add a per-tenant rate limit both diffs to reconcile
+  Combine with w2 · add a per-tenant rate limit to · 1 conflict to resolve in 1 file
+  Ask w2 · add a per-tenant rate limit to to yield
+  Hand w2 · add a per-tenant rate limit to both diffs to reconcile
 ```
+
+Task labels are the first six words of the spawn task, so w2's ends on "to" and w3's is clipped —
+that is `workerSummaryName`, not a typo to fix in the edit.
 
 **Hold on the second row for a full beat.** It is the whole claim in one line: Docket already
 merged both change sets and is telling you exactly how much of the file is actually contested,
-before you commit to anything. The safe answer is still the one under the cursor.
+before you commit to anything. `src/auth/middleware.ts` merged on its own and is not mentioned,
+because there is nothing to decide about it. The safe answer is still the one under the cursor.
 
 Take **Combine**.
 
 ### 3 · Write the residue (0:09–0:16)
 
-The contested file opens in your editor:
+`Resolve src/api/limit.ts · w3 + w2` opens in your editor, holding exactly this:
 
 ```text
-<<<<<<< w3 · give authenticate() an AuthContext
+import { authenticate, type AuthContext } from "../auth/middleware.js";
+
+<<<<<<< w3 · give authenticate() in src/auth/middlew…
 export function limitFor(token: string, context: AuthContext): number {
-	const authenticated = authenticate(token, context);
+	const authenticatedContext = authenticate(token, context);
+	return authenticatedContext.scopes.includes("write") ? 1000 : 100;
 ||||||| base · what both started from
 export function limitFor(token: string): number {
 	const context = authenticate(token);
+	return context.scopes.includes("write") ? 1000 : 100;
 =======
+const tenantRates: Record<string, number> = {
+	demo: 100,
+};
+
 export function limitFor(token: string): number {
 	const context = authenticate(token);
-	const tenantLimit = tenantLimits.get(context.tenantId) ?? DEFAULT_TENANT_LIMIT;
->>>>>>> w2 · add a per-tenant rate limit
+	const tenantRate = tenantRates[context.tenantId];
+	if (tenantRate !== undefined) return tenantRate;
+	return context.scopes.includes("write") ? 1000 : 100;
+>>>>>>> w2 · add a per-tenant rate limit to
 ```
 
 No new pane, no bespoke merge UI — git's own markers, relabelled so every side names a worker
-**and its task**, with the base both started from between them. Delete the markers, keep w3's
-signature and w2's body, save.
+**and its task**, with the base both started from between them. Note the import line: it is already
+merged, above the conflict, because only one worker touched it.
 
-Everything outside the conflict merged on its own and is not on screen. That is the point.
+Replace the whole conflict block with the version that carries both intents:
+
+```ts
+import { authenticate, type AuthContext } from "../auth/middleware.js";
+
+const tenantRates: Record<string, number> = {
+	demo: 100,
+};
+
+export function limitFor(token: string, context: AuthContext): number {
+	const authenticatedContext = authenticate(token, context);
+	const tenantRate = tenantRates[authenticatedContext.tenantId];
+	if (tenantRate !== undefined) return tenantRate;
+	return authenticatedContext.scopes.includes("write") ? 1000 : 100;
+}
+```
+
+Save. **Have this on the clipboard before you record** — the take is about the surfaces, not about
+watching someone retype ten lines.
+
+It is worth saying out loud what that file is: w3's signature, w2's table, and w2's lookup rewritten
+against w3's variable name. Neither worker wrote it, neither could have, and both of them are in it.
 
 ### 4 · Both land (0:16–0:22)
 
@@ -234,14 +331,20 @@ asks once:
 ```text
 Promote the reconciled change set?
 
-w3 · give authenticate() an AuthContext
-w2 · add a per-tenant rate limit
+w3 · give authenticate() in src/auth/middlew…
+w2 · add a per-tenant rate limit to
 
 git merged what it could · 1 file left contested
   src/api/limit.ts · 1 region
 
 Both workers' changes land together, and both are told their work is already in.
+
+ src/api/limit.ts        | 11 ++++++++---
+ src/auth/middleware.ts  |  4 ++--
 ```
+
+Two files in the stat, one in the conflict list. That gap is the beat: everything Docket could
+settle, it settled.
 
 Confirm, `Esc` to the prompt, and land on the dock:
 
