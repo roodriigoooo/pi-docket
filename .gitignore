@@ -37,3 +37,5 @@ video*_docket.mov
 /.docket-demo/
 /docs/manual-demo.md
 /docs/manual-demo-messaging.md
+# recording scripts for the README clips: local production notes, not user docs
+/docs/readme-demo.md
