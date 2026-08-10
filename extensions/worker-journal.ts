@@ -44,7 +44,22 @@ export type JournalEntry = {
 	ref?: string;
 	/** The worker whose work was promoted, so its own promotion never makes its own base stale. */
 	workerId?: string;
+	/**
+	 * Every worker whose work is inside this promotion. A reconciled promotion carries two or
+	 * more, and none of them is stale afterwards — their edits are what landed. Written alongside
+	 * `workerId` rather than instead of it, so an entry appended today still reads correctly to a
+	 * Docket that predates reconciliation.
+	 */
+	workerIds?: string[];
 };
+
+/** Every worker a promotion credits, from either field. */
+export function promotionWorkerIds(entry: JournalEntry): string[] {
+	const ids = new Set<string>();
+	if (entry.workerId) ids.add(entry.workerId);
+	for (const id of entry.workerIds ?? []) if (id) ids.add(id);
+	return [...ids];
+}
 
 // ---------------------------------------------------------------------------
 // Pure
@@ -87,6 +102,7 @@ export function parseJournalEntry(line: string): JournalEntry | undefined {
 		...(Array.isArray(record.paths) ? { paths: record.paths.filter((entry): entry is string => typeof entry === "string") } : {}),
 		...(typeof record.ref === "string" ? { ref: record.ref } : {}),
 		...(typeof record.workerId === "string" ? { workerId: record.workerId } : {}),
+		...(Array.isArray(record.workerIds) ? { workerIds: record.workerIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) } : {}),
 	};
 }
 
@@ -190,7 +206,10 @@ export function deriveStaleBase(input: StaleBaseInput): StaleBase | undefined {
 	for (const entry of input.entries) {
 		if (entry.kind !== "promoted") continue;
 		// A worker's own promotion is already in its workspace; it is the source, not a surprise.
-		if (entry.workerId && entry.workerId === input.worker.id) continue;
+		// A reconciled promotion credits every contributor, and none of them is stale afterwards:
+		// their edits are inside what landed, so telling them their base moved would read as
+		// "start again" about work that is already in.
+		if (promotionWorkerIds(entry).includes(input.worker.id)) continue;
 		const landedAt = Date.parse(entry.at);
 		// A promotion older than the worker is part of the base it started from.
 		if (!Number.isFinite(landedAt) || landedAt <= startedAt) continue;
@@ -298,5 +317,27 @@ export function promotionJournalEntry(input: { worker: WorkerStatus; paths: stri
 		...(input.paths.length ? { paths: input.paths } : {}),
 		...(input.ref ? { ref: input.ref } : {}),
 		workerId: input.worker.id,
+	};
+}
+
+/**
+ * A promotion that carries more than one worker's work.
+ *
+ * Everything else about it is an ordinary `promoted` entry — same kind, same paths, same warning
+ * about what a workspace still holds — because a reconciled promotion is not a different event,
+ * only one with more than one author. The difference that matters is `workerIds`: every
+ * contributor is credited, so none of them derives `base moved` from work that is already theirs.
+ */
+export function reconciledPromotionJournalEntry(input: { workers: WorkerStatus[]; paths: string[]; text: string; ref?: string; at?: string }): JournalEntry {
+	const labels = input.workers.map((worker) => workerSourceLabel(worker));
+	return {
+		at: input.at ?? new Date().toISOString(),
+		kind: "promoted",
+		from: labels.join(" + ") || "you",
+		text: input.text,
+		...(input.paths.length ? { paths: input.paths } : {}),
+		...(input.ref ? { ref: input.ref } : {}),
+		...(input.workers[0] ? { workerId: input.workers[0].id } : {}),
+		workerIds: input.workers.map((worker) => worker.id),
 	};
 }

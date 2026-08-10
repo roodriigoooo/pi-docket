@@ -20,7 +20,13 @@ import type { WorkerDeliverablePointer } from "./worker-deliverable.js";
  * pure history we summarize over.
  */
 
-export type DecisionVerb = "accept" | "reject" | "rejectStop" | "chat" | "send" | "consult";
+/**
+ * `reconcile` is a terminal judgment with a specific meaning: this worker's deliverable was not
+ * approved on its own and was not rejected — it was merged into a promotion the human assembled
+ * from more than one worker. Kept distinct from `accept` because nobody reviewed this deliverable
+ * in isolation, and `isDeliverableApproved` must keep meaning exactly that.
+ */
+export type DecisionVerb = "accept" | "reject" | "rejectStop" | "chat" | "send" | "consult" | "reconcile";
 
 /**
  * Who resolved this. Absent means the human, which is what every legacy row is. A
@@ -72,6 +78,17 @@ export type DecisionEvent = VerdictResolvedEvent | WorkerEvictedUnreviewedEvent;
 export type DecisionRecord = Omit<VerdictResolvedEvent, "type" | "timestamp">;
 export type EvictionRecord = Omit<WorkerEvictedUnreviewedEvent, "type" | "timestamp" | "reason">;
 
+/**
+ * Verbs that close a deliverable out. A terminal verb is what settles a dock row and what makes a
+ * generation safe to prune; `reconcile` belongs here for exactly that reason, and belongs nowhere
+ * near the approval check below.
+ */
+const TERMINAL_VERBS = new Set<DecisionVerb>(["accept", "reject", "rejectStop", "reconcile"]);
+
+export function isTerminalDecisionVerb(verb: DecisionVerb): boolean {
+	return TERMINAL_VERBS.has(verb);
+}
+
 function sameDeliverable(event: VerdictResolvedEvent, pointer: WorkerDeliverablePointer): boolean {
 	return event.deliverableId === pointer.id && event.deliverableVersion === pointer.version && event.deliverableRef === pointer.ref;
 }
@@ -81,7 +98,7 @@ export function latestDeliverableJudgment(events: DecisionEvent[], pointer: Work
 	let latest: VerdictResolvedEvent | undefined;
 	for (const event of events) {
 		if (event.type !== "verdict_resolved" || !sameDeliverable(event, pointer)) continue;
-		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") latest = event;
+		if (TERMINAL_VERBS.has(event.verb)) latest = event;
 	}
 	return latest;
 }
@@ -105,7 +122,7 @@ export function reviewedDeliverableRefs(events: DecisionEvent[]): Set<string> {
 	for (const event of events) {
 		if (event.type !== "verdict_resolved") continue;
 		if (!event.deliverableRef) continue;
-		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") refs.add(event.deliverableRef);
+		if (TERMINAL_VERBS.has(event.verb)) refs.add(event.deliverableRef);
 	}
 	return refs;
 }
@@ -120,6 +137,7 @@ const VERB_LABELS: Record<DecisionVerb, string> = {
 	chat: "chat",
 	send: "option",
 	consult: "consult answer",
+	reconcile: "reconciled",
 };
 
 export function verbLabel(verb: DecisionVerb): string {
@@ -145,7 +163,7 @@ export type DecisionSummary = {
 };
 
 function emptyVerbCounts(): Record<DecisionVerb, number> {
-	return { accept: 0, reject: 0, rejectStop: 0, chat: 0, send: 0, consult: 0 };
+	return { accept: 0, reject: 0, rejectStop: 0, chat: 0, send: 0, consult: 0, reconcile: 0 };
 }
 
 function withinWindow(timestamp: string, since: number): boolean {

@@ -102,6 +102,8 @@ Read it before your first edit, and again whenever a plan gate opens. A newer en
 - If the change plausibly invalidates what you have done, stop and `docket_wait`, naming the entry and the file.
 - Otherwise finish, and say in your `docket_done` outcome which promoted files your work assumes the old version of. The human is the one who decides whether that matters.
 
+**A `promoted` entry naming you is not a warning.** Some promotions carry more than one worker's work: the human reconciled two change sets and landed them together. If the entry credits you, your edits are inside what landed — nothing was discarded and nothing needs redoing. Your workspace still holds your pre-merge copy, so the paragraph above still applies to *reading* those files, but there is no decision here to raise with `docket_wait`.
+
 ### Messages you receive
 
 Anything the parent sends you arrives with its author on the first line. Read it before you act on the content:

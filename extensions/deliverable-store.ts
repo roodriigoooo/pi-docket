@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import type { DecisionEvent, VerdictResolvedEvent } from "./decision-log.js";
+import { isTerminalDecisionVerb, type DecisionEvent, type VerdictResolvedEvent } from "./decision-log.js";
 import type { WorkerStatus } from "./background-work.js";
 import {
 	sameWorkerDeliverablePointer,
@@ -631,7 +631,7 @@ export function approvedWorkerDecision(events: DecisionEvent[], pointer: WorkerD
 	for (const event of events) {
 		if (event.type !== "verdict_resolved") continue;
 		if (event.deliverableId !== pointer.id || event.deliverableVersion !== pointer.version || event.deliverableRef !== pointer.ref) continue;
-		if (event.verb === "accept" || event.verb === "reject" || event.verb === "rejectStop") latest = event;
+		if (isTerminalDecisionVerb(event.verb)) latest = event;
 	}
 	if (!latest || latest.verb !== "accept" || !["ready", "ready_open_todos"].includes(latest.state)) return undefined;
 	return latest;
