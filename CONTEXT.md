@@ -159,8 +159,16 @@ What a Worker overlap is actually worth, derived once when the human opens a pro
 _Avoid_: conflict severity, merge risk, auto-resolve.
 
 **Overlap view**:
-Both Workers' hunks for the paths they contest, each section headed by the Worker and its task. Reading only — two sections for one path is the situation, not a patch anyone applies. Reachable with `o` from the verdict card and from the promote confirmation. Its exit is one question about who yields, answered by sending nothing or by a revision request to one named Worker through the ordinary `tell` channel. It records no verdict and merges nothing.
-_Avoid_: three-way merge, resolve, conflict editor.
+Both Workers' hunks for the paths they contest, each section headed by the Worker and its task. The composed patch is reading only — two sections for one path is the situation, not something anyone applies. Reachable with `o` from the verdict card and from the promote confirmation. Its exits are: send nothing, **Reconcile** the two change sets, ask one Worker to yield, or hand one Worker both diffs to reconcile. The three message exits travel the ordinary `tell` channel and record no verdict.
+_Avoid_: conflict editor, merge queue.
+
+**Reconcile**:
+Merging two Workers' frozen change sets over the base they share, so both land instead of one. Computed with git's own three-way merge against a scratch index — no worktree, no checkout, nothing written until a promotion applies the result. Outcomes are `clean` (git merged both, nothing contested), `conflicted` (with the regions counted), or a stated reason it could not be done. The rule is that Docket computes the mechanical part and hands the human the residue; it never decides one.
+_Avoid_: auto-merge, resolve conflicts for me, rebase.
+
+**Conflict residue**:
+The regions of a reconciled file where both Workers changed the same lines, presented in the human's own editor with git's markers relabelled by Worker and task and the shared base shown between them. The human writes the resolved file. A file handed back with any marker still in it is never promoted.
+_Avoid_: merge conflict UI, three-way pane.
 
 **Decision ledger**:
 The append-only record of every verdict you resolve, written to `decisions.ndjson`. Ready judgments include decision id and exact deliverable id/version/ref plus verb, review note or option, risk, and visible evidence refs. Read it with `/docket log decisions`.
@@ -229,6 +237,8 @@ _Avoid_: continue, resume, restore.
 - Every Message edge is Worker ↔ parent. A Worker may name intended recipients on a Notice; only the human sends it.
 - A **Progress board** is status visibility, not a decision; stale progress does not block `docket_done`.
 - **Worker overlap** is surfaced to the parent before promotion; the parent remains the mediator. Its **Overlap grade** decides whether a confirmation is owed, and the confirmation states what promoting does to the other Worker — a **Stale base** the promotion is about to create.
+- **Reconcile** computes the mechanical part of a collision and never the judgment. Docket merges; the human writes the **Conflict residue** or names the Worker that will. A conflict marker never reaches the working copy, and a reconciled change set enters it through the one promote path every other change set uses.
+- A Worker whose work is inside a promotion is credited by it and derives no **Stale base** from it. Its deliverable is closed out as `reconcile` — terminal, so its row settles — and never as approval, because approval means a human judged that deliverable on its own.
 
 ## Example dialogue
 
