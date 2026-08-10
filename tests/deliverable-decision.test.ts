@@ -4,7 +4,7 @@ import { isDeliverableApproved, latestDeliverableJudgment, renderDecisionLog, re
 
 const pointer = { id: "worker-deliverable:w1", version: 2, ref: "worker-deliverable:w1:2" };
 
-function verdict(verb: "accept" | "reject" | "rejectStop", partial: Partial<Extract<DecisionEvent, { type: "verdict_resolved" }>> = {}): DecisionEvent {
+function verdict(verb: "accept" | "reject" | "rejectStop" | "reconcile", partial: Partial<Extract<DecisionEvent, { type: "verdict_resolved" }>> = {}): DecisionEvent {
 	return {
 		type: "verdict_resolved",
 		id: partial.id,
@@ -38,6 +38,18 @@ test("approval is exact-generation and latest judgment wins", () => {
 test("needs-input accept and failed retry cannot approve a deliverable", () => {
 	assert.equal(isDeliverableApproved([verdict("accept", { state: "needs_input" })], pointer), false);
 	assert.equal(isDeliverableApproved([verdict("accept", { state: "failed" })], pointer), false);
+});
+
+test("reconcile closes a deliverable out without ever approving it", () => {
+	const events = [verdict("reconcile", { id: "v-reconcile", option: "reconciled with w3 · give authenticate() an AuthContext · 1 file" })];
+
+	// The row settles and the generation is safe to prune: the decision was made.
+	assert.equal(latestDeliverableJudgment(events, pointer)?.id, "v-reconcile");
+	assert.deepEqual([...reviewedDeliverableRefs(events)], [pointer.ref]);
+	// But nobody reviewed this deliverable on its own, so it is not approved and cannot be Used.
+	assert.equal(isDeliverableApproved(events, pointer), false);
+	// And it supersedes an earlier accept rather than being invisible beside one.
+	assert.equal(isDeliverableApproved([verdict("accept", { id: "v-accept" }), ...events], pointer), false);
 });
 
 test("decision log renders deliverable ref once and keeps multiline notes compact", () => {

@@ -71,8 +71,8 @@ export type DocketCommandRouterDeps = {
 	markAllWorkersUnloaded(): void;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
-	/** Read both sides of a contested file, then decide who yields. Sends through `tell` or nothing. */
-	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<void>;
+	/** Read both sides of a contested file, then settle it. `promoted` means a combined change set landed. */
+	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<"promoted" | "sent" | "none">;
 	applyWorkerState(state: "needs_input" | "ready" | "failed", text?: string): Promise<void>;
 	/** Propose recipients, confirm with the human, then deliver. Returns false when nothing was sent. */
 	broadcast(input: { text?: string; noticeRef?: string }): Promise<boolean>;

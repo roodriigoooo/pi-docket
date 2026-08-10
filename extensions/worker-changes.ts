@@ -50,9 +50,12 @@ function gitBuffer(cwd: string, args: string[]): Buffer | undefined {
 	return result.stdout;
 }
 
-function repoRoot(cwd: string): string {
+/** Exported so every git-touching module resolves the same root from the same cwd. */
+export function gitRepoRoot(cwd: string): string {
 	return gitOutput(cwd, ["rev-parse", "--show-toplevel"])?.trim() || cwd;
 }
+
+const repoRoot = gitRepoRoot;
 
 function stageWorkerWorkspace(worker: WorkerStatus, strict = false): string | undefined {
 	const workspace = worker.worktree?.path;

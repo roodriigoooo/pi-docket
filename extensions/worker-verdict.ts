@@ -38,8 +38,12 @@ export type WorkerVerdictDeps = {
 	saveWorkerDeliverable?(worker: WorkerStatus, deliverable: WorkerDeliverable): Promise<void>;
 	isDeliverableApproved?(deliverable: WorkerDeliverable): Promise<boolean>;
 	promoteWorkerChangeSet(artifact: Artifact): Promise<boolean>;
-	/** Read both workers' hunks for the paths they contest, then decide who yields. Never merges. */
-	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<void>;
+	/**
+	 * Read both workers' hunks for the paths they contest, then settle it: send nothing, combine
+	 * the two change sets, ask a worker to yield, or hand it both diffs. `promoted` means the
+	 * combined result already landed through the promote path, so this card is finished.
+	 */
+	showWorkerOverlap?(worker: WorkerStatus, changeSet: Artifact): Promise<"promoted" | "sent" | "none">;
 	markArtifactDone(artifact: Artifact): void;
 	reviewWorkerChangeSet(worker: WorkerStatus, changeSet: Artifact, options: { preferred: WorkerChangeReviewPreference; deliverable?: Pick<WorkerDeliverable, "ref" | "version"> }): Promise<WorkerChangeReviewOutcome>;
 	refreshWorkerDockWidget(): Promise<void>;
@@ -185,9 +189,18 @@ export async function runWorkerVerdict(deps: WorkerVerdictDeps, worker: WorkerSt
 			continue;
 		}
 		if (result.verb === "overlap") {
-			// Reading, then a decision about who yields. It records nothing itself: whatever it
-			// sends goes through `tell`, and whatever it does not leaves the card exactly as it was.
-			if (changeSet) await deps.showWorkerOverlap?.(latest, changeSet);
+			// Reading, then a decision. A message exit records nothing itself — it travels through
+			// `tell`, and doing nothing leaves the card exactly as it was. Combining does land:
+			// both workers' work is in the human's copy, so this deliverable is judged here, and
+			// the peer is closed out by the promote path, which is what knows who contributed.
+			const outcome = changeSet ? await deps.showWorkerOverlap?.(latest, changeSet) : undefined;
+			if (outcome === "promoted" && changeSet) {
+				deps.markArtifactDone(changeSet);
+				await recordDecision(deps, latest, "accept", "promoted a reconciled change set", changeSet, deliverable);
+				await markReviewed(deps, latest, deliverable);
+				await deps.refreshWorkerDockWidget();
+				return "advance";
+			}
 			continue;
 		}
 		if (result.verb === "report") {

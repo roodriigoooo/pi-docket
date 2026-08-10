@@ -244,6 +244,24 @@ Docket scores every running worker against paths the message names, paths each h
 
 Promotions propagate on their own. Approving a worker's changes appends them to the journal, and every worker that read, edited, or planned one of those files shows `base moved` — muted, uninterrupting, and read at the next gate it was already going to stop at. A promotion is the one worker output that already carries your signature, so it needs no second confirmation and costs no tokens.
 
+### When two workers hold the same lines
+
+Docket grades the collision and lets you open it: `o` on the verdict card shows both workers' hunks for the contested paths only, each section headed by the worker *and its task*.
+
+The question that surface asks is not which worker wins, it is what the file should be. Both workers branched from one base, so their two change sets are a three-way merge and git computes it exactly:
+
+```text
+src/api/limit.ts · how should this settle?
+  Send nothing
+  Combine with w2 · add a per-tenant rate limit · 2 conflicts to resolve in 1 file
+  Ask w2 · add a per-tenant rate limit to yield
+  Hand w2 · add a per-tenant rate limit both diffs to reconcile
+```
+
+Most overlaps merge clean — the row says so before you commit — and there was never a decision in them. Where the edits genuinely meet, each contested file opens in **your own editor** with git's markers relabelled by worker and task and the base you both started from between them. You write the resolved file; a file handed back with a marker still in it is never promoted.
+
+Then both workers' work lands in one promotion, and neither is told its base moved: the journal entry credits both and says neither needs redoing. Docket computes the mechanical part and hands you the residue — it never merges without being asked, never locks a file, and never decides which worker was right.
+
 Bundled worker kinds:
 
 - `default`: plan-gated general work in a fresh isolated workspace.
@@ -387,5 +405,4 @@ npm run pack:dry
 - [Full reference](./docs/full-reference.md)
 - [Configuration](./docs/configuration.md)
 - [Architecture](./docs/architecture.md)
-- [Manual visual demo](./docs/manual-demo.md)
 - [Changelog](./CHANGELOG.md)

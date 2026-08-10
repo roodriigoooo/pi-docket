@@ -12,6 +12,7 @@ import {
 	parseJournal,
 	promotionJournalEntry,
 	readJournalEntries,
+	reconciledPromotionJournalEntry,
 	renderJournal,
 	staleBaseLine,
 	staleBaseVerdictLine,
@@ -59,6 +60,27 @@ test("a promotion propagates as an entry, without being addressed to anyone", ()
 	assert.equal(entry.ref, "d3");
 	// The source worker is recorded so its own promotion never makes its own base look stale.
 	assert.equal(entry.workerId, "w1-zzzz");
+});
+
+test("a reconciled promotion credits every worker inside it, and still reads to an old Docket", () => {
+	const entry = reconciledPromotionJournalEntry({
+		workers: [
+			worker({ id: "w3-yyyy", index: 3, task: "give authenticate() a context arg" }),
+			worker({ id: "w2-abcd", index: 2 }),
+		],
+		paths: ["src/api/limit.ts"],
+		text: "Reconciled changes from w3 and w2 were approved and promoted together.",
+		ref: "d4",
+	});
+
+	assert.equal(entry.kind, "promoted");
+	assert.equal(entry.from, "w3 + w2");
+	assert.deepEqual(entry.workerIds, ["w3-yyyy", "w2-abcd"]);
+	// `workerId` is written alongside rather than dropped, so an entry appended today still reads
+	// correctly to a Docket that predates reconciliation.
+	assert.equal(entry.workerId, "w3-yyyy");
+	// A round trip through the ndjson keeps every contributor.
+	assert.deepEqual(parseJournal(`${JSON.stringify(entry)}\n`)[0]?.workerIds, ["w3-yyyy", "w2-abcd"]);
 });
 
 test("a worker whose evidence names a promoted path is working from a base that moved", () => {
@@ -110,6 +132,13 @@ test("staleness stays silent on everything that is not evidence of overlap", () 
 		worker: w,
 		candidate: { worker: w, touchedPaths: ["src/auth/middleware.ts"] },
 		entries: [promoted({ workerId: w.id })],
+	}), undefined);
+	// So is a promotion this worker's work was reconciled into: its edits are what landed, and
+	// telling it its base moved would read as "start again" about work that is already in.
+	assert.equal(deriveStaleBase({
+		worker: w,
+		candidate: { worker: w, touchedPaths: ["src/auth/middleware.ts"] },
+		entries: [promoted({ workerId: "w1-zzzz", workerIds: ["w1-zzzz", w.id] })],
 	}), undefined);
 	// Standing notes are not landed code.
 	assert.equal(deriveStaleBase({

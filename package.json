@@ -20,6 +20,8 @@
   "files": [
     "extensions",
     "docs",
+    "!docs/manual-demo*.md",
+    "!docs/readme-demo.md",
     "assets",
     "README.md",
     "LICENSE",

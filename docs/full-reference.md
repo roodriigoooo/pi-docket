@@ -275,8 +275,17 @@ The confirmation is owed unless Docket **observed** that the edits do not meet. 
 When it does ask, it says what promoting does, not just that something overlaps:
 
 ```text
-Promote despite worker overlap?
+contested w2: limit.ts · how should this settle?
 
+  See both diffs
+  Combine with w2 · add a per-tenant rate limit · 2 conflicts to resolve in 1 file
+  Promote this one only · leaves the others on the old version
+  Cancel
+```
+
+The body behind it names the ranges on both sides and predicts the consequence:
+
+```text
 contested: src/api/limit.ts
   this worker · lines 40-47
   w2 · add a per-tenant rate limit · lines 44-46
@@ -284,7 +293,7 @@ w2's change set no longer applies once this lands
 promoting this leaves w2 building on the old version
 ```
 
-That last line is a prediction of something Docket already makes true: the promotion appends a journal entry, and w2 derives `base moved` from it without anyone deciding to tell it.
+That last line is a prediction of something Docket already makes true: the promotion appends a journal entry, and w2 derives `base moved` from it without anyone deciding to tell it. **Combine** is the way not to make it true.
 
 ### Seeing both diffs
 
@@ -310,17 +319,62 @@ diff --git a/src/api/limit.ts b/src/api/limit.ts
 
 This is a reading surface, not a patch anyone applies — two sections for one path is exactly the situation you are looking at. The same view is one keypress from the promote confirmation, so you no longer have to cancel, find the other worker, open its card, and come back.
 
-Closing it asks one question, and the safe answer is the default:
+Closing it asks how it should settle, and the safe answer is the default:
 
 ```text
-src/api/limit.ts · who yields?
+src/api/limit.ts · how should this settle?
   Send nothing
+  Combine with w2 · add a per-tenant rate limit · 2 conflicts to resolve in 1 file
   Ask w2 · add a per-tenant rate limit to yield
+  Hand w2 · add a per-tenant rate limit both diffs to reconcile
 ```
 
-Picking a worker opens the revision editor and sends through the ordinary `tell` channel. It records no verdict and merges nothing: Docket surfaces the collision, you decide who yields, and the workers still do the work.
+The two `tell` exits open an editor for your note and send through the ordinary channel; they record no verdict. **Hand … both diffs** carries both sides, the merge residue, your directive, and the provenance — that the other change is under review and not in the project — so the worker reconciles them itself. It is the escape hatch for a conflict that is semantic rather than textual, and it costs a worker turn.
 
-Docket still does not lock files or auto-merge. It grades the collision and the parent remains the mediator.
+### Reconciling instead of choosing
+
+Both workers branched from one base, so their two change sets are a three-way merge and git computes it exactly. **Combine** is that merge, and it is what turns "which worker wins" into "what should the file be".
+
+The row says the outcome before you commit to it. `merges clean, 2 files` means git merged both sides with nothing contested — there was never a decision to make, only a question Docket could not answer until it tried. `2 conflicts to resolve in 1 file` means it merged what it could and the rest is yours.
+
+Each contested file opens in your own editor with git's markers relabelled by worker and task, and the base you both started from between them:
+
+```text
+<<<<<<< w3 · give authenticate() an AuthContext
+export function limitFor(token: string, context: AuthContext): number {
+||||||| base · what both started from
+export function limitFor(token: string): number {
+=======
+export function limitFor(token: string): number {
+	const tenantLimit = tenantLimits.get(context.tenantId) ?? DEFAULT_TENANT_LIMIT;
+>>>>>>> w2 · add a per-tenant rate limit
+```
+
+Write the file you actually want and save. Docket then shows you the reconciled diff — always, because these bytes were assembled by a program rather than written by a worker whose deliverable you reviewed — and asks once:
+
+```text
+Promote the reconciled change set?
+
+w3 · give authenticate() an AuthContext
+w2 · add a per-tenant rate limit
+
+git merged what it could · 1 file left contested
+  src/api/limit.ts · 2 regions
+
+Both workers' changes land together, and both are told their work is already in.
+```
+
+Then it promotes through the same path every other change set uses, so `apply --check`, the parent-moved confirmation, and the journal all apply unchanged.
+
+Three things follow from a reconciled promotion:
+
+- **Neither worker is told its base moved.** The journal entry credits both, and says in words that neither was discarded and neither needs redoing.
+- **Both rows settle.** The peer's deliverable is closed out as `reconcile` in the ledger — terminal, so its row folds, and never approval, because nobody reviewed that deliverable on its own. `/docket log decisions` shows it as `reconciled`.
+- **A conflict marker never reaches your working copy.** The gate re-reads what is actually about to be applied, not what you were handed, so a file closed without saving fails there rather than landing markers in the repo.
+
+Reconciliation degrades honestly. A git older than 2.38, a base Docket cannot reconstruct, an unmergeable pair — each is a stated reason and the older exits stay exactly where they were. It is never a quiet promotion of one side.
+
+Docket still does not lock files, sequence workers, or merge without being asked. It computes the mechanical part of a collision and hands you the residue; the parent remains the mediator.
 
 The dock also shows passive warnings. `silent 6m` means a running worker has not emitted a tool/todo event lately. `waiting 31m` means a parent question has aged. `1 message queued · not taken yet` means you already replied and the worker has not picked it up. Docket does not auto-kill or auto-respawn for any of them. It tells you to peek, reply, reject, or stop.
 
