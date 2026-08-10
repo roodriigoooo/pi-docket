@@ -52,8 +52,9 @@ import { availableSources, episodesFromItems, handleNavigatorIntent, initialNavi
 import type { Artifact, ArtifactKind, CheckpointIndexEntry } from "./types.js";
 import { createWorkerCommands, workerAge, workerCompletionCandidates } from "./worker-commands.js";
 import { DOCK_GUTTER, dockColumns, dockRowCells, dockRowsForRender, dockSettledLine, isSettledDockState, partitionDockRows, workerActivityActionProjection, workerActivityPreviewLines, workerActivityRows, workerActivityTotals, workerProgressCompact, type DockColumns, type DockRow, type WorkerActivityRow } from "./worker-activity.js";
-import { freezeWorkerChangeSet, patchStillAppliesAfter, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet } from "./worker-changes.js";
+import { freezeWorkerChangeSet, patchStillAppliesAfter, workerChangeSetArtifact, workerChangeSetFromArtifact, promoteWorkerChangeSet, type WorkerChangeSet } from "./worker-changes.js";
 import { composeOverlapPatch, contestedPaths, gradeOverlapFiles, overlapCardLine, overlapConfirmationLines, overlapNeedsConfirmation, overlapSummaryLine, parsePatchRanges, strongestGrade, type OverlapSide, type WorkerOverlap } from "./worker-overlap.js";
+import { isReconcileFailure, openReconcileSession, reconcileChoiceLabel, reconcileDecisionOption, reconcileEditorTitle, reconcileHandoffMessage, reconcileResultLines, reconcileUnavailableLine, reconciledJournalText, type ReconcileSession, type ReconcileSide, type ReconcileSummary, type ReconciledChangeSet } from "./worker-reconcile.js";
 import { coloredAdditions, coloredDeletions, coloredFileStat, renderGitDiffLine } from "./diff-render.js";
 import { workerConflictMap } from "./worker-conflicts.js";
 import { formatWorkerReportText, projectWorkerReport, verdictReadyPreview } from "./worker-report.js";
@@ -63,9 +64,9 @@ import { captureWorkerPane, createWorkerStore, isSharedSessionTarget, projectKey
 import { WorkerSnapshotCache, watchWorkersRoot, type Unwatcher } from "./worker-dock-cache.js";
 import { appendWorkerEventSync, type WorkerEvent } from "./worker-events.js";
 import { dockIdleHideMs, isDockIdleEvictable, pruneAfterMs, selectPrunableWorkers } from "./worker-eviction.js";
-import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, processExitedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, waitTransition, workerIsGone, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
+import { consultEscalatedTransition, heartbeatTransition, messageDeliveredTransition, orphanDetectedTransition, processExitedTransition, protocolTransition, todosTransition, turnEndedTransition, turnStartedTransition, verdictResolvedTransition, waitTransition, workerIsGone, WORKER_STALE_AFTER_MS } from "./worker-lifecycle.js";
 import { applyBroadcastSuggestions, broadcastProvenanceLine, formatBroadcastBody, broadcastSummary, scoreBroadcastRecipients, shouldProposeBulletin, type BroadcastBand, type BroadcastCandidate, type BroadcastRecipient, type BroadcastSource, type BroadcastStanding } from "./worker-broadcast.js";
-import { appendJournalEntry, deriveStaleBase, journalViewExistsSync, journalViewFile, promotionJournalEntry, readJournalEntries, staleBaseLine, staleBaseVerdictLine, type JournalEntry, type StaleBase } from "./worker-journal.js";
+import { appendJournalEntry, deriveStaleBase, journalViewExistsSync, journalViewFile, promotionJournalEntry, readJournalEntries, reconciledPromotionJournalEntry, staleBaseLine, staleBaseVerdictLine, type JournalEntry, type StaleBase } from "./worker-journal.js";
 import { CONSULT_POLICY_OFF, consultAnswerCallSummary, consultCallSummary, consultEscalationCallSummary, consultEscalationNotice, consultEscalationSummary, consultPromptText, escalatedQuestionNote, isConsultExpired, pendingConsult, resolveConsultPolicy, type ConsultPolicy } from "./worker-consult.js";
 import { buildWorkerMessage, claimPendingWorkerMessages, collapseWorkerMessageBody, formatWorkerMessageForSession, markWorkerMessagesRead, pendingWorkerMessageLine, readWorkerMessageSync, sentWorkerMessageChipSubject, sentWorkerMessageIsStuck, sentWorkerMessageTimeline, workerMessageRedirects, writeWorkerMessage, type WorkerMessage, type WorkerMessageTransport } from "./worker-mailbox.js";
 import { formatHunkCommentLocation, reviewWorkerChangeSetInHunk, type HunkReviewAction, type HunkReviewComment, type HunkReviewResult } from "./worker-diff-review.js";
@@ -1348,21 +1349,19 @@ async function workerOverlapsForCard(ctx: ExtensionCommandContext, worker: Worke
 	}
 }
 
+/** What a worker branched from, which is the pre-image both sides of a reconciliation share. */
+function workerReconcileBase(worker: WorkerStatus): string | undefined {
+	return worker.worktree?.snapshotHead ?? worker.worktree?.baseHead;
+}
+
+type ReconcileCandidate = { peer: WorkerStatus; side: ReconcileSide; session: ReconcileSession };
+
 /**
- * Both workers' hunks for the paths they contest, then one question: who yields.
- *
- * The exit is a revision request to one worker, never a merge. Docket surfaces the collision and
- * the workers still do the work — the default action is to send nothing, which costs one keypress.
+ * Peers whose own change set is frozen — the only kind Docket can put beside this one, or merge
+ * with it. A worker still mid-task has no frozen side, and inventing one from its live workspace
+ * would be comparing a decision against a moving target.
  */
-async function showWorkerOverlapDiff(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact, deps: { tell(worker: WorkerStatus, text: string): Promise<boolean>; notify(text: string, level: "info" | "warning" | "error"): void }): Promise<void> {
-	if (!ctx.hasUI) return;
-	const overlaps = await workerOverlapsForCard(ctx, worker, changeSet);
-	const paths = contestedPaths(overlaps);
-	const patch = workerChangeSetFromArtifact(changeSet)?.patch;
-	if (paths.length === 0 || !patch) {
-		deps.notify("Docket found no contested lines to compare.", "info");
-		return;
-	}
+async function frozenOverlapSides(overlaps: readonly WorkerOverlap[]): Promise<{ peer: WorkerStatus; side: OverlapSide }[]> {
 	const store = createWorkerStore();
 	const sides = await Promise.all(overlaps.map(async (overlap) => {
 		const peer = await store.find(overlap.workerId);
@@ -1370,26 +1369,188 @@ async function showWorkerOverlapDiff(ctx: ExtensionCommandContext, worker: Worke
 		const peerPatch = deliverable?.changeSet?.patch;
 		return peer && peerPatch ? { peer, side: { label: overlap.workerLabel, taskLabel: overlap.taskLabel, patch: peerPatch } } : undefined;
 	}));
-	const known = sides.filter((entry): entry is { peer: WorkerStatus; side: OverlapSide } => entry !== undefined);
+	return sides.filter((entry): entry is { peer: WorkerStatus; side: OverlapSide } => entry !== undefined);
+}
+
+type OverlapDeps = {
+	tell(worker: WorkerStatus, text: string): Promise<boolean>;
+	notify(text: string, level: "info" | "warning" | "error"): void;
+	/** Reconcile with one peer and promote the result. The single promote path, reached from here. */
+	combine(worker: WorkerStatus, changeSet: Artifact, mine: ReconcileSide, candidate: ReconcileCandidate): Promise<boolean>;
+};
+
+/** How the overlap surface ended, so the card it was opened from knows whether it is finished. */
+type OverlapOutcome = "promoted" | "sent" | "none";
+
+/**
+ * Merge the change set under review against every peer whose own is frozen.
+ *
+ * Runs only where a confirmation was already owed, so the cost lands on a collision the human is
+ * looking at rather than on every render. A peer Docket cannot merge with is simply not offered —
+ * "we could not combine" degrades to the surfaces that already exist and never to a quiet
+ * promotion of one side.
+ */
+function openReconcileCandidates(parentCwd: string, mine: ReconcileSide, sides: readonly { peer: WorkerStatus; side: OverlapSide }[]): { candidates: ReconcileCandidate[]; failures: string[] } {
+	const candidates: ReconcileCandidate[] = [];
+	const failures: string[] = [];
+	for (const entry of sides) {
+		const base = workerReconcileBase(entry.peer);
+		const theirs: ReconcileSide = {
+			workerId: entry.peer.id,
+			label: entry.side.label,
+			taskLabel: entry.side.taskLabel,
+			patch: entry.side.patch,
+			...(base ? { base } : {}),
+		};
+		const opened = openReconcileSession(parentCwd, mine, theirs);
+		if (isReconcileFailure(opened)) failures.push(`${entry.side.label}: ${opened.reason}`);
+		else candidates.push({ peer: entry.peer, side: theirs, session: opened });
+	}
+	return { candidates, failures };
+}
+
+/**
+ * Hand the human the residue, one contested file at a time, in their own editor.
+ *
+ * Native form on purpose: git's conflict markers are a vocabulary every developer already has,
+ * and a bespoke merge pane would be a new visual language for a job the editor already does. The
+ * whole set is transactional — nothing reaches the working copy until every file resolves, so
+ * backing out of one leaves the promotion exactly where it was.
+ */
+async function resolveReconcileSession(ctx: ExtensionCommandContext, mine: ReconcileSide, candidate: ReconcileCandidate, notify: (text: string, level: "info" | "warning" | "error") => void): Promise<ReconciledChangeSet | undefined> {
+	for (const conflict of candidate.session.summary.conflicts) {
+		const merged = candidate.session.merged(conflict.path);
+		if (merged === undefined) {
+			notify(`Docket could not read the merged ${conflict.path}.`, "error");
+			return undefined;
+		}
+		const resolved = await ctx.ui.editor(reconcileEditorTitle(conflict.path, mine, candidate.side), merged);
+		if (resolved === undefined) return undefined;
+		candidate.session.resolve(conflict.path, resolved);
+	}
+	const built = candidate.session.changeSet();
+	if (!built.ok) {
+		const where = built.unresolved?.length ? ` · ${built.unresolved.join(", ")}` : "";
+		notify(`Docket did not promote: ${built.reason}${where}.`, "warning");
+		return undefined;
+	}
+	return built.changeSet;
+}
+
+/**
+ * Both workers' hunks for the paths they contest, then how it should settle.
+ *
+ * Three exits, in the order the safe one comes first. Sending nothing is the default and costs one
+ * keypress. Combining merges both change sets over the base they share and promotes the result —
+ * the mechanical part computed, the residue handed to the human. Asking a worker to yield, or
+ * handing it both diffs to reconcile, both travel the same `tell` channel every other message uses.
+ *
+ * Docket still decides nothing here. A merge is an observation about which lines both sides
+ * changed; who yields, what the resolved file says, and whether any of it lands stay with the human.
+ */
+async function showWorkerOverlapDiff(ctx: ExtensionCommandContext, worker: WorkerStatus, changeSet: Artifact, deps: OverlapDeps, options: { offerCombine?: boolean } = {}): Promise<OverlapOutcome> {
+	if (!ctx.hasUI) return "none";
+	const overlaps = await workerOverlapsForCard(ctx, worker, changeSet);
+	const paths = contestedPaths(overlaps);
+	const patch = workerChangeSetFromArtifact(changeSet)?.patch;
+	if (paths.length === 0 || !patch) {
+		deps.notify("Docket found no contested lines to compare.", "info");
+		return "none";
+	}
+	const known = await frozenOverlapSides(overlaps);
 	const mine: OverlapSide = { label: workerSourceLabel(worker), taskLabel: workerDisplayName(worker, 40), patch };
 	const composed = composeOverlapPatch(paths, mine, known.map((entry) => entry.side));
 	if (!composed) {
 		deps.notify("Docket has only one side of this overlap; the other worker has frozen nothing.", "warning");
-		return;
+		return "none";
 	}
 	await showTextViewer(ctx, `overlap · ${paths.join(", ")}`, composed, "diff");
-	if (known.length === 0) return;
-	// The safe action is the default and costs one keypress; asking a worker to yield is the
-	// explicit one.
-	const stay = "Send nothing";
-	const choices = [stay, ...known.map((entry) => `Ask ${entry.side.label} · ${entry.side.taskLabel} to yield`)];
-	const picked = await ctx.ui.select(`${paths[0]} · who yields?`, choices);
-	if (!picked || picked === stay) return;
-	const target = known[choices.indexOf(picked) - 1];
-	if (!target) return;
-	const note = (await ctx.ui.editor(`Ask ${target.side.label} to yield · ${paths.join(", ")}`, ""))?.trim();
-	if (!note) return;
-	await deps.tell(target.peer, `Another worker is changing ${paths.join(", ")} too, and its version is the one being reviewed.\n\n${note}`);
+	if (known.length === 0) return "none";
+
+	const base = workerReconcileBase(worker);
+	const mineSide: ReconcileSide = { workerId: worker.id, label: mine.label, taskLabel: mine.taskLabel, patch, ...(base ? { base } : {}) };
+	const opened = openReconcileCandidates(ctx.cwd, mineSide, known);
+	try {
+		const rows: { label: string; run: () => Promise<OverlapOutcome> }[] = [];
+		if (options.offerCombine !== false) {
+			const unavailable = reconcileUnavailableLine(opened.failures);
+			if (unavailable) deps.notify(unavailable, "warning");
+			for (const candidate of opened.candidates) {
+				rows.push({
+					label: reconcileChoiceLabel(candidate.side, candidate.session.summary),
+					run: async () => (await deps.combine(worker, changeSet, mineSide, candidate)) ? "promoted" : "none",
+				});
+			}
+		}
+		for (const entry of known) {
+			rows.push({
+				label: `Ask ${entry.side.label} · ${entry.side.taskLabel} to yield`,
+				run: async () => {
+					const note = (await ctx.ui.editor(`Ask ${entry.side.label} to yield · ${paths.join(", ")}`, ""))?.trim();
+					if (!note) return "none";
+					await deps.tell(entry.peer, `Another worker is changing ${paths.join(", ")} too, and its version is the one being reviewed.\n\n${note}`);
+					return "sent";
+				},
+			});
+		}
+		for (const entry of known) {
+			rows.push({
+				label: `Hand ${entry.side.label} · ${entry.side.taskLabel} both diffs to reconcile`,
+				run: async () => {
+					const directive = (await ctx.ui.editor(`Hand ${entry.side.label} both diffs · ${paths.join(", ")}`, ""))?.trim();
+					if (!directive) return "none";
+					const candidate = opened.candidates.find((entryCandidate) => entryCandidate.peer.id === entry.peer.id);
+					const residue = candidate?.session.summary.conflicts
+						.map((conflict) => `--- ${conflict.path}\n${candidate.session.merged(conflict.path) ?? ""}`)
+						.join("\n\n");
+					await deps.tell(entry.peer, reconcileHandoffMessage({
+						other: mineSide,
+						paths,
+						bothDiffs: composed,
+						...(residue ? { merged: residue } : {}),
+						directive,
+					}));
+					return "sent";
+				},
+			});
+		}
+		const stay = "Send nothing";
+		const choices = [stay, ...rows.map((row) => row.label)];
+		const picked = await ctx.ui.select(`${paths[0]} · how should this settle?`, choices);
+		if (!picked || picked === stay) return "none";
+		const row = rows[choices.indexOf(picked) - 1];
+		return row ? await row.run() : "none";
+	} finally {
+		for (const candidate of opened.candidates) candidate.session.close();
+	}
+}
+
+/**
+ * Close out the worker whose work landed inside somebody else's promotion.
+ *
+ * Its row would otherwise stay open, asking the human to decide something they just decided. The
+ * verb is `reconcile` rather than `accept` because nobody reviewed this deliverable on its own,
+ * and approval has to keep meaning exactly that.
+ */
+async function settleReconciledPeer(candidate: ReconcileCandidate, other: ReconcileSide, summary: ReconcileSummary): Promise<void> {
+	try {
+		const store = createWorkerStore();
+		const peer = await store.find(candidate.peer.id) ?? candidate.peer;
+		const deliverable = await store.readCurrentDeliverable(peer).catch(() => undefined);
+		await createDecisionLog().recordVerdict({
+			workerId: peer.id,
+			workerLabel: workerShortLabel(peer.index),
+			state: deriveWorkerState(peer),
+			verb: "reconcile",
+			option: reconcileDecisionOption(other, summary),
+			evidenceRefs: deliverable ? [deliverable.ref] : [],
+			...(deliverable ? { deliverableId: deliverable.id, deliverableVersion: deliverable.version, deliverableRef: deliverable.ref } : {}),
+			...(peer.task ? { task: peer.task } : {}),
+		});
+		await store.updateStatus(peer.id, verdictResolvedTransition(new Date().toISOString(), deliverable ? workerDeliverablePointer(deliverable) : undefined));
+	} catch {
+		// The promotion already landed. Failing to settle a row must never undo it.
+	}
 }
 
 /** Files the approved plan a worker is executing named. Empty for workers without one. */
@@ -4410,11 +4571,176 @@ export default function docketExtension(pi: ExtensionAPI) {
 					...(options.authorizeLaunch ? { authorizeLaunch: options.authorizeLaunch } : {}),
 				});
 			};
-			// Everything the overlap surface is allowed to do: read the peer's side, and ask one
-			// worker to yield through the same `tell` channel every other message uses.
-			const overlapDeps = {
+			// Everything the overlap surface is allowed to do: read the peer's side, ask one worker
+			// to yield or hand it both diffs through the same `tell` channel every other message
+			// uses, and combine the two change sets — through the one promote path below, never a
+			// second one that also applies patches.
+			const overlapDeps: OverlapDeps = {
 				tell: (peer: WorkerStatus, text: string) => workerCommands.tell(workerSourceLabel(peer), text).then((sent) => sent !== false),
 				notify: (text: string, level: "info" | "warning" | "error") => notifyDocket(pi, ctx, text, level),
+				combine: (combineWorker, changeSet, mine, candidate) => promoteChangeSetArtifact(changeSet, { worker: combineWorker, reconcile: { mine, candidate } }),
+			};
+			/**
+			 * Resolve one reconciliation and put it in front of the human before it lands.
+			 *
+			 * The diff is shown unconditionally: a machine-produced merge is about to enter the
+			 * working copy, and reading it costs one Esc where not reading it costs a review.
+			 */
+			const runReconcile = async (mine: ReconcileSide, candidate: ReconcileCandidate): Promise<ReconciledChangeSet | undefined> => {
+				const built = await resolveReconcileSession(ctx, mine, candidate, (text, level) => notifyDocket(pi, ctx, text, level));
+				if (!built) return undefined;
+				await showTextViewer(ctx, `reconciled · ${mine.label} + ${candidate.side.label}`, built.patch, "diff");
+				const body = [...reconcileResultLines(mine, candidate.side, candidate.session.summary), "", built.stat].join("\n");
+				return (await ctx.ui.confirm("Promote the reconciled change set?", body)) ? built : undefined;
+			};
+			/**
+			 * The single path by which worker work enters the human's working copy.
+			 *
+			 * A reconciliation is a promotion — two authors rather than one — so it lands here
+			 * rather than beside the overlap view. Two doors that both apply patches would be two
+			 * notions of what promoting means, and this codebase has already paid once for having
+			 * two implementations of a single idea.
+			 */
+			const promoteChangeSetArtifact = async (artifact: Artifact, options: { worker?: WorkerStatus; reconcile?: { mine: ReconcileSide; candidate: ReconcileCandidate } } = {}): Promise<boolean> => {
+				const workerIdValue = typeof artifact.meta?.workerId === "string" ? artifact.meta.workerId : undefined;
+				const worker = options.worker ?? (workerIdValue ? await workerStore.find(workerIdValue) : undefined);
+				if (!worker) {
+					notifyDocket(pi, ctx, "Docket worker not found for change set", "error");
+					return false;
+				}
+				const frozen = workerChangeSetFromArtifact(artifact);
+				let reconciled: { changeSet: ReconciledChangeSet; candidate: ReconcileCandidate; mine: ReconcileSide } | undefined;
+
+				if (options.reconcile) {
+					// Reached from the overlap view, where the human has already read both sides and
+					// chosen to combine. The collision question has been asked and answered.
+					const built = await runReconcile(options.reconcile.mine, options.reconcile.candidate);
+					if (!built) return false;
+					reconciled = { changeSet: built, ...options.reconcile };
+				} else {
+					const { peers, peerArtifacts } = await workerOverlapPeers(ctx, worker);
+					const overlaps = await gradeWorkerOverlaps({
+						worker,
+						peers,
+						peerArtifacts,
+						parentCwd: ctx.cwd,
+						...(frozen?.patch ? { patch: frozen.patch } : {}),
+					});
+					// Silence has to be earned: a graded overlap whose edits provably do not meet
+					// asks nothing, and everything else — contested, adjacent, or ungradeable —
+					// still asks, because "we could not tell" is not "they are apart".
+					if (overlapNeedsConfirmation(overlaps)) {
+						const summary = overlapSummaryLine(overlaps) ?? "worker overlap";
+						if (!ctx.hasUI) {
+							notifyDocket(pi, ctx, `Docket promote blocked: ${summary}`, "warning");
+							return false;
+						}
+						const body = [...overlapConfirmationLines(overlaps), "", artifact.title].join("\n");
+						const canLook = contestedPaths(overlaps).length > 0;
+						// The merge is computed here and nowhere earlier: a confirmation is already
+						// owed, so the cost lands on a collision the human is looking at rather than
+						// on every render.
+						const base = workerReconcileBase(worker);
+						const mineSide: ReconcileSide = {
+							workerId: worker.id,
+							label: workerSourceLabel(worker),
+							taskLabel: workerDisplayName(worker, 40),
+							patch: frozen?.patch ?? "",
+							...(base ? { base } : {}),
+						};
+						const opened = frozen?.patch
+							? openReconcileCandidates(ctx.cwd, mineSide, await frozenOverlapSides(overlaps))
+							: { candidates: [] as ReconcileCandidate[], failures: [] as string[] };
+						const unavailable = reconcileUnavailableLine(opened.failures);
+						if (unavailable) notifyDocket(pi, ctx, unavailable, "warning");
+						let ok = false;
+						try {
+							const combineRows = opened.candidates.map((candidate) => reconcileChoiceLabel(candidate.side, candidate.session.summary));
+							while (true) {
+								if (!canLook && combineRows.length === 0) {
+									ok = await ctx.ui.confirm("Promote despite worker overlap?", body);
+									break;
+								}
+								// Looking is offered here rather than only on the card, because the
+								// modal is where the human is when the question arrives. Combining is
+								// offered beside it, because "what should the file be" is the question
+								// the collision actually poses.
+								const look = "See both diffs";
+								const promote = "Promote this one only · leaves the others on the old version";
+								const choices = [...(canLook ? [look] : []), ...combineRows, promote, "Cancel"];
+								const picked = await ctx.ui.select(`${summary} · how should this settle?`, choices);
+								if (picked === look) {
+									await showWorkerOverlapDiff(ctx, worker, artifact, overlapDeps, { offerCombine: false });
+									continue;
+								}
+								const index = picked ? combineRows.indexOf(picked) : -1;
+								if (index >= 0) {
+									const candidate = opened.candidates[index]!;
+									const built = await runReconcile(mineSide, candidate);
+									if (!built) continue;
+									reconciled = { changeSet: built, candidate, mine: mineSide };
+									ok = true;
+									break;
+								}
+								ok = picked === promote;
+								break;
+							}
+						} finally {
+							for (const candidate of opened.candidates) candidate.session.close();
+						}
+						if (!ok) return false;
+					}
+				}
+
+				// One patch reaches git either way. A reconciled change set carries both workers'
+				// work and is still an ordinary frozen patch by the time it gets here, so every
+				// guard the promote path already had applies to it unchanged.
+				const promoting: WorkerChangeSet | undefined = reconciled
+					? {
+						workerId: worker.id,
+						workerLabel: workerSourceLabel(worker),
+						ref: `${frozen?.ref ?? artifact.ref}+reconciled`,
+						files: reconciled.changeSet.files,
+						stat: reconciled.changeSet.stat,
+						patch: reconciled.changeSet.patch,
+						hunkCount: reconciled.changeSet.hunkCount,
+						...(frozen?.deliverableRef ? { deliverableRef: frozen.deliverableRef } : {}),
+					}
+					: frozen;
+				let result = promoting
+					? promoteWorkerChangeSet(worker, ctx.cwd, { changeSet: promoting })
+					: promoteWorkerChangeSet(worker, ctx.cwd);
+				if (!result.ok && result.needsConfirmation && ctx.hasUI) {
+					const ok = await ctx.ui.confirm("Promote worker changes?", `${result.message}\n\n${artifact.title}`);
+					if (!ok) return false;
+					result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true, ...(promoting ? { changeSet: promoting } : {}) });
+				}
+				notifyDocket(pi, ctx, result.ok ? `${result.message} Stop the worker to free its workspace.` : result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
+				if (result.ok) {
+					// A promotion is the one worker output that already carries the human's
+					// signature, so it propagates without asking for a second one. Every worker
+					// whose evidence names one of these paths now derives `base moved`, and reads
+					// the entry at a gate it was already going to stop at — except the workers whose
+					// own work is inside it, which are credited instead.
+					try {
+						await appendJournalEntry(journalRoot(), projectKey(ctx.cwd), reconciled
+							? reconciledPromotionJournalEntry({
+								workers: [worker, reconciled.candidate.peer],
+								paths: result.paths,
+								text: reconciledJournalText([reconciled.mine, reconciled.candidate.side]),
+								...(result.ref ? { ref: result.ref } : {}),
+							})
+							: promotionJournalEntry({
+								worker,
+								paths: result.paths,
+								...(result.ref ? { ref: result.ref } : {}),
+								...(worker.summary ? { summary: worker.summary } : {}),
+							}));
+					} catch { /* the journal is propagation, never a gate on the promotion itself */ }
+					if (reconciled) await settleReconciledPeer(reconciled.candidate, reconciled.mine, reconciled.candidate.session.summary);
+					await refreshWorkerDockWidget();
+				}
+				return result.ok;
 			};
 			const checkpointCommands = createCheckpointCommands({
 				store: checkpointStore,
@@ -4449,80 +4775,7 @@ export default function docketExtension(pi: ExtensionAPI) {
 				markWorkerLoaded: (worker) => explicitlyLoadedWorkerIds.add(worker.id),
 				markWorkerUnloaded: (worker) => explicitlyLoadedWorkerIds.delete(worker.id),
 				markAllWorkersUnloaded: () => { explicitlyLoadedWorkerIds = new Set<string>(); },
-				promoteWorkerChangeSet: async (artifact) => {
-					const workerIdValue = typeof artifact.meta?.workerId === "string" ? artifact.meta.workerId : undefined;
-					const worker = workerIdValue ? await workerStore.find(workerIdValue) : undefined;
-					if (!worker) {
-						notifyDocket(pi, ctx, "Docket worker not found for change set", "error");
-						return false;
-					}
-					const { peers, peerArtifacts } = await workerOverlapPeers(ctx, worker);
-					const frozen = workerChangeSetFromArtifact(artifact);
-					const overlaps = await gradeWorkerOverlaps({
-						worker,
-						peers,
-						peerArtifacts,
-						parentCwd: ctx.cwd,
-						...(frozen?.patch ? { patch: frozen.patch } : {}),
-					});
-					// Silence has to be earned: a graded overlap whose edits provably do not meet
-					// asks nothing, and everything else — contested, adjacent, or ungradeable —
-					// still asks, because "we could not tell" is not "they are apart".
-					if (overlapNeedsConfirmation(overlaps)) {
-						const summary = overlapSummaryLine(overlaps) ?? "worker overlap";
-						if (!ctx.hasUI) {
-							notifyDocket(pi, ctx, `Docket promote blocked: ${summary}`, "warning");
-							return false;
-						}
-						const body = [...overlapConfirmationLines(overlaps), "", artifact.title].join("\n");
-						// Looking is offered here rather than only on the card, because the modal is
-						// where the human is when the question arrives. Cancelling to go and find
-						// the other worker was the friction; now it is one keypress and returns.
-						const canLook = contestedPaths(overlaps).length > 0;
-						let ok = false;
-						while (true) {
-							if (!canLook) {
-								ok = await ctx.ui.confirm("Promote despite worker overlap?", body);
-								break;
-							}
-							const look = "See both diffs";
-							const promote = "Promote anyway";
-							const picked = await ctx.ui.select(`${summary} · promote anyway?`, [look, promote, "Cancel"]);
-							if (picked === look) {
-								await showWorkerOverlapDiff(ctx, worker, artifact, overlapDeps);
-								continue;
-							}
-							ok = picked === promote;
-							break;
-						}
-						if (!ok) return false;
-					}
-					let result = frozen
-						? promoteWorkerChangeSet(worker, ctx.cwd, { changeSet: frozen })
-						: promoteWorkerChangeSet(worker, ctx.cwd);
-					if (!result.ok && result.needsConfirmation && ctx.hasUI) {
-						const ok = await ctx.ui.confirm("Promote worker changes?", `${result.message}\n\n${artifact.title}`);
-						if (!ok) return false;
-						result = promoteWorkerChangeSet(worker, ctx.cwd, { force: true, ...(frozen ? { changeSet: frozen } : {}) });
-					}
-					notifyDocket(pi, ctx, result.ok ? `${result.message} Stop the worker to free its workspace.` : result.message, result.ok ? "info" : result.needsConfirmation ? "warning" : "error");
-					if (result.ok) {
-						// A promotion is the one worker output that already carries the human's
-						// signature, so it propagates without asking for a second one. Every
-						// worker whose evidence names one of these paths now derives `base
-						// moved`, and reads the entry at a gate it was already going to stop at.
-						try {
-							await appendJournalEntry(journalRoot(), projectKey(ctx.cwd), promotionJournalEntry({
-								worker,
-								paths: result.paths,
-								...(result.ref ? { ref: result.ref } : {}),
-								...(worker.summary ? { summary: worker.summary } : {}),
-							}));
-						} catch { /* the journal is propagation, never a gate on the promotion itself */ }
-						await refreshWorkerDockWidget();
-					}
-					return result.ok;
-				},
+				promoteWorkerChangeSet: (artifact) => promoteChangeSetArtifact(artifact),
 				showWorkerOverlap: (worker, changeSet) => showWorkerOverlapDiff(ctx, worker, changeSet, overlapDeps),
 				reviewWorkerChangeSet: (worker, changeSet, options) => reviewWorkerChangeSet({
 					showBuiltinDiff: (reviewWorker, reviewChangeSet) => {

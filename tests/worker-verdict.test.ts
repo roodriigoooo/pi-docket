@@ -151,7 +151,7 @@ test("runWorkerVerdict overlap verb reads both sides and records nothing by itse
 	const cs = changeSet();
 	const seen: string[] = [];
 	const { deps, calls, decisions } = depsFor(w, {
-		showWorkerOverlap: async (_worker, changeSetSeen) => { seen.push(changeSetSeen.ref); },
+		showWorkerOverlap: async (_worker, changeSetSeen) => { seen.push(changeSetSeen.ref); return "none"; },
 	});
 	let first = true;
 	deps.showVerdict = async () => first ? (first = false, { verb: "overlap", worker: w, changeSet: cs }) : { verb: "accept", worker: w };
